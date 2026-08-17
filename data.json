@@ -1,0 +1,130 @@
+{
+  "areas": [
+    {
+      "name": "Atención al cliente",
+      "locations": [
+        {
+          "name": "Sede Husares",
+          "computers": [
+            {
+              "id": 1,
+              "type": "server",
+              "name": "Servidor",
+              "hostname": "Server",
+              "status": true
+            },
+            {
+              "id": 2,
+              "name": "Terminal 1",
+              "hostname": "Desktop-1B10JD2",
+              "type": "desktop",
+              "status": true
+            },
+            {
+              "id": 3,
+              "type": "desktop",
+              "name": "Terminal 2",
+              "hostname": "Desktop-5EPKPJH",
+              "status": true
+            },
+            {
+              "id": 1765402806216,
+              "name": "Terminal 3",
+              "hostname": "Desktop-J1NDPKS",
+              "type": "desktop",
+              "status": true
+            },
+            {
+              "id": 1765402836253,
+              "name": "Terminal 4",
+              "hostname": "Desktop-NOL9VAF",
+              "type": "desktop",
+              "status": true
+            },
+            {
+              "id": 1765402849249,
+              "name": "Terminal 5",
+              "hostname": "Desktop-PLBV8GK",
+              "type": "desktop",
+              "status": true
+            }
+          ]
+        },
+        {
+          "name": "Sede Cocineria",
+          "computers": [
+            {
+              "id": 4,
+              "name": "Servidor",
+              "hostname": "Server",
+              "type": "server",
+              "status": true
+            },
+            {
+              "id": 1765402947088,
+              "name": "Terminal 1",
+              "hostname": "Desktop-QRHT318",
+              "type": "desktop",
+              "status": true
+            },
+            {
+              "id": 1765402981331,
+              "name": "Terminal 2",
+              "hostname": "Desktop-AEF5VEK",
+              "type": "desktop",
+              "status": true
+            }
+          ]
+        },
+        {
+          "name": "Sede America (Abruzzo)",
+          "computers": [
+            {
+              "id": 1765403025327,
+              "name": "Servidor",
+              "hostname": "Desktop-V5EV6GJ",
+              "type": "server",
+              "status": true
+            },
+            {
+              "id": 1765403059455,
+              "name": "Terminal 1",
+              "hostname": "Desktop-7M1PL04",
+              "type": "desktop",
+              "status": true
+            },
+            {
+              "id": 1765403073374,
+              "name": "Terminal 2",
+              "hostname": "Desktop-RKMD4S4",
+              "type": "desktop",
+              "status": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Producción",
+      "locations": [
+        {
+          "name": "Sede Terminal",
+          "computers": []
+        }
+      ]
+    },
+    {
+      "name": "Administración",
+      "locations": [
+        {
+          "name": "Sede Oficina",
+          "computers": []
+        },
+        {
+          "name": "Sede Gerencia",
+          "computers": []
+        }
+      ]
+    }
+  ]
+}

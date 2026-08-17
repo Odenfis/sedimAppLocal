@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Login - Sedimcorp</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Iconos -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body class="login-body">
+
+    <!-- Botón para cambiar tema (Sol/Luna) -->
+    <button class="theme-toggle login-theme-btn" onclick="toggleTheme()" title="Cambiar Tema">
+        <i class="fas fa-sun" id="theme-icon"></i>
+    </button>
+
+    <div class="login-container">
+        <!-- AQUI ESTÁ TU LOGO -->
+        <img src="logo_croma.png" alt="Sedimcorp Logo" class="login-logo">
+
+        <h2>Acceso al Sistema</h2>
+
+        <form id="login-form">
+            <div class="autocomplete-wrapper">
+                <input type="text" id="user" placeholder="Usuario" required autocomplete="off">
+                <div class="suggestions-box" id="user-suggestions"></div>
+            </div>
+            <!--<input type="password" id="pass" placeholder="Contraseña" required>-->
+            <div class="password-wrapper">
+                <input type="password" id="pass" placeholder="Contraseña" required>
+                <i class="fas fa-eye toggle-password" onclick="togglePassword()" title="Ver contraseña"></i>
+            </div>
+            <button type="submit">Ingresar</button>
+            <p id="error-msg" style="color:var(--red-status); display:none; margin-top:10px;"></p>
+        </form>
+    </div>
+
+    <script>
+        function togglePassword() {
+            const passInput = document.getElementById('pass');
+            const icon = document.querySelector('.toggle-password');
+            if (passInput.type === 'password') {
+                passInput.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                passInput.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        }
+
+        function toggleTheme() {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme');
+            const target = current === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', target);
+            localStorage.setItem('theme', target);
+            updateIcon(target);
+        }
+
+        function updateIcon(theme) {
+            const icon = document.getElementById('theme-icon');
+            if (theme === 'light') {
+                icon.classList.remove('fa-sun');
+                icon.classList.add('fa-moon');
+            } else {
+                icon.classList.remove('fa-moon');
+                icon.classList.add('fa-sun');
+            }
+        }
+
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        updateIcon(savedTheme);
+
+        // --- Autocomplete Usuarios ---
+        let users = [];
+        let selectedIndex = -1;
+
+        const userInput = document.getElementById('user');
+        const suggestionsBox = document.getElementById('user-suggestions');
+
+        async function loadUsers() {
+            try {
+                const res = await fetch('/api/users');
+                if (res.ok) users = await res.json();
+            } catch (e) { /* ignore */ }
+        }
+        loadUsers();
+
+        function filterUsers(query) {
+            if (!query) return users;
+            const q = query.toLowerCase();
+            return users.filter(u => u.Usuario.toLowerCase().includes(q));
+        }
+
+        function renderSuggestions(filtered) {
+            suggestionsBox.innerHTML = '';
+            if (filtered.length === 0) {
+                suggestionsBox.style.display = 'none';
+                return;
+            }
+            filtered.forEach((u, i) => {
+                const div = document.createElement('div');
+                div.className = 'suggestion-item';
+                div.dataset.index = i;
+                div.textContent = u.Usuario;
+                div.onclick = () => selectUser(u.Usuario);
+                div.onmouseenter = () => {
+                    selectedIndex = i;
+                    highlightItem();
+                };
+                suggestionsBox.appendChild(div);
+            });
+            selectedIndex = -1;
+            suggestionsBox.style.display = 'block';
+        }
+
+        function highlightItem() {
+            const items = suggestionsBox.querySelectorAll('.suggestion-item');
+            items.forEach((el, i) => {
+                el.classList.toggle('highlight', i === selectedIndex);
+            });
+        }
+
+        function selectUser(value) {
+            userInput.value = value;
+            suggestionsBox.style.display = 'none';
+            selectedIndex = -1;
+        }
+
+        userInput.addEventListener('input', () => {
+            const filtered = filterUsers(userInput.value);
+            renderSuggestions(filtered);
+        });
+
+        userInput.addEventListener('focus', () => {
+            if (userInput.value) {
+                const filtered = filterUsers(userInput.value);
+                renderSuggestions(filtered);
+            } else {
+                renderSuggestions(users);
+            }
+        });
+
+        userInput.addEventListener('keydown', (e) => {
+            const items = suggestionsBox.querySelectorAll('.suggestion-item');
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+                highlightItem();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = Math.max(selectedIndex - 1, -1);
+                highlightItem();
+            } else if (e.key === 'Enter' && selectedIndex > -1) {
+                e.preventDefault();
+                const item = items[selectedIndex];
+                if (item) selectUser(item.textContent);
+            } else if (e.key === 'Escape') {
+                suggestionsBox.style.display = 'none';
+                selectedIndex = -1;
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.autocomplete-wrapper')) {
+                suggestionsBox.style.display = 'none';
+            }
+        });
+
+        // --- Login ---
+        document.getElementById('login-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const usuario = document.getElementById('user').value;
+            const password = document.getElementById('pass').value;
+
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usuario, password })
+            });
+
+            if (res.ok) window.location.href = '/dashboard.html';
+            else {
+                const data = await res.json();
+                const msg = document.getElementById('error-msg');
+                msg.innerText = data.message;
+                msg.style.display = 'block';
+            }
+        };
+    </script>
+</body>
+
+</html>

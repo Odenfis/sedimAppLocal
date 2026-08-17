@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Control - Sedimcorp</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="main-layout">
+        <div id="mobile-overlay" onclick="toggleSidebar()"></div>
+
+        <!-- SIDEBAR MENU -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">Admin Panel</div>
+                <div class="header-tools">
+                    <button class="theme-toggle" onclick="toggleTheme()" title="Cambiar Tema">
+                        <i class="fas fa-sun" id="theme-icon"></i>
+                    </button>
+                    <button class="toggle-btn" onclick="toggleSidebar()" title="Colapsar Menú">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                </div>
+            </div>
+
+            <ul>
+                <li onclick="showView('pos-tables')" class="active" data-module="pos">
+                    <i class="fas fa-cash-register"></i> <span>POS de Ventas</span>
+                </li>
+            </ul>
+
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <i class="fas fa-user"></i> <span id="sidebar-user-name">Usuario</span>
+                </div>
+                <li onclick="logout()" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> <span>Cerrar Sesión</span>
+                </li>
+            </div>
+        </nav>
+
+        <div class="content">
+            <button class="mobile-menu-btn" onclick="toggleSidebar()">
+                <i class="fas fa-bars"></i>
+            </button>
+
+            <!-- VISTA: POS MAPA DE MESAS -->
+            <div id="view-pos-tables" class="view-section">
+                <header>
+                    <h1>Mapa de Mesas</h1>
+                </header>
+
+                <div class="pos-tables-container">
+                    <div class="pos-area-filters">
+                        <div class="pos-empresa-group">
+                            <label>Empresa:</label>
+                            <select id="pos-empresa-select" onchange="onEmpresaOrTurnoChange()">
+                                <option value="" disabled selected>-- Seleccione --</option>
+                                <option value="02">Cocineria</option>
+                                <option value="04">Mar Picante 1</option>
+                                <option value="06">Inversiones Abruzzo SAC</option>
+                            </select>
+                        </div>
+                        <div class="pos-turno-group">
+                            <label>Turno:</label>
+                            <div class="turno-toggle" id="pos-turno-toggle">
+                                <button class="turno-btn" data-turno="manana" onclick="selectTurno('manana')">Mañana</button>
+                                <button class="turno-btn" data-turno="tarde-noche" onclick="selectTurno('tarde-noche')">Tarde-Noche</button>
+                            </div>
+                        </div>
+
+                        <div id="pos-ambiente-filters" class="pos-floor-filters">
+                            <!-- Botones de pisos cargados dinámicamente -->
+                        </div>
+
+                        <div class="pos-legend">
+                            <span class="legend-item"><i class="dot available"></i> Libre</span>
+                            <span class="legend-item"><i class="dot occupied"></i> Ocupada</span>
+                            <span class="legend-item"><i class="dot reserved"></i> Reservada</span>
+                            <span class="legend-item"><i class="dot merged"></i> Unida</span>
+                            <span class="legend-item"><i class="dot preventa"></i> Preventa</span>
+                            <span class="legend-item"><i class="dot unavailable"></i> No disponible</span>
+                        </div>
+                    </div>
+
+                    <div id="pos-tables-grid" class="pos-tables-grid">
+                        <!-- Mesas cargadas dinámicamente -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- VISTA: POS TOMA DE PEDIDO -->
+            <div id="view-pos-order" class="view-section" style="display:none;">
+                <div class="pos-order-layout">
+                    <div class="pos-order-main">
+                        <header class="pos-order-header">
+                            <div class="pos-header-row top">
+                                <div style="display:flex; align-items:center; gap:12px;">
+                                    <button class="btn-back" onclick="showView('pos-tables')"><i class="fas fa-arrow-left"></i></button>
+                                    <h1>Ticket de Venta - Mesa <span id="pos-current-table">0</span></h1>
+                                </div>
+                                <span id="pos-preventa-badge" class="preventa-badge" style="display:none"><i class="fas fa-lock"></i> PREVENTA - Solo Visualización</span>
+                                <span id="pos-order-timer">00:00</span>
+                            </div>
+                            <div class="pos-header-divider"></div>
+                            <div class="pos-header-row bottom">
+                                <div class="pos-header-info">
+                                    <div class="pos-mojo-badge has-mozos" onclick="openMozoModal()">
+                                        <i class="fas fa-user"></i>
+                                        <span id="pos-mojo-name">Sin asignar</span>
+                                        <i class="fas fa-caret-down"></i>
+                                    </div>
+                                    <input type="hidden" id="pos-mojo-select" value="">
+                                    <span class="pos-comensales"><i class="fas fa-users"></i> <input type="number" id="pos-guests" value="1" style="width:50px;"></span>
+                                </div>
+                                <div class="pos-header-actions">
+                                    <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> Guardar</button>
+                                    <button class="btn-state-mesa btn-reservar" id="btn-reservar-mesa" onclick="reservarMesa()" title="Reservar mesa"><i class="fas fa-calendar-check"></i> Reservar</button>
+                                    <button class="btn-state-mesa btn-cancelar" id="btn-borrar-comanda" onclick="borrarComanda()" title="Borrar Comanda"><i class="fas fa-trash-alt"></i> Borrar Comanda</button>
+                                    <button class="btn-state-mesa btn-liberar" id="btn-liberar-mesa" onclick="liberarMesa()" title="Liberar mesa"><i class="fas fa-door-open"></i> Liberar</button>
+                                    <button class="btn-state-mesa btn-reabrir" id="btn-reabrir-pedido" onclick="reabrirPedido()" title="Reabrir pedido" style="display:none;"><i class="fas fa-undo-alt"></i> Reabrir Pedido</button>
+                                </div>
+                            </div>
+                        </header>
+
+                        <div id="pos-categories-container" class="pos-categories">
+                            <!-- Categorías cargadas dinámicamente -->
+                        </div>
+
+                        <div id="pos-search-container" class="pos-search-container">
+                            <input type="text" id="pos-product-search" placeholder="Buscar producto..." oninput="searchPOSProducts()">
+                        </div>
+
+                        <div id="pos-products-grid" class="pos-products-grid">
+                            <!-- Productos cargados dinámicamente -->
+                        </div>
+                    </div>
+
+                    <div class="pos-order-sidebar">
+                        <div class="pos-sidebar-header">
+                            <h3>Detalle del Pedido</h3>
+                            <button class="btn-clear" onclick="clearCurrentOrder()"><i class="fas fa-trash"></i> Limpiar</button>
+                        </div>
+
+                        <div id="pos-cart-items" class="pos-cart-items">
+                            <!-- Ítems del carrito -->
+                        </div>
+
+                        <div class="pos-cart-totals">
+                            <div class="total-row"><span>Subtotal:</span> <span id="pos-subtotal">S/ 0.00</span></div>
+                            <div class="total-row"><span>IGV (18%):</span> <span id="pos-igv">S/ 0.00</span></div>
+                            <div class="total-row grand-total"><span>Total:</span> <span id="pos-total">S/ 0.00</span></div>
+                        </div>
+
+                        <div class="pos-order-actions">
+                            <div class="action-buttons-grid">
+                                <button class="pos-action-btn" onclick="applyCourtesy()"><i class="fas fa-gift"></i> Cortesía</button>
+                                <button class="pos-action-btn" onclick="applyDiscount()"><i class="fas fa-percentage"></i> Descuento</button>
+                            </div>
+                            <button class="btn-pay-now" onclick="processPOSPayment()">
+                                <i class="fas fa-file-invoice"></i> GENERAR PREVENTA
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MODAL MOZO -->
+            <div id="modal-mozo" class="modal">
+                <div class="modal-content" style="max-width:400px;">
+                    <span class="close" onclick="closeModal('modal-mozo')">&times;</span>
+                    <h2>Seleccionar Mozo</h2>
+                    <div id="mozo-list" class="mozo-list-container">
+                        <!-- Lista de mozos cargada dinámicamente -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- MODAL USUARIO (ELIMINADO - Ahora usa tabla Usuarios externa) -->
+
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
