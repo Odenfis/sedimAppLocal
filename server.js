@@ -603,12 +603,19 @@ app.post('/api/pos/ticket', isAuthenticated, async (req, res) => {
 });
 
 app.listen(PORT, async () => {
-    try {
-        await runMigrations();
-        console.log(`Server running on port ${PORT}`);
-    } catch (err) {
-        console.error('Server started but migrations failed:', err);
+    const MAX_REINTENTOS = 12;
+    for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
+        try {
+            await runMigrations();
+            console.log(`Server running on port ${PORT}`);
+            return;
+        } catch (err) {
+            console.error(`[${intento}/${MAX_REINTENTOS}] DB no disponible: ${err.message}. Reintentando en 5s...`);
+            if (intento < MAX_REINTENTOS) await new Promise(r => setTimeout(r, 5000));
+        }
     }
+    console.error('No se pudo conectar a la base de datos.');
+    console.error('Verifique: DB_SERVER=host.docker.internal en el .env y que SQL Server acepte TCP en el puerto 1433.');
 });
 
 function desencriptarPassword(hash) {

@@ -50,8 +50,8 @@ async function runMigrations() {
         }
 
     } catch (err) {
-        console.error('❌ Migration failed:', err);
-        process.exit(1);
+        console.error('❌ No se pudo aplicar migraciones:', err.message);
+        throw err;
     }
 }
 

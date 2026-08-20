@@ -15,12 +15,7 @@ const config = {
 
 
 async function getConnection() {
-    try {
-        const pool = await sql.connect(config);
-        return pool;
-    } catch (err) {
-        console.error('Error conectando a Azure SQL', err);
-    }
+    return sql.connect(config);
 }
 
 module.exports = { getConnection, sql };
