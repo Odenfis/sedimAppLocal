@@ -14,6 +14,18 @@ let prodPage = 1;
 let GLOBAL_IGV_PCT = 18;
 let GLOBAL_IGVV_PCT = 10;
 
+function redondear2(x) {
+    return Math.round((x + Number.EPSILON) * 100) / 100;
+}
+
+function factorIgv(afecto) {
+    return (afecto === 1 || afecto === true) ? (1 + GLOBAL_IGVV_PCT / 100) : 1;
+}
+
+function precioFinalUnitario(precioBase, afecto) {
+    return redondear2(precioBase * factorIgv(afecto));
+}
+
 //variables reporte cargos caja
 let reportCargosPage = 1;
 let reportCargosFilters = {};
@@ -257,6 +269,10 @@ let posCurrentCategory = null;
 let posSearchTerm = '';
 let posIsReadOnly = false;
 let posCurrentTurnoLabel = null;
+let posAutoSaveTimer = null;
+let posAutoSaveInFlight = false;
+let posAutoSavePending = false;
+const POS_AUTOSAVE_DEBOUNCE_MS = 700;
 
 function getTurnoValue(empresa, turnoLabel) {
     const map = {
@@ -280,8 +296,19 @@ function onEmpresaOrTurnoChange() {
     loadPOSTables();
 }
 
+async function loadPOSConfig() {
+    try {
+        const res = await fetch('/api/pos/config');
+        const config = await res.json();
+        if (config.igvv !== undefined) GLOBAL_IGVV_PCT = config.igvv;
+    } catch (e) {
+        console.error('Error cargando configuración POS:', e);
+    }
+}
+
 async function loadPOSTables() {
     console.log("POS: Iniciando loadPOSTables...");
+    await loadPOSConfig();
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
     const grid = document.getElementById('pos-tables-grid');
@@ -442,13 +469,20 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 }
                 
                 if (data.items && data.items.length > 0) {
-                    posCart = data.items.map(item => ({
-                        codPro: item.Codpro,
-                        nombre: item.Descripcion,
-                        precio: parseFloat(item.Precio),
-                        cantidad: parseFloat(item.Cantidad),
-                        descuento: 0
-                    }));
+                    posCart = data.items.map(item => {
+                        const esAfecto = item.Afecto === 1 || item.Afecto === true;
+                        const precioBase = parseFloat(item.Precio);
+                        const precioFinal = redondear2(precioBase * factorIgv(esAfecto));
+                        return {
+                            codPro: item.Codpro,
+                            nombre: item.Descripcion,
+                            precio: precioFinal,
+                            precioBase: precioBase,
+                            cantidad: parseFloat(item.Cantidad),
+                            descuento: 0,
+                            afecto: esAfecto ? 1 : 0
+                        };
+                    });
                     updateCartUI();
                 }
 
@@ -490,8 +524,6 @@ function updatePOSViewMode() {
     const searchBox = document.getElementById('pos-search-container');
     const productsGrid = document.getElementById('pos-products-grid');
     const sidebarHeader = document.querySelector('.pos-sidebar-header');
-    const cortesiaBtn = document.querySelector('.action-buttons-grid .pos-action-btn:first-child');
-    const descuentoBtn = document.querySelector('.action-buttons-grid .pos-action-btn:last-child');
     const badge = document.getElementById('pos-preventa-badge');
     const reabrirBtn = document.getElementById('btn-reabrir-pedido');
 
@@ -512,8 +544,6 @@ function updatePOSViewMode() {
         if (categories) categories.style.display = 'none';
         if (searchBox) searchBox.style.display = 'none';
         if (productsGrid) productsGrid.style.display = 'none';
-        if (cortesiaBtn) cortesiaBtn.disabled = true;
-        if (descuentoBtn) descuentoBtn.disabled = true;
         if (sidebarHeader) {
             const clearBtn = sidebarHeader.querySelector('.btn-clear');
             if (clearBtn) clearBtn.disabled = true;
@@ -537,8 +567,6 @@ function updatePOSViewMode() {
         if (categories) categories.style.display = '';
         if (searchBox) searchBox.style.display = '';
         if (productsGrid) productsGrid.style.display = '';
-        if (cortesiaBtn) cortesiaBtn.disabled = false;
-        if (descuentoBtn) descuentoBtn.disabled = false;
         if (sidebarHeader) {
             const clearBtn = sidebarHeader.querySelector('.btn-clear');
             if (clearBtn) clearBtn.disabled = false;
@@ -620,6 +648,94 @@ function updateStateButtons() {
     posCurrentTableEmpresa = empresa;
 }
 
+function buildPosPedidoPayload() {
+    const mozoInput = document.getElementById('pos-mojo-select');
+    const mozo = mozoInput ? mozoInput.value : 1;
+
+    return {
+        mesa: posCurrentTable,
+        empresa: posCurrentTableEmpresa,
+        turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
+        guests: document.getElementById('pos-guests').value,
+        mozo: mozo,
+        items: posCart.map(i => ({
+            codPro: i.codPro,
+            nombre: i.nombre,
+            cantidad: i.cantidad,
+            precio: i.precioBase != null ? i.precioBase : i.precio,
+            importe: redondear2(i.precio * i.cantidad),
+            afecto: i.afecto
+        })),
+        nroTicket: posCurrentNroTicket
+    };
+}
+
+async function savePedido(payload) {
+    const res = await fetch('/api/pos/pedido', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText);
+    }
+    return await res.json();
+}
+
+async function markMesaOcupada() {
+    await fetch(`/api/pos/tables/${posCurrentTable}/estado`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ estado: 2, empresa: posCurrentTableEmpresa })
+    });
+}
+
+function onPedidoSaved() {
+    document.getElementById('btn-guardar-mesa').classList.add('active-state');
+    document.getElementById('btn-reservar-mesa').classList.remove('active-state');
+    loadPOSTables();
+}
+
+function isPOSOrderViewVisible() {
+    const view = document.getElementById('view-pos-order');
+    return view && view.style.display !== 'none';
+}
+
+function scheduleAutoSave() {
+    if (posIsReadOnly) return;
+    clearTimeout(posAutoSaveTimer);
+    posAutoSaveTimer = setTimeout(async () => {
+        await runAutoSave();
+    }, POS_AUTOSAVE_DEBOUNCE_MS);
+}
+
+async function runAutoSave() {
+    if (posIsReadOnly) return;
+    if (posCart.length === 0) return;
+    if (!isPOSOrderViewVisible()) return;
+    if (posAutoSaveInFlight) {
+        posAutoSavePending = true;
+        return;
+    }
+    posAutoSaveInFlight = true;
+    try {
+        const result = await savePedido(buildPosPedidoPayload());
+        posCurrentNroTicket = result.nroTicket;
+        await markMesaOcupada();
+        onPedidoSaved();
+    } catch (e) {
+        console.error('Error en guardado automático del pedido:', e);
+    } finally {
+        posAutoSaveInFlight = false;
+        const wasPending = posAutoSavePending;
+        posAutoSavePending = false;
+        if (wasPending && posCart.length > 0 && !posIsReadOnly && isPOSOrderViewVisible()) {
+            runAutoSave();
+        }
+    }
+}
+
 async function guardarMesa() {
     if (posIsReadOnly) return;
     if (!posCurrentTable || !posCurrentTableEmpresa) {
@@ -632,54 +748,18 @@ async function guardarMesa() {
         return;
     }
     
+    clearTimeout(posAutoSaveTimer);
+    
     try {
-        const mozoInput = document.getElementById('pos-mojo-select');
-        const mozo = mozoInput ? mozoInput.value : 1;
-        
-        const data = {
-            mesa: posCurrentTable,
-            empresa: posCurrentTableEmpresa,
-            turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
-            guests: document.getElementById('pos-guests').value,
-            mozo: mozo,
-            items: posCart.map(i => ({
-                codPro: i.codPro,
-                nombre: i.nombre,
-                cantidad: i.cantidad,
-                precio: i.precio,
-                importe: i.precio * i.cantidad
-            })),
-            nroTicket: posCurrentNroTicket
-        };
-        
-        const res = await fetch('/api/pos/pedido', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        
-        if (res.ok) {
-            const result = await res.json();
-            posCurrentNroTicket = result.nroTicket;
-            
-            await fetch(`/api/pos/tables/${posCurrentTable}/estado`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ estado: 2, empresa: posCurrentTableEmpresa })
-            });
-            
-            alert('Pedido guardado - Mesa OCUPADA');
-            document.getElementById('btn-guardar-mesa').classList.add('active-state');
-            document.getElementById('btn-reservar-mesa').classList.remove('active-state');
-            loadPOSTables();
-        } else {
-            const errorText = await res.text();
-            console.error('Error al guardar pedido:', errorText);
-            alert('Error al guardar pedido: ' + errorText);
-        }
+        const result = await savePedido(buildPosPedidoPayload());
+        posCurrentNroTicket = result.nroTicket;
+        await markMesaOcupada();
+        posAutoSavePending = false;
+        onPedidoSaved();
+        alert('Pedido guardado - Mesa OCUPADA');
     } catch (e) {
-        console.error('Error de conexión:', e);
-        alert('Error de conexión: ' + e.message);
+        console.error('Error al guardar pedido:', e);
+        alert('Error al guardar pedido: ' + e.message);
     }
 }
 
@@ -913,11 +993,13 @@ function renderPOSProducts(products) {
             const color = lineColors[p.Linea] || '#ccc';
             
             // Aseguramos que el precio sea un número válido
-            let priceVal = p.PventaMa;
-            if (typeof priceVal !== 'number') {
-                priceVal = parseFloat(priceVal) || 0;
+            let precioBase = p.PventaMa;
+            if (typeof precioBase !== 'number') {
+                precioBase = parseFloat(precioBase) || 0;
             }
-            const priceFormatted = priceVal.toFixed(2);
+            const esAfecto = p.Afecto === 1 || p.Afecto === true;
+            const precioConIgv = redondear2(precioBase * factorIgv(esAfecto));
+            const priceFormatted = precioConIgv.toFixed(2);
 
             card.innerHTML = `
                 <div class="pos-product-accent" style="background-color: ${color}"></div>
@@ -925,6 +1007,7 @@ function renderPOSProducts(products) {
                     <div class="pos-product-cat">${p.Linea || 'General'}</div>
                     <div class="pos-product-name">${p.Nombre || 'Producto sin nombre'}</div>
                     <div class="pos-product-price">S/ ${priceFormatted}</div>
+                    ${esAfecto ? '<div class="pos-product-igv">(inc. IGV)</div>' : ''}
                 </div>
             `;
             card.onclick = () => addToCart(p);
@@ -970,18 +1053,23 @@ function searchPOSProducts() {
 
 function addToCart(product) {
     const existing = posCart.find(item => item.codPro === product.CodPro);
+    const precioBase = typeof product.PventaMa === 'number' ? product.PventaMa : (parseFloat(product.PventaMa) || 0);
+    const esAfecto = product.Afecto === 1 || product.Afecto === true;
     if (existing) {
         existing.cantidad++;
     } else {
         posCart.push({
             codPro: product.CodPro,
             nombre: product.Nombre,
-            precio: product.PventaMa,
+            precio: precioFinalUnitario(precioBase, esAfecto),
+            precioBase: precioBase,
             cantidad: 1,
-            descuento: 0
+            descuento: 0,
+            afecto: esAfecto
         });
     }
     updateCartUI();
+    scheduleAutoSave();
 }
 
 function updateCartUI() {
@@ -990,10 +1078,18 @@ function updateCartUI() {
     container.innerHTML = '';
     
     let subtotal = 0;
+    let totalIgv = 0;
+    let total = 0;
     
     posCart.forEach((item, index) => {
-        const importe = item.precio * item.cantidad;
-        subtotal += importe;
+        const esAfecto = item.afecto === 1 || item.afecto === true;
+        const precioBaseUnit = item.precioBase != null ? item.precioBase : (item.precio / factorIgv(esAfecto));
+        const importe = redondear2(item.precio * item.cantidad);
+        const subtotalLinea = redondear2(precioBaseUnit * item.cantidad);
+        const igvLinea = importe - subtotalLinea;
+        subtotal += subtotalLinea;
+        totalIgv += igvLinea;
+        total += importe;
         
         const div = document.createElement('div');
         div.className = `cart-item ${posIsReadOnly ? 'read-only' : ''}`;
@@ -1024,25 +1120,27 @@ function updateCartUI() {
         container.appendChild(div);
     });
     
-    const igv = subtotal * 0.18;
-    const total = subtotal + igv;
-    
     document.getElementById('pos-subtotal').innerText = `S/ ${subtotal.toFixed(2)}`;
-    document.getElementById('pos-igv').innerText = `S/ ${igv.toFixed(2)}`;
+    document.getElementById('pos-igv').innerText = `S/ ${totalIgv.toFixed(2)}`;
     document.getElementById('pos-total').innerText = `S/ ${total.toFixed(2)}`;
 }
 
 function changeQty(index, delta) {
     if (posIsReadOnly) return;
     posCart[index].cantidad += delta;
-    if (posCart[index].cantidad < 1) removeFromCart(index);
-    else updateCartUI();
+    if (posCart[index].cantidad < 1) {
+        removeFromCart(index);
+    } else {
+        updateCartUI();
+        scheduleAutoSave();
+    }
 }
 
 function removeFromCart(index) {
     if (posIsReadOnly) return;
     posCart.splice(index, 1);
     updateCartUI();
+    scheduleAutoSave();
 }
 
 function clearCurrentOrder() {
@@ -1050,6 +1148,7 @@ function clearCurrentOrder() {
     if (confirm("¿Limpiar todo el pedido?")) {
         posCart = [];
         updateCartUI();
+        scheduleAutoSave();
     }
 }
 
@@ -1088,8 +1187,9 @@ async function processPOSPayment() {
                     codPro: i.codPro,
                     nombre: i.nombre,
                     cantidad: i.cantidad,
-                    precio: i.precio,
-                    importe: i.precio * i.cantidad
+                    precio: i.precioBase != null ? i.precioBase : i.precio,
+                    importe: redondear2(i.precio * i.cantidad),
+                    afecto: i.afecto
                 })),
                 total: total,
                 igv: igv,
@@ -1152,20 +1252,69 @@ async function reabrirPedido() {
     }
 }
 
-function applyCourtesy() {
-    alert("Función de Cortesía en desarrollo");
-}
-
-function applyDiscount() {
-    alert("Función de Descuento en desarrollo");
-}
-
 // Modificar showView para cargar POS
 const originalShowView = showView;
 showView = function(viewName) {
     originalShowView(viewName);
     if (viewName === 'pos-tables') loadPOSTables();
 };
+
+// ==========================================
+//  REAL-TIME: SERVER-SENT EVENTS
+// ==========================================
+let sseConnection = null;
+
+function connectSSE() {
+    if (sseConnection) {
+        sseConnection.close();
+    }
+
+    sseConnection = new EventSource('/api/events');
+
+    sseConnection.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleSSEEvent(data);
+        } catch (e) {
+            console.error('SSE: Error parseando evento:', e);
+        }
+    };
+
+    sseConnection.onerror = () => {
+        console.warn('SSE: Conexión perdida. Reconectando en 3s...');
+        sseConnection.close();
+        sseConnection = null;
+        setTimeout(connectSSE, 3000);
+    };
+}
+
+function handleSSEEvent(data) {
+    console.log('SSE: Evento recibido:', data);
+
+    if (data.type === 'mesa_updated') {
+        const empresaSelect = document.getElementById('pos-empresa-select');
+        const empresaActual = empresaSelect ? empresaSelect.value : null;
+
+        const tableView = document.getElementById('view-pos-tables');
+        const isTableView = tableView && tableView.style.display !== 'none';
+
+        if (isTableView && empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
+            console.log('SSE: Actualizando mapa de mesas...');
+            loadPOSTables();
+        }
+
+        if (posCurrentTable && parseInt(data.numero) === parseInt(posCurrentTable) &&
+            empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
+            const orderView = document.getElementById('view-pos-order');
+            if (orderView && orderView.style.display !== 'none') {
+                console.log('SSE: Mesa asignada cambió, recargando pedido...');
+                openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+            }
+        }
+    }
+}
+
+connectSSE();
 function toggleTheme() {
     const current = document.documentElement.getAttribute('data-theme') || 'light';
     const target = current === 'light' ? 'dark' : 'light';
