@@ -475,7 +475,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                         const precioFinal = redondear2(precioBase * factorIgv(esAfecto));
                         return {
                             codPro: item.Codpro,
-                            nombre: item.Descripcion,
+                            nombre: (item.Descripcion || '').trim(),
                             precio: precioFinal,
                             precioBase: precioBase,
                             cantidad: parseFloat(item.Cantidad),

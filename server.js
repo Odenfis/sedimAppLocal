@@ -223,7 +223,7 @@ app.get('/api/pos/pedido', isAuthenticated, async (req, res) => {
 
         const detResult = await pool.request()
             .input('nroTicket', sql.VarChar, ticket.NroTicket)
-            .query(`SELECT t.Codpro, t.Descripcion, t.Cantidad, t.Precio, t.Descuento, t.Igv, t.Importe, p.Afecto, p.PventaMa
+            .query(`SELECT t.Codpro, RTRIM(t.Descripcion) AS Descripcion, t.Cantidad, t.Precio, t.Descuento, t.Importe, p.Afecto, p.PventaMa
                     FROM Ticket_d t
                     LEFT JOIN Productos p ON t.Codpro = p.CodPro
                     WHERE t.NroTicket = @nroTicket`);
@@ -353,9 +353,7 @@ app.post('/api/pos/pedido', isAuthenticated, async (req, res) => {
                 const esAfecto = item.afecto === 1 || item.afecto === true;
                 const factor = esAfecto ? (1 + igvvPct / 100) : 1;
                 const precioUnitario = redondear2(item.precio * factor);
-                const subtotalLinea = redondear2(item.precio * item.cantidad);
                 const importe = redondear2(precioUnitario * item.cantidad);
-                const igvLinea = redondear2(importe - subtotalLinea);
 
                 totalPedido += importe;
 
@@ -365,12 +363,11 @@ app.post('/api/pos/pedido', isAuthenticated, async (req, res) => {
                 itemRequest.input('desc', sql.VarChar, item.nombre);
                 itemRequest.input('cant', sql.Decimal(9, 2), item.cantidad);
                 itemRequest.input('precio', sql.Money, item.precio);
-                itemRequest.input('igv', sql.Money, igvLinea);
                 itemRequest.input('importe', sql.Money, importe);
 
                 await itemRequest.query(`
-                    INSERT INTO Ticket_d (NroTicket, Codpro, Descripcion, Cantidad, Precio, Descuento, Igv, Importe) 
-                    VALUES (@nro, @codpro, @desc, @cant, @precio, 0, @igv, @importe)
+                    INSERT INTO Ticket_d (NroTicket, Codpro, Descripcion, Cantidad, Precio, Descuento, Importe) 
+                    VALUES (@nro, @codpro, @desc, @cant, @precio, 0, @importe)
                 `);
             }
 
@@ -554,16 +551,13 @@ app.post('/api/pos/ticket', isAuthenticated, async (req, res) => {
                 const esAfecto = item.afecto === 1 || item.afecto === true;
                 const factor = esAfecto ? (1 + igvvPct / 100) : 1;
                 const precioUnitario = redondear2(item.precio * factor);
-                const subtotalLinea = redondear2(item.precio * item.cantidad);
                 const importe = redondear2(precioUnitario * item.cantidad);
-                const igvLinea = redondear2(importe - subtotalLinea);
                 return {
                     cp: item.codPro.trim(),
                     codPro: item.codPro,
                     nombre: item.nombre,
                     cantidad: item.cantidad,
                     precioBase: item.precio,
-                    igvLinea,
                     importe
                 };
             });
@@ -583,10 +577,9 @@ app.post('/api/pos/ticket', isAuthenticated, async (req, res) => {
                     .input(`nom_${l.cp}`, sql.VarChar, l.nombre)
                     .input(`cant_${l.cp}`, sql.Decimal(9, 2), l.cantidad)
                     .input(`pre_${l.cp}`, sql.Money, l.precioBase)
-                    .input(`igv_${l.cp}`, sql.Money, l.igvLinea)
                     .input(`imp_${l.cp}`, sql.Money, l.importe)
-                    .query(`INSERT INTO Ticket_d (NroTicket, Codpro, Descripcion, Cantidad, Precio, Descuento, Igv, Importe) 
-                            VALUES (@nro, @cod_${l.cp}, @nom_${l.cp}, @cant_${l.cp}, @pre_${l.cp}, 0, @igv_${l.cp}, @imp_${l.cp})`);
+                    .query(`INSERT INTO Ticket_d (NroTicket, Codpro, Descripcion, Cantidad, Precio, Descuento, Importe) 
+                            VALUES (@nro, @cod_${l.cp}, @nom_${l.cp}, @cant_${l.cp}, @pre_${l.cp}, 0, @imp_${l.cp})`);
             }
 
             await transaction.commit();

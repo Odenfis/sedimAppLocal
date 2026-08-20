@@ -234,7 +234,14 @@ function encriptarPassword(password) {
 sedimApp_local/
 ├── server.js              # Backend Express
 ├── db.js                  # Configuración SQL Server
+├── migrate.js             # Migraciones automáticas de esquema
+├── Dockerfile             # Imagen Node 20 slim
+├── docker-compose.yml     # Orquestación (extra_hosts → host DB)
+├── actualizar.bat         # Actualización automática del cliente
+├── .env.example           # Plantilla de configuración
 ├── ROADMAP.md             # Este archivo
+├── migrations/
+│   └── *.sql              # Migraciones numeradas
 └── public/
     ├── login.html         # Página de login
     ├── dashboard.html     # Panel principal
@@ -573,6 +580,112 @@ Al agregar o quitar productos de un pedido, guardar automáticamente en BD con l
 
 ---
 
+## Fase 16: Actualización Automática y Fix de Conexión en Docker (Completada Agosto 2026)
+
+### 16.1 `.env` fuera del control de versiones
+**Problema**: `.env` estaba versionado en git (con credenciales reales: DB_USER, DB_PASS, SESSION_SECRET), lo que:
+- Exponía credenciales en GitHub.
+- Rompía el flujo de actualización del cliente: al configurar su propio `.env` local, `git pull` fallaba o sobrescribía sus datos.
+
+**Fix**:
+- `.gitignore` ahora ignora `node_modules`, `.env` y `npm-debug.log`.
+- `git rm --cached .env` → el archivo deja de trackearse (se mantiene solo localmente en cada máquina).
+- **Recomendación**: rotar `DB_PASS` y `SESSION_SECRET` que quedaron publicados en commits anteriores.
+
+### 16.2 `actualizar.bat` — Actualización automática (máquina del cliente)
+Script en la raíz del repo para que el cliente actualice con un doble clic:
+1. Verifica que exista `.env` (copiar desde `.env.example` si no).
+2. Verifica Git instalado.
+3. `git pull` — si falla, muestra aviso y **no modifica nada**.
+4. Verifica Docker Desktop corriendo.
+5. Reconstruye y arranca: `docker compose up -d --build` (detecta `docker-compose` v1 o `docker compose` v2).
+6. Muestra estado contenedores (`docker compose ps`).
+7. Lee `PORT` del `.env` y abre `http://localhost:PORT` en el navegador.
+
+Mensajes en ASCII puro para evitar problemas de codificación de la consola Windows.
+
+**Flujo de despliegue resultante**:
+```
+Dev: git push (código + migraciones /migrations/*.sql)
+Cliente: doble clic en actualizar.bat → git pull → rebuild → migraciones automáticas
+```
+
+### 16.3 Fix: conexión de Docker a SQL Server del cliente
+**Problema**: La app corría en contenedor pero `.env` usaba `DB_SERVER=localhost`. Dentro de Docker, `localhost` es el propio contenedor → `Failed to connect to localhost:1433 - Could not connect (sequence)`.
+
+**Fix**:
+- `docker-compose.yml`: agregado `extra_hosts: "host.docker.internal:host-gateway"` para que el contenedor pueda alcanzar la máquina anfitriona.
+- En el `.env` del cliente: `DB_SERVER=host.docker.internal` (la DB corre en la misma máquina Windows que el contenedor).
+
+**Requisitos en el Windows del cliente (además del `.env`)**:
+- **SQL Server Configuration Manager** → SQL Server Network Configuration → protocolos de la instancia → **TCP/IP = Enabled** → IPAll → `TCP Port = 1433` → reiniciar servicio SQL.
+- **Firewall de Windows**: regla de entrada permitiendo **TCP 1433** (necesaria porque el contenedor llega a la máquina por su IP virtual, no por `localhost`).
+- Si la DB estuviera en otro servidor del LAN, en `DB_SERVER` va la IP real y solo aplica el punto del firewall en ese servidor.
+
+### 16.4 Fix: crash-loop y mensajes de error oscuros
+**Problema**: Al fallar la conexión, el error real era opacado y el contenedor entraba en reinicio infinito:
+- `db.js` tragaba el error y devolvía `undefined` → `migrate.js:12` fallaba con `Cannot read properties of undefined (reading 'request')`.
+- `migrate.js` ejecutaba `process.exit(1)` → mataba la app → Docker la reiniciaba en bucle.
+
+**Fix**:
+- `db.js`: `getConnection()` ya no traga el error; ahora deja que el error de conexión real suba al llamador.
+- `migrate.js`: ya no hace `process.exit(1)`; lanza el error hacia arriba.
+- `server.js`: el arranque reintenta las migraciones hasta 12 veces (1 intervalo de 5s ≈ 1 minuto) y si no logra conectar muestra un mensaje de diagnóstico claro (`DB_SERVER` → `host.docker.internal`, TCP 1433). La app ya no "muere"; queda en espera con reintentos.
+
+### 16.5 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| `.gitignore` | Ignora `node_modules`, `.env`, `npm-debug.log` |
+| `.env` | Dejado de trackear (`git rm --cached`) |
+| `actualizar.bat` | **Nuevo**: actualización automática para el cliente |
+| `docker-compose.yml` | + `extra_hosts: host.docker.internal:host-gateway` |
+| `db.js` | `getConnection()` devuelve el error real (sin try/catch que lo oculte) |
+| `migrate.js` | Quitado `process.exit(1)`; lanza el error |
+| `server.js` | Startup con reintentos (12× 5s) y diagnóstico claro |
+
+---
+
+## Fase 17: Adecuación a la Nueva Estructura de Ticket_c / Ticket_d (Completada Agosto 2026)
+
+### 17.1 Contexto
+La estructura de las tablas de tickets fue recreada/manual en la BD del cliente. La app se adaptó para que **todos los procesos existentes sigan funcionando** (POS, guardado automático, preventa, reabrir, borrado, correlativos, SSE) manteniendo la nueva estructura.
+
+### 17.2 Estructura objetivo
+**Ticket_c** (`NroTicket` CHAR(20) PK, `NroMesa` INT, `Mozo` INT, `Total` MONEY, `Estado` INT DEFAULT 1, `Flete` MONEY DEFAULT 0, `Propina` MONEY DEFAULT 0, `Fecha` SMALLDATETIME DEFAULT -5h, `Turno` INT DEFAULT 1, `Usuario` NVARCHAR(50)) + índice no agrupado `nci_wi_Ticket_c (NroMesa, Estado)`.
+
+**Ticket_d** (`NroTicket` CHAR(20), `Codpro` CHAR(10), `Descripcion` CHAR(70), `Cantidad` DECIMAL(9,2), `Precio` MONEY, `Descuento` MONEY, `Importe` MONEY). **Sin columna `Igv`**.
+
+### 17.3 Decisiones de diseño
+- **IGV se mantiene**: el precio sigue mostrándose **afectado por IGV** (los productos `Afecto=1` aplican `Igvv` de la tabla `Valores`). `Importe` y `Ticket_c.Total` almacenan valores con IGV incluido, igual que la UI del POS.
+- La columna residual `Igv` de `Ticket_d` se **elimina**: el IGV del detalle se recalcula en cliente (factor `Igvv` + `Afecto`) a partir de `Precio` base y nunca dependió de la columna almacenada.
+- `Descripcion CHAR(70)` → se lee con `RTRIM()` para no arrastrar espacios de relleno al frontend (refuerzo con `.trim()` en `openPOSOrder`).
+- `data.pedido.Comensales` no existe en la nueva estructura; la pantalla usa `|| 1`. Comportamiento idéntico al anterior (la app nunca persistió comensales).
+
+### 17.4 Cambios en `server.js`
+| Punto | Cambio |
+|-------|--------|
+| `GET /api/pos/pedido` | `SELECT` sin `t.Igv` + `RTRIM(t.Descripcion) AS Descripcion` |
+| `POST /api/pos/pedido` | Quitados `subtotalLinea`, `igvLinea` e input `@igv`; `INSERT Ticket_d (..., Precio, Descuento, Importe)` (sin `Igv`) |
+| `POST /api/pos/ticket` | Quitado `igvLinea` del mapeo e input `@igv_...`; `INSERT Ticket_d` sin `Igv` |
+
+Se conservan: cálculo de `Importe`/`Total` con IGV, correlativos (`getNextTicketNumber`), transacciones, preventa, SSE y guardado automático.
+
+### 17.5 Migraciones
+- **Eliminada** `migrations/001_add_igv_to_ticket_d.sql` (agregaba la columna `Igv`, incompatible con la estructura objetivo).
+- **Nueva** `migrations/002_sync_ticket_structure.sql` (idempotente):
+  - `DROP COLUMN Igv` solo si existe (protege entornos que aún la tengan).
+  - `CREATE INDEX [nci_wi_Ticket_c]` solo si no existe.
+
+### 17.6 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| server.js | Remove `Igv` en SELECT + 2 INSERT de Ticket_d; `RTRIM` de `Descripcion` |
+| public/script.js | `.trim()` en `item.Descripcion` al cargar pedido |
+| migrations/001_add_igv_to_ticket_d.sql | **Eliminado** |
+| migrations/002_sync_ticket_structure.sql | **Nuevo**: sync de estructura (drop Igv + índice) |
+
+---
+
 ## Próximos Pasos (Pendientes)
 
 ### POS
@@ -595,4 +708,4 @@ Al agregar o quitar productos de un pedido, guardar automáticamente en BD con l
 
 ---
 
-*Última actualización: Agosto 2026 - v2.6*
+*Última actualización: Agosto 2026 - v2.8*
