@@ -671,10 +671,8 @@ La estructura de las tablas de tickets fue recreada/manual en la BD del cliente.
 Se conservan: cálculo de `Importe`/`Total` con IGV, correlativos (`getNextTicketNumber`), transacciones, preventa, SSE y guardado automático.
 
 ### 17.5 Migraciones
-- **Eliminada** `migrations/001_add_igv_to_ticket_d.sql` (agregaba la columna `Igv`, incompatible con la estructura objetivo).
-- **Nueva** `migrations/002_sync_ticket_structure.sql` (idempotente):
-  - `DROP COLUMN Igv` solo si existe (protege entornos que aún la tengan).
-  - `CREATE INDEX [nci_wi_Ticket_c]` solo si no existe.
+- **No aplica**: la estructura de `Ticket_c`/`Ticket_d` fue creada/ajustada manualmente en la BD del cliente (sin `Igv`). No se agregan migraciones para esto.
+- **Eliminada** `migrations/001_add_igv_to_ticket_d.sql` (agregaba la columna `Igv`). La carpeta `/migrations` queda vacía hasta el próximo cambio de esquema.
 
 ### 17.6 Archivos Modificados
 | Archivo | Cambios |
@@ -682,7 +680,6 @@ Se conservan: cálculo de `Importe`/`Total` con IGV, correlativos (`getNextTicke
 | server.js | Remove `Igv` en SELECT + 2 INSERT de Ticket_d; `RTRIM` de `Descripcion` |
 | public/script.js | `.trim()` en `item.Descripcion` al cargar pedido |
 | migrations/001_add_igv_to_ticket_d.sql | **Eliminado** |
-| migrations/002_sync_ticket_structure.sql | **Nuevo**: sync de estructura (drop Igv + índice) |
 
 ---
 
