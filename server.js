@@ -226,7 +226,8 @@ app.get('/api/pos/pedido', isAuthenticated, async (req, res) => {
             .query(`SELECT t.Codpro, RTRIM(t.Descripcion) AS Descripcion, t.Cantidad, t.Precio, t.Descuento, t.Importe, p.Afecto, p.PventaMa
                     FROM Ticket_d t
                     LEFT JOIN Productos p ON t.Codpro = p.CodPro
-                    WHERE t.NroTicket = @nroTicket`);
+                    WHERE t.NroTicket = @nroTicket
+                    ORDER BY t.Codpro`);
 
         res.json({ success: true, pedido: ticket, items: detResult.recordset });
     } catch (e) { res.status(500).send(e.message); }
@@ -330,7 +331,7 @@ app.post('/api/pos/pedido', isAuthenticated, async (req, res) => {
                 await request
                     .input('mozo', sql.Int, mozoCod)
                     .input('usuario', sql.NVarChar, usuarioSesion)
-                    .query(`UPDATE Ticket_c SET Fecha = GETDATE(), Mozo = @mozo, Usuario = @usuario WHERE NroTicket = @nro`);
+                    .query(`UPDATE Ticket_c SET Fecha = CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime), Mozo = @mozo, Usuario = @usuario WHERE NroTicket = @nro`);
                 await request.query(`DELETE FROM Ticket_d WHERE NroTicket = @nro`);
             } else {
                 const mozoCod = parseInt(mozo) || 1;
@@ -341,7 +342,7 @@ app.post('/api/pos/pedido', isAuthenticated, async (req, res) => {
                     .input('turno', sql.Int, turno || 1)
                     .input('usuario', sql.NVarChar, usuarioSesion)
                     .query(`INSERT INTO Ticket_c (NroTicket, NroMesa, Mozo, Total, Estado, Fecha, Turno, Usuario)
-                            VALUES (@nro, @mesa, @mozo, @total, 1, GETDATE(), @turno, @usuario)`);
+                            VALUES (@nro, @mesa, @mozo, @total, 1, CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime), @turno, @usuario)`);
             }
 
             let totalPedido = 0;
@@ -570,7 +571,7 @@ app.post('/api/pos/ticket', isAuthenticated, async (req, res) => {
                 .input('turno', sql.Int, turno || 1)
                 .input('user', sql.NVarChar, usuarioSesion)
                 .query(`INSERT INTO Ticket_c (NroTicket, NroMesa, Mozo, Total, Estado, Fecha, Turno, Usuario) 
-                        VALUES (@nro, @mesa, @mozo, @total, 2, GETDATE(), @turno, @user)`);
+                        VALUES (@nro, @mesa, @mozo, @total, 2, CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime), @turno, @user)`);
 
             for (const l of lineas) {
                 await request.input(`cod_${l.cp}`, sql.Char(10), l.codPro)

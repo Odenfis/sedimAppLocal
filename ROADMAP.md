@@ -299,6 +299,7 @@ sedimApp_local/
 - [x] **Actualización en tiempo real (SSE)** — estados de mesas se sincronizan entre dispositivos
 - [x] **Guardado automático de pedidos** — al agregar/quitar productos se guarda en BD con debounce de 700ms, mesa → Ocupada
 - [x] **Precios con IGV incluido** — tarjetas muestran el precio final (inc. IGV) y TOTAL = suma directa del detalle a 2 decimales
+- [x] **Adaptación Responsive móvil/tablet** — bottom-sheet de carrito en celular, botones solo-icono, breakpoints 480/1024px (Fase 19)
 
 ### Autenticación
 - [x] Login con tabla Usuarios
@@ -683,6 +684,163 @@ Se conservan: cálculo de `Importe`/`Total` con IGV, correlativos (`getNextTicke
 
 ---
 
+## Fase 18: Fix de Zona Horaria en Ticket_c.Fecha (Completada Agosto 2026)
+
+### 18.1 Problema
+Al registrar un ticket (Estado=1 Guardada o Estado=2 Preventa), la columna `Ticket_c.Fecha` se grababa con **+1 día** respecto a la fecha real. Ejemplo: el 20 de Agosto el ticket salía con fecha 21 de Agosto.
+
+### 18.2 Causa Raíz
+- Los INSERT/UPDATE de `Ticket_c` usaban `GETDATE()`, que devuelve la hora del **reloj del servidor SQL**.
+- El servidor SQL tiene su zona horaria configurada en **UTC**, adelantado +5h respecto a Perú (UTC-5). Verificado con `SYSDATETIMEOFFSET()` → `+00:00`. Cualquier ticket creado después de las ~7:00 pm hora Perú caía en el día siguiente.
+- Evidencia previa: la columna fue creada manualmente con `Fecha SMALLDATETIME DEFAULT -5h` (Fase 17.2), pero el código pisaba ese default insertando `GETDATE()` explícito.
+
+### 18.3 Solución
+Se reemplazó `GETDATE()` por una conversión de zona horaria nativa de SQL Server 2016+, independiente de la configuración del servidor:
+
+```sql
+CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime)
+```
+
+- `SYSUTCDATETIME()` → hora UTC confiable.
+- Primer `AT TIME ZONE 'UTC'` → **etiqueta** la hora como UTC (agrega offset +00:00).
+- Segundo `AT TIME ZONE 'SA Pacific Standard Time'` → **convierte** a hora de Lima usando la base de zonas horarias del registro de Windows (presente en cualquier Windows).
+- Ventaja: sigue siendo correcta aunque el cliente corrija la zona horaria/reloj de su Windows a futuro (a diferencia de un `DATEADD(HOUR,-5,...)` fijo, que restaría doble).
+
+> ⚠️ **Gotcha importante**: `SYSUTCDATETIME() AT TIME ZONE 'SA Pacific Standard Time'` (un solo paso) es **incorrecto**: al aplicarse sobre un `datetime2` sin offset, SQL Server lo *interpreta* como hora Lima sin convertir nada (devuelve la misma hora marcada -05:00). Se detectó y corrigió durante las pruebas contra la BD real. El doble paso es obligatorio: primero etiquetar como UTC, luego convertir.
+
+### 18.4 Puntos Corregidos (`server.js`)
+| Línea | Endpoint | Cambio |
+|-------|----------|--------|
+| 333 | POST `/api/pos/pedido` (UPDATE auto-guardado) | `SET Fecha = GETDATE()` → expresión con TZ Lima |
+| 344 | POST `/api/pos/pedido` (INSERT Estado=1) | ídem |
+| 573 | POST `/api/pos/ticket` (INSERT Estado=2) | ídem |
+
+### 18.5 Notas
+- Sin migraciones: no cambia el esquema; el `DEFAULT -5h` de la columna queda intacto (el código siempre escribe `Fecha` explícito).
+- Requisito: SQL Server 2016+ (cliente confirmado).
+- La lectura de `Fecha` en frontend solo se usa en reportes de otras tablas; no requirió cambios.
+- Verificado contra BD real: `GETDATE()` = `2026-08-21 01:54` vs expresión nueva = `2026-08-20 20:55` (hora real Perú en ese momento).
+
+### 18.6 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| server.js | 3 reemplazos de `GETDATE()` por `CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime)` |
+
+---
+
+## Fase 19: Adaptación Responsive Móvil y Tablet (Completada Agosto 2026)
+
+### 19.1 Objetivo
+Adaptar toda la web (login, mapa de mesas, toma de pedido, modales) a **celular** (referencia 440x956) y **tablet** (referencia 1024x1366) sin romper el funcionamiento desktop existente.
+
+### 19.2 Decisiones de Diseño
+- **Archivo nuevo `public/responsive.css`** cargado después de `style.css`: cero modificaciones al CSS existente, rollback trivial, todo el responsive en un solo lugar.
+- **Breakpoints**: Móvil `≤480px` · Tablet `481–1024px` · Desktop `>1024px` intacto.
+- **Carrito en móvil = bottom-sheet**: barra flotante inferior (`#pos-cart-fab`) con contador de ítems y total; al tocarla, el sidebar existente del pedido se desliza como panel sobre los productos (se reutiliza el mismo DOM, sin duplicar).
+- **Botones de acción en móvil = solo iconos**: textos envueltos en `<span class="btn-label">`, ocultos por CSS en móvil (los 5 botones caben en una fila).
+- El drawer del sidebar `≤1024px` ya existía y se mantiene (coincide con tablet portrait).
+
+### 19.3 Infraestructura Base
+| Mejora | Detalle |
+|--------|---------|
+| `viewport-fit=cover` | Soporte para notch/safe areas |
+| Unidades `dvh` | `.main-layout` y `.pos-order-layout` usan `100dvh` con fallback a `100vh` (barra de dirección de móviles) |
+| `-webkit-tap-highlight-color: transparent` | Feedback táctil limpio |
+| `touch-action: manipulation` | Elimina delay/double-tap-zoom en botones |
+| `@media (hover:none)` | Anula efectos `:hover` que se "pegan" en táctil |
+| Inputs ≥16px en táctil | Evita el zoom automático de iOS al enfocar (`@media (hover:none) and (pointer:coarse)`) |
+
+### 19.4 Mapa de Mesas (móvil)
+- Filtros apilados verticalmente; select empresa `flex:1`; toggle turno full-width
+- Leyenda en grilla 3×2 compacta (sin `margin-left:auto`)
+- Grilla de mesas `minmax(128px,1fr)` ≈ 3 tarjetas por fila en 440px
+
+### 19.5 Toma de Pedido
+**Tablet (481–1024)**: layout 2 columnas se mantiene, carrito 400→320px.
+
+**Móvil (≤480)**:
+- Header fila 1: back + título truncado (ellipsis) + timer; badge PREVENTA pasa a fila propia centrada
+- Header fila 2: mozo/comensales arriba, 5 botones solo-icono abajo distribuidos
+- Categorías con scroll-snap y scrollbar oculta; búsqueda a 16px
+- Productos en 2 columnas fijas con padding-bottom para no quedar tras el FAB
+- Bottom-sheet: `.pos-order-sidebar` → `position:fixed; translateY(105%)`; clase `.open` lo desliza (max-height 85dvh); backdrop `#cart-sheet-backdrop` cierra al tocar fuera
+
+### 19.6 Cambios en JS (`script.js`)
+| Función | Descripción |
+|---------|-------------|
+| `isMobileView()` | `window.innerWidth <= 480` |
+| `toggleCartSheet(force)` | Abre/cierra sheet + backdrop (solo en móvil) |
+| `closeCartSheet()` | Limpia clases (usado en resets) |
+| `updateCartFab()` | Contador de ítems + total en la barra flotante |
+
+Hooks: `updateCartUI()` → `updateCartFab()` · `openPOSOrder()` → `closeCartSheet()` · `processPOSPayment()` éxito → `closeCartSheet()` · handler `resize` >480px limpia estado del sheet. Sin cambios en APIs ni SSE.
+
+### 19.7 Modales y Táctil
+- Modal mozo: inline `max-width:400px` movido a CSS (`min(400px, 92vw)`), lista con scroll propio
+- Botones qty ± → 40×40px en pantallas táctiles
+- `env(safe-area-inset-bottom)` en FAB y sheet
+
+### 19.8 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| public/responsive.css | **Nuevo** (~440 líneas): base global + tablet + móvil + bottom-sheet |
+| public/dashboard.html | viewport-fit, link responsive.css, btn-label spans, FAB + backdrop, modal mozo sin inline style |
+| public/script.js | +4 funciones bottom-sheet, hooks en updateCartUI/openPOSOrder/processPOSPayment/resize |
+| public/style.css | **Intacto** |
+| server.js | **Intacto** |
+
+### 19.9 QA Realizado
+- Sintaxis JS verificada (`node --check`) y CSS balanceado
+- Servidor sirviendo dashboard.html / responsive.css / script.js (200 OK)
+- Verificación cruzada HTML↔CSS↔JS automatizada (FAB, backdrop, spans, hooks)
+- Pendiente en dispositivo real: probar 440x956 y 1024x1366 en DevTools + físicos
+
+---
+
+## Fase 20: Detalle de Pedido Estable (Sin Reordenamientos ni Parpadeo) (Completada Agosto 2026)
+
+### 20.1 Problema
+Al modificar la cantidad de un producto (+/-), los ítems del detalle del pedido **se reordenaban y parpadeaban constantemente**, especialmente molesto en móvil/tablet (misclicks, pérdida de scroll).
+
+### 20.2 Causa Raíz (cadena completa)
+```
++/- → scheduleAutoSave() (700ms) → runAutoSave() → POST /api/pos/pedido
+    → servidor: broadcastSSE('mesa_updated')
+      → el MISMO cliente recibe el eco → handleSSEEvent()
+        → openPOSOrder() recarga TODO el pedido desde la BD
+```
+1. **Eco propio (self-echo)**: el guardado propio disparaba la recarga de la propia vista (el SSE fue diseñado para ver cambios de otros dispositivos).
+2. **Sin `ORDER BY`**: `GET /api/pos/pedido` devolvía las filas en orden arbitrario de SQL Server → al recargar, los ítems cambiaban de posición.
+3. **Rebuild total del DOM**: `updateCartUI()` hacía `innerHTML = ''` en cada toque → parpadeo + scroll perdido.
+
+### 20.3 Soluciones
+
+#### Fix 1 — Supresión de eco propio (`script.js`)
+- Nueva variable `lastSelfSaveAt` + constante `SSE_SELF_ECHO_WINDOW_MS = 3000`
+- Se marca timestamp tras cada guardado exitoso (`runAutoSave`, `guardarMesa`)
+- `handleSSEEvent`: si el evento llega dentro de la ventana de 3s posterior al guardado propio → **no recarga** la vista de pedido (el estado local ya está sincronizado). El mapa de mesas sigue refrescándose.
+- Los eventos de **otros dispositivos** siguen recargando en vivo (funcionalidad SSE intacta).
+
+#### Fix 2 — Orden determinista desde BD (`server.js`)
+- `ORDER BY t.Codpro` agregado al SELECT del detalle en `GET /api/pos/pedido`.
+- Al reabrir tickets, los ítems siempre cargan en orden predecible por código.
+
+#### Fix 3 — Render in-place del carrito (`script.js`)
+- `updateCartUI()` reescrito con **conciliación por clave** `data-cod` (Codpro):
+  - Solo se actualiza el HTML de filas cuyo contenido cambió (`dataset.sig` como firma); las demás no se tocan.
+  - Filas nuevas se agregan / eliminadas se remueven; nunca se reconstruye la lista completa.
+  - `scrollTop` del contenedor se preserva entre renders.
+- Botones +/-/eliminar ahora usan **delegación de eventos** (`bindCartDelegation`) con `data-action` + `data-cod` en vez de `onclick` con índices → elimina el bug de índices obsoletos al eliminar ítems.
+- Al cargar pedido desde BD (`openPOSOrder`): filas duplicadas del mismo `Codpro` se **fusionan sumando cantidades** (garantiza claves únicas; seguro porque el POST reconstruye el detalle completo en cada guardado).
+
+### 20.4 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| public/script.js | `lastSelfSaveAt` + guardia SSE, `updateCartUI` con conciliación por data-cod + delegación de eventos, fusión de duplicados en `openPOSOrder` |
+| server.js | `ORDER BY t.Codpro` en SELECT del detalle |
+
+---
+
 ## Próximos Pasos (Pendientes)
 
 ### POS
@@ -705,4 +863,4 @@ Se conservan: cálculo de `Importe`/`Total` con IGV, correlativos (`getNextTicke
 
 ---
 
-*Última actualización: Agosto 2026 - v2.8*
+*Última actualización: Agosto 2026 - v3.1*

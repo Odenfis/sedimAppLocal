@@ -3,9 +3,10 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Panel de Control - Sedimcorp</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="responsive.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 
@@ -119,11 +120,11 @@
                                     <span class="pos-comensales"><i class="fas fa-users"></i> <input type="number" id="pos-guests" value="1" style="width:50px;"></span>
                                 </div>
                                 <div class="pos-header-actions">
-                                    <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> Guardar</button>
-                                    <button class="btn-state-mesa btn-reservar" id="btn-reservar-mesa" onclick="reservarMesa()" title="Reservar mesa"><i class="fas fa-calendar-check"></i> Reservar</button>
-                                    <button class="btn-state-mesa btn-cancelar" id="btn-borrar-comanda" onclick="borrarComanda()" title="Borrar Comanda"><i class="fas fa-trash-alt"></i> Borrar Comanda</button>
-                                    <button class="btn-state-mesa btn-liberar" id="btn-liberar-mesa" onclick="liberarMesa()" title="Liberar mesa"><i class="fas fa-door-open"></i> Liberar</button>
-                                    <button class="btn-state-mesa btn-reabrir" id="btn-reabrir-pedido" onclick="reabrirPedido()" title="Reabrir pedido" style="display:none;"><i class="fas fa-undo-alt"></i> Reabrir Pedido</button>
+                                    <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> <span class="btn-label">Guardar</span></button>
+                                    <button class="btn-state-mesa btn-reservar" id="btn-reservar-mesa" onclick="reservarMesa()" title="Reservar mesa"><i class="fas fa-calendar-check"></i> <span class="btn-label">Reservar</span></button>
+                                    <button class="btn-state-mesa btn-cancelar" id="btn-borrar-comanda" onclick="borrarComanda()" title="Borrar Comanda"><i class="fas fa-trash-alt"></i> <span class="btn-label">Borrar Comanda</span></button>
+                                    <button class="btn-state-mesa btn-liberar" id="btn-liberar-mesa" onclick="liberarMesa()" title="Liberar mesa"><i class="fas fa-door-open"></i> <span class="btn-label">Liberar</span></button>
+                                    <button class="btn-state-mesa btn-reabrir" id="btn-reabrir-pedido" onclick="reabrirPedido()" title="Reabrir pedido" style="display:none;"><i class="fas fa-undo-alt"></i> <span class="btn-label">Reabrir Pedido</span></button>
                                 </div>
                             </div>
                         </header>
@@ -166,9 +167,18 @@
                 </div>
             </div>
 
+            <!-- BARRA FLOTANTE CARRITO (solo móvil, ver responsive.css) -->
+            <button id="pos-cart-fab" class="pos-cart-fab" onclick="toggleCartSheet()" aria-label="Ver detalle del pedido">
+                <i class="fas fa-cart-shopping"></i>
+                <span id="pos-cart-fab-count" class="pos-cart-fab-count">0</span>
+                <span>Detalle</span>
+                <span id="pos-cart-fab-total" class="pos-cart-fab-total">S/ 0.00</span>
+            </button>
+            <div id="cart-sheet-backdrop" onclick="toggleCartSheet(false)"></div>
+
             <!-- MODAL MOZO -->
             <div id="modal-mozo" class="modal">
-                <div class="modal-content" style="max-width:400px;">
+                <div class="modal-content">
                     <span class="close" onclick="closeModal('modal-mozo')">&times;</span>
                     <h2>Seleccionar Mozo</h2>
                     <div id="mozo-list" class="mozo-list-container">

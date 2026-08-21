@@ -253,6 +253,7 @@ window.addEventListener('resize', () => {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('mobile-overlay').classList.remove('active');
     }
+    if (window.innerWidth > 480) closeCartSheet();
 });
 // ... existing code ...
 async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; }
@@ -273,6 +274,8 @@ let posAutoSaveTimer = null;
 let posAutoSaveInFlight = false;
 let posAutoSavePending = false;
 const POS_AUTOSAVE_DEBOUNCE_MS = 700;
+let lastSelfSaveAt = 0;
+const SSE_SELF_ECHO_WINDOW_MS = 3000;
 
 function getTurnoValue(empresa, turnoLabel) {
     const map = {
@@ -434,6 +437,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     posCurrentTableEmpresa = tableEmpresa;
     document.getElementById('pos-current-table').innerText = tableNum;
     showView('pos-order');
+    closeCartSheet();
     
     posCart = [];
     posCurrentNroTicket = null;
@@ -469,19 +473,25 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 }
                 
                 if (data.items && data.items.length > 0) {
-                    posCart = data.items.map(item => {
+                    posCart = [];
+                    data.items.forEach(item => {
                         const esAfecto = item.Afecto === 1 || item.Afecto === true;
                         const precioBase = parseFloat(item.Precio);
                         const precioFinal = redondear2(precioBase * factorIgv(esAfecto));
-                        return {
-                            codPro: item.Codpro,
-                            nombre: (item.Descripcion || '').trim(),
-                            precio: precioFinal,
-                            precioBase: precioBase,
-                            cantidad: parseFloat(item.Cantidad),
-                            descuento: 0,
-                            afecto: esAfecto ? 1 : 0
-                        };
+                        const existente = posCart.find(p => p.codPro === item.Codpro);
+                        if (existente) {
+                            existente.cantidad += parseFloat(item.Cantidad);
+                        } else {
+                            posCart.push({
+                                codPro: item.Codpro,
+                                nombre: (item.Descripcion || '').trim(),
+                                precio: precioFinal,
+                                precioBase: precioBase,
+                                cantidad: parseFloat(item.Cantidad),
+                                descuento: 0,
+                                afecto: esAfecto ? 1 : 0
+                            });
+                        }
                     });
                     updateCartUI();
                 }
@@ -722,6 +732,7 @@ async function runAutoSave() {
     try {
         const result = await savePedido(buildPosPedidoPayload());
         posCurrentNroTicket = result.nroTicket;
+        lastSelfSaveAt = Date.now();
         await markMesaOcupada();
         onPedidoSaved();
     } catch (e) {
@@ -753,6 +764,7 @@ async function guardarMesa() {
     try {
         const result = await savePedido(buildPosPedidoPayload());
         posCurrentNroTicket = result.nroTicket;
+        lastSelfSaveAt = Date.now();
         await markMesaOcupada();
         posAutoSavePending = false;
         onPedidoSaved();
@@ -1072,16 +1084,31 @@ function addToCart(product) {
     scheduleAutoSave();
 }
 
+let cartDelegationBound = false;
+function bindCartDelegation(container) {
+    if (cartDelegationBound) return;
+    cartDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn || posIsReadOnly) return;
+        const idx = posCart.findIndex(i => i.codPro === btn.dataset.cod);
+        if (idx === -1) return;
+        if (btn.dataset.action === 'inc') changeQty(idx, 1);
+        else if (btn.dataset.action === 'dec') changeQty(idx, -1);
+        else if (btn.dataset.action === 'del') removeFromCart(idx);
+    });
+}
+
 function updateCartUI() {
     const container = document.getElementById('pos-cart-items');
     if (!container) return;
-    container.innerHTML = '';
-    
+    bindCartDelegation(container);
+
     let subtotal = 0;
     let totalIgv = 0;
     let total = 0;
-    
-    posCart.forEach((item, index) => {
+
+    const filas = posCart.map((item) => {
         const esAfecto = item.afecto === 1 || item.afecto === true;
         const precioBaseUnit = item.precioBase != null ? item.precioBase : (item.precio / factorIgv(esAfecto));
         const importe = redondear2(item.precio * item.cantidad);
@@ -1090,39 +1117,60 @@ function updateCartUI() {
         subtotal += subtotalLinea;
         totalIgv += igvLinea;
         total += importe;
-        
-        const div = document.createElement('div');
-        div.className = `cart-item ${posIsReadOnly ? 'read-only' : ''}`;
-        
-        if (posIsReadOnly) {
-            div.innerHTML = `
-                <div class="cart-item-info">
-                    <span class="cart-item-name">${item.nombre}</span>
-                    <span class="cart-item-details">S/ ${item.precio.toFixed(2)} x ${item.cantidad}</span>
-                </div>
-                <div style="font-weight:bold; white-space:nowrap;">S/ ${importe.toFixed(2)}</div>
-            `;
-        } else {
-            div.innerHTML = `
-                <div class="cart-item-info">
-                    <span class="cart-item-name">${item.nombre}</span>
-                    <span class="cart-item-details">S/ ${item.precio.toFixed(2)} x ${item.cantidad}</span>
-                </div>
-                <div class="cart-item-controls">
-                    <button class="qty-btn" onclick="changeQty(${index}, -1)">-</button>
+
+        const controles = posIsReadOnly
+            ? `<div style="font-weight:bold; white-space:nowrap;">S/ ${importe.toFixed(2)}</div>`
+            : `<div class="cart-item-controls">
+                    <button type="button" class="qty-btn" data-action="dec" data-cod="${item.codPro}">-</button>
                     <span>${item.cantidad}</span>
-                    <button class="qty-btn" onclick="changeQty(${index}, 1)">+</button>
-                    <button class="qty-btn" style="color:red" onclick="removeFromCart(${index})"><i class="fas fa-times"></i></button>
+                    <button type="button" class="qty-btn" data-action="inc" data-cod="${item.codPro}">+</button>
+                    <button type="button" class="qty-btn" style="color:red" data-action="del" data-cod="${item.codPro}"><i class="fas fa-times"></i></button>
                 </div>
-                <div style="font-weight:bold; margin-left:10px;">S/ ${importe.toFixed(2)}</div>
-            `;
-        }
-        container.appendChild(div);
+                <div style="font-weight:bold; margin-left:10px;">S/ ${importe.toFixed(2)}</div>`;
+
+        return {
+            cod: item.codPro,
+            html: `
+                <div class="cart-item-info">
+                    <span class="cart-item-name">${item.nombre}</span>
+                    <span class="cart-item-details">S/ ${item.precio.toFixed(2)} x ${item.cantidad}</span>
+                </div>${controles}`
+        };
     });
-    
+
+    const claseEsperada = `cart-item ${posIsReadOnly ? 'read-only' : ''}`;
+    const previosPorCod = {};
+    container.querySelectorAll('.cart-item[data-cod]').forEach(el => {
+        previosPorCod[el.dataset.cod] = el;
+    });
+    const codsActuales = new Set(filas.map(f => f.cod));
+
+    const scrollPrevio = container.scrollTop;
+
+    filas.forEach(f => {
+        let el = previosPorCod[f.cod];
+        if (!el) {
+            el = document.createElement('div');
+            el.dataset.cod = f.cod;
+            el.innerHTML = f.html;
+            container.appendChild(el);
+        } else if (el.dataset.sig !== f.html) {
+            el.innerHTML = f.html;
+        }
+        if (el.className !== claseEsperada) el.className = claseEsperada;
+        el.dataset.sig = f.html;
+    });
+
+    Object.entries(previosPorCod).forEach(([cod, el]) => {
+        if (!codsActuales.has(cod)) el.remove();
+    });
+
+    container.scrollTop = scrollPrevio;
+
     document.getElementById('pos-subtotal').innerText = `S/ ${subtotal.toFixed(2)}`;
     document.getElementById('pos-igv').innerText = `S/ ${totalIgv.toFixed(2)}`;
     document.getElementById('pos-total').innerText = `S/ ${total.toFixed(2)}`;
+    updateCartFab();
 }
 
 function changeQty(index, delta) {
@@ -1221,6 +1269,7 @@ async function processPOSPayment() {
         posCurrentTable = null;
         posCurrentTableEmpresa = null;
         posCurrentNroTicket = null;
+        closeCartSheet();
         showView('pos-tables');
         loadPOSTables();
     } catch (e) {
@@ -1258,6 +1307,39 @@ showView = function(viewName) {
     originalShowView(viewName);
     if (viewName === 'pos-tables') loadPOSTables();
 };
+
+// ==========================================
+//  RESPONSIVE: BOTTOM-SHEET CARRITO (MÓVIL)
+// ==========================================
+function isMobileView() {
+    return window.innerWidth <= 480;
+}
+
+function toggleCartSheet(force) {
+    const sheet = document.querySelector('.pos-order-sidebar');
+    const backdrop = document.getElementById('cart-sheet-backdrop');
+    if (!sheet || !backdrop || !isMobileView()) return;
+    const abrir = force !== undefined ? force : !sheet.classList.contains('open');
+    sheet.classList.toggle('open', abrir);
+    backdrop.classList.toggle('active', abrir);
+}
+
+function closeCartSheet() {
+    const sheet = document.querySelector('.pos-order-sidebar');
+    const backdrop = document.getElementById('cart-sheet-backdrop');
+    if (sheet) sheet.classList.remove('open');
+    if (backdrop) backdrop.classList.remove('active');
+}
+
+function updateCartFab() {
+    const countEl = document.getElementById('pos-cart-fab-count');
+    const totalEl = document.getElementById('pos-cart-fab-total');
+    if (!countEl || !totalEl) return;
+    const count = posCart.reduce((acc, i) => acc + i.cantidad, 0);
+    const total = redondear2(posCart.reduce((acc, i) => acc + redondear2(i.precio * i.cantidad), 0));
+    countEl.innerText = count;
+    totalEl.innerText = `S/ ${total.toFixed(2)}`;
+}
 
 // ==========================================
 //  REAL-TIME: SERVER-SENT EVENTS
@@ -1307,6 +1389,10 @@ function handleSSEEvent(data) {
             empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
             const orderView = document.getElementById('view-pos-order');
             if (orderView && orderView.style.display !== 'none') {
+                if (Date.now() - lastSelfSaveAt < SSE_SELF_ECHO_WINDOW_MS) {
+                    console.log('SSE: Evento propio (eco del guardado), se omite recarga del pedido');
+                    return;
+                }
                 console.log('SSE: Mesa asignada cambió, recargando pedido...');
                 openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
             }
