@@ -33,6 +33,9 @@
                 <li onclick="showView('pos-tables')" class="active" data-module="pos">
                     <i class="fas fa-cash-register"></i> <span>POS de Ventas</span>
                 </li>
+                <li onclick="showView('cocina')" data-module="cocina">
+                    <i class="fas fa-fire-burner"></i> <span>Pedido Cocina</span>
+                </li>
             </ul>
 
             <div class="sidebar-footer">
@@ -175,6 +178,50 @@
                 <span id="pos-cart-fab-total" class="pos-cart-fab-total">S/ 0.00</span>
             </button>
             <div id="cart-sheet-backdrop" onclick="toggleCartSheet(false)"></div>
+
+            <!-- VISTA: PEDIDO COCINA (KDS - Fase 21) -->
+            <div id="view-cocina" class="view-section" style="display:none;">
+                <header>
+                    <h1>Pedido Cocina</h1>
+                </header>
+
+                <div class="cocina-filters">
+                    <div class="pos-empresa-group">
+                        <label>Empresa:</label>
+                        <select id="cocina-empresa-select" onchange="loadCocinaPedidos()">
+                            <option value="" disabled selected>-- Seleccione --</option>
+                            <option value="02">Cocineria</option>
+                            <option value="04">Mar Picante 1</option>
+                            <option value="06">Inversiones Abruzzo SAC</option>
+                        </select>
+                    </div>
+                    <button id="cocina-sound-btn" class="cocina-sound-btn" onclick="toggleCocinaSound()" title="Sonido al llegar comanda">
+                        <i class="fas fa-volume-xmark" id="cocina-sound-icon"></i>
+                    </button>
+                </div>
+
+                <div id="cocina-chips" class="cocina-chips">
+                    <button class="cocina-chip active" data-filtro="todas" onclick="setCocinaFiltro('todas')">Todas</button>
+                    <button class="cocina-chip" data-filtro="pendiente" onclick="setCocinaFiltro('pendiente')">Pendientes</button>
+                    <button class="cocina-chip" data-filtro="preparacion" onclick="setCocinaFiltro('preparacion')">En Preparación</button>
+                    <button class="cocina-chip" data-filtro="listo" onclick="setCocinaFiltro('listo')">Listas</button>
+                </div>
+
+                <div id="cocina-board" class="cocina-board">
+                    <div class="cocina-columna" data-col="pendiente">
+                        <div class="cocina-col-header cocina-col-pendiente">Pendiente <span class="cocina-col-count">0</span></div>
+                        <div class="cocina-col-body"></div>
+                    </div>
+                    <div class="cocina-columna" data-col="preparacion">
+                        <div class="cocina-col-header cocina-col-preparacion">En Preparación <span class="cocina-col-count">0</span></div>
+                        <div class="cocina-col-body"></div>
+                    </div>
+                    <div class="cocina-columna" data-col="listo">
+                        <div class="cocina-col-header cocina-col-listo">Listo <span class="cocina-col-count">0</span></div>
+                        <div class="cocina-col-body"></div>
+                    </div>
+                </div>
+            </div>
 
             <!-- MODAL MOZO -->
             <div id="modal-mozo" class="modal">

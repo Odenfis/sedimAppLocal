@@ -76,6 +76,10 @@ button,
         height: 40px;
         font-size: 1.05rem;
     }
+
+    .cocina-item {
+        padding: 12px;
+    }
 }
 
 /* =========================================
@@ -439,6 +443,35 @@ button,
 
     .mozo-list-container {
         max-height: 55dvh;
+    }
+
+    /* ---------- Pedido Cocina (KDS) ---------- */
+    .cocina-filters {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .cocina-filters .pos-empresa-group {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .cocina-chips {
+        display: flex;
+    }
+
+    .cocina-board {
+        display: block;
+    }
+
+    .cocina-columna {
+        margin-bottom: 12px;
+        min-height: auto;
+    }
+
+    /* Columnas vacías se ocultan en móvil (clase puesta por JS) */
+    .cocina-columna.sin-tarjetas {
+        display: none;
     }
 }
 

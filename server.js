@@ -283,6 +283,34 @@ async function getNextTicketNumber(request, empresa) {
     return nextValue;
 }
 
+// Fase 21: Sincroniza Cocina_pedidos con las líneas actuales de Ticket_d.
+// Se llama dentro de la transacción de guardado para que el progreso de
+// cocina sobreviva a los DELETE + INSERT que se hacen sobre Ticket_d.
+async function syncCocinaLineas(request, nroTicket) {
+    request.input('nro', sql.VarChar, nroTicket);
+
+    await request.query(`
+        DELETE c FROM Cocina_pedidos c
+        WHERE c.NroTicket = @nro
+          AND NOT EXISTS (
+              SELECT 1 FROM Ticket_d d
+              WHERE d.NroTicket = c.NroTicket AND d.Codpro = c.Codpro
+          )
+    `);
+
+    await request.query(`
+        INSERT INTO Cocina_pedidos (NroTicket, Codpro, Estado, Fecha_estado)
+        SELECT d.NroTicket, d.Codpro, 1,
+               CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime)
+        FROM Ticket_d d
+        WHERE d.NroTicket = @nro
+          AND NOT EXISTS (
+              SELECT 1 FROM Cocina_pedidos c
+              WHERE c.NroTicket = d.NroTicket AND c.Codpro = d.Codpro
+          )
+    `);
+}
+
 app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
     const { empresa } = req.query;
     try {
@@ -377,8 +405,11 @@ app.post('/api/pos/pedido', isAuthenticated, async (req, res) => {
                 .input('total', sql.Money, totalPedido)
                 .query(`UPDATE Ticket_c SET Total = @total WHERE NroTicket = @nro`);
 
+            await syncCocinaLineas(new sql.Request(transaction), nroTicketAsignado);
+
             await transaction.commit();
             broadcastSSE({ type: 'mesa_updated', numero: mesaNum, empresa: parseInt(empresa) });
+            broadcastSSE({ type: 'cocina_updated' });
             res.json({ success: true, nroTicket: nroTicketAsignado, message: 'Pedido guardado' });
         } catch (err) {
             try { await transaction.rollback(); } catch (rb) { /* ya abortada */ }
@@ -462,6 +493,7 @@ app.delete('/api/pos/comanda/:nro', isAuthenticated, async (req, res) => {
         const { NroMesa } = ticketResult.recordset[0];
 
         await request.query('DELETE FROM Ticket_d WHERE NroTicket = @nro');
+        await request.query('DELETE FROM Cocina_pedidos WHERE NroTicket = @nro');
         await request.query('DELETE FROM Ticket_c WHERE NroTicket = @nro');
 
         const mesaRequest = pool.request();
@@ -470,9 +502,133 @@ app.delete('/api/pos/comanda/:nro', isAuthenticated, async (req, res) => {
         await mesaRequest.query('UPDATE Mesas SET Estado = 1 WHERE Numero = @mesa AND Empresa = @empresa');
 
         broadcastSSE({ type: 'mesa_updated', numero: NroMesa, empresa: parseInt(empresa) });
+        broadcastSSE({ type: 'cocina_updated' });
         res.json({ success: true, message: 'Comanda eliminada' });
     } catch (e) {
         res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// ==========================================
+//  FASE 21: PEDIDO COCINA (KDS)
+// ==========================================
+app.get('/api/cocina/pedidos', isAuthenticated, async (req, res) => {
+    const { empresa } = req.query;
+    try {
+        const pool = await getConnection();
+        const empresaNum = parseInt(empresa);
+
+        const empresaNumeroMap = { 2: 1, 4: 2, 6: 5 };
+        const nNumero = empresaNumeroMap[empresaNum];
+        if (!nNumero) return res.json({ success: true, pedidos: [] });
+
+        const tabResult = await pool.request()
+            .input('codtabla', sql.Int, 23)
+            .input('numero', sql.Int, nNumero)
+            .query(`SELECT c_describe FROM Tablas WHERE n_codtabla = @codtabla AND n_numero = @numero`);
+        if (tabResult.recordset.length === 0) return res.json({ success: true, pedidos: [] });
+
+        const prefijo = tabResult.recordset[0].c_describe.split('-')[0];
+
+        const result = await pool.request()
+            .input('prefijo', sql.VarChar, prefijo)
+            .query(`
+                SELECT c.NroTicket, t.NroMesa, t.Fecha AS FechaTicket,
+                       DATEDIFF(MINUTE, t.Fecha,
+                           CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS datetime)) AS MinutosEspera,
+                       c.Codpro, c.Estado AS EstadoCocina,
+                       d.Cantidad, RTRIM(d.Descripcion) AS Descripcion,
+                       L.Descripcion AS Categoria
+                FROM Cocina_pedidos c
+                INNER JOIN Ticket_c t ON t.NroTicket = c.NroTicket
+                INNER JOIN Ticket_d d ON d.NroTicket = c.NroTicket AND d.Codpro = c.Codpro
+                LEFT JOIN Productos p ON p.CodPro = c.Codpro
+                LEFT JOIN Lineas L ON L.CodLinea = p.Clinea
+                WHERE t.Estado IN (1, 2)
+                  AND c.Estado < 4
+                  AND c.NroTicket LIKE @prefijo + '%'
+                ORDER BY t.Fecha ASC, c.NroTicket ASC, c.Id ASC
+            `);
+
+        res.json({ success: true, pedidos: result.recordset });
+    } catch (e) {
+        console.error(e);
+        res.status(500).send(e.message);
+    }
+});
+
+app.put('/api/cocina/linea', isAuthenticated, async (req, res) => {
+    const { nroTicket, codpro, estado } = req.body;
+    const usuarioSesion = req.session.user ? req.session.user.usuario : 'Sistema';
+    const estadoNum = parseInt(estado);
+    if (!nroTicket || !codpro || ![1, 2, 3].includes(estadoNum)) {
+        return res.status(400).json({ success: false, message: 'Parámetros inválidos' });
+    }
+    try {
+        const pool = await getConnection();
+        await pool.request()
+            .input('nro', sql.VarChar, nroTicket)
+            .input('cod', sql.Char(10), codpro)
+            .input('estado', sql.Int, estadoNum)
+            .input('usuario', sql.NVarChar, usuarioSesion)
+            .query(`
+                UPDATE Cocina_pedidos
+                SET Estado = @estado,
+                    Fecha_estado = CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime),
+                    Usuario = @usuario
+                WHERE NroTicket = @nro AND Codpro = @cod
+            `);
+        broadcastSSE({ type: 'cocina_updated' });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).send(e.message);
+    }
+});
+
+app.put('/api/cocina/ticket/:nro/todo-listo', isAuthenticated, async (req, res) => {
+    const { nro } = req.params;
+    const usuarioSesion = req.session.user ? req.session.user.usuario : 'Sistema';
+    try {
+        const pool = await getConnection();
+        await pool.request()
+            .input('nro', sql.VarChar, nro)
+            .input('usuario', sql.NVarChar, usuarioSesion)
+            .query(`
+                UPDATE Cocina_pedidos
+                SET Estado = 3,
+                    Fecha_estado = CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime),
+                    Usuario = @usuario
+                WHERE NroTicket = @nro AND Estado < 3
+            `);
+        broadcastSSE({ type: 'cocina_updated' });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).send(e.message);
+    }
+});
+
+app.put('/api/cocina/ticket/:nro/entregado', isAuthenticated, async (req, res) => {
+    const { nro } = req.params;
+    const usuarioSesion = req.session.user ? req.session.user.usuario : 'Sistema';
+    try {
+        const pool = await getConnection();
+        await pool.request()
+            .input('nro', sql.VarChar, nro)
+            .input('usuario', sql.NVarChar, usuarioSesion)
+            .query(`
+                UPDATE Cocina_pedidos
+                SET Estado = 4,
+                    Fecha_estado = CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'SA Pacific Standard Time' AS smalldatetime),
+                    Usuario = @usuario
+                WHERE NroTicket = @nro
+            `);
+        broadcastSSE({ type: 'cocina_updated' });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).send(e.message);
     }
 });
 
@@ -583,8 +739,11 @@ app.post('/api/pos/ticket', isAuthenticated, async (req, res) => {
                             VALUES (@nro, @cod_${l.cp}, @nom_${l.cp}, @cant_${l.cp}, @pre_${l.cp}, 0, @imp_${l.cp})`);
             }
 
+            await syncCocinaLineas(new sql.Request(transaction), nroTicket);
+
             await transaction.commit();
             broadcastSSE({ type: 'mesa_updated', numero: table, empresa: parseInt(empresa) });
+            broadcastSSE({ type: 'cocina_updated' });
             res.json({ message: 'Venta procesada con éxito', nroTicket });
         } catch (err) {
             try { await transaction.rollback(); } catch (rb) { /* ya abortada */ }

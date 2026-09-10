@@ -273,6 +273,10 @@ sedimApp_local/
 | GET | `/api/pos/products?empresa=X` | Listar productos por empresa |
 | GET | `/api/pos/config` | Configuración POS (IGV Igvv desde tabla Valores) |
 | POST | `/api/pos/ticket` | Crear ticket directo (body: `turno`, `mozo`). Estado=2 (Preventa) |
+| GET | `/api/cocina/pedidos?empresa=X` | Tablero cocina: comandas activas con estados por plato |
+| PUT | `/api/cocina/linea` | Cambiar estado de un plato (1=Pendiente 2=Preparación 3=Listo) |
+| PUT | `/api/cocina/ticket/:nro/todo-listo` | Marcar todos los platos del ticket como listos |
+| PUT | `/api/cocina/ticket/:nro/entregado` | Marcar ticket entregado (sale del tablero) |
 
 ---
 
@@ -300,6 +304,7 @@ sedimApp_local/
 - [x] **Guardado automático de pedidos** — al agregar/quitar productos se guarda en BD con debounce de 700ms, mesa → Ocupada
 - [x] **Precios con IGV incluido** — tarjetas muestran el precio final (inc. IGV) y TOTAL = suma directa del detalle a 2 decimales
 - [x] **Adaptación Responsive móvil/tablet** — bottom-sheet de carrito en celular, botones solo-icono, breakpoints 480/1024px (Fase 19)
+- [x] **Pedido Cocina (KDS)** — tablero Kanban en tiempo real, estados por plato, semáforo de demora, sonido, chips por categoría (Fase 21)
 
 ### Autenticación
 - [x] Login con tabla Usuarios
@@ -841,6 +846,73 @@ Al modificar la cantidad de un producto (+/-), los ítems del detalle del pedido
 
 ---
 
+## Fase 21: Pedido Cocina — KDS (Completada Agosto 2026)
+
+### 21.1 Concepto
+Nuevo módulo **"Pedido Cocina"** en el sidebar: tablero tipo Kanban en tiempo real para que cocina vea las comandas activas y marque el avance de cada plato desde celular o tablet.
+
+```
+PENDIENTE          EN PREPARACIÓN      LISTO
+┌──────────┐      ┌──────────┐        ┌──────────┐
+│ T001-15  │      │ T001-13  │        │ T002-08  │
+│ Mesa 4 ⏱ │      │ Mesa 2 ⏱ │        │ Mesa 7 ✅│
+│ 2× Lomo  │      │ 1× Ají   │        │ [ENTREGAR]│
+└──────────┘      └──────────┘        └──────────┘
+```
+
+### 21.2 Decisiones de Diseño
+- **Entrada automática**: el pedido aparece en cocina apenas se guarda con productos (Estado 1 o 2). Sin pasos extra para el mozo.
+- **Tabla separada `Cocina_pedidos`**: NO se usan columnas en `Ticket_d` porque el guardado hace DELETE+INSERT total en cada auto-guardado (Fase 14) — los estados se perderían. La tabla se clavea por `(NroTicket, Codpro)` (claves únicas garantizadas por Fase 20).
+- **3 estados por plato**: 1=Pendiente → 2=En preparación → 3=Listo; 4=Entregado a nivel ticket.
+- **Sincronización transaccional**: `syncCocinaLineas()` corre dentro de las transacciones de guardado: elimina estados de productos removidos e inserta Estado=1 para nuevos. El progreso de cocina sobrevive a cualquier edición del mozo.
+- **Filtro por empresa** (prefijo T001/T002/T005), sin turno.
+
+### 21.3 Migración
+`migrations/001_create_cocina_pedidos.sql` — tabla + índice `nci_cocina_estado (Estado, NroTicket)` + unique `(NroTicket, Codpro)`. Aplicada automáticamente por `migrate.js` al arrancar.
+
+### 21.4 Endpoints Nuevos (`server.js`)
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/api/cocina/pedidos?empresa=X` | Comandas activas (tickets Estado IN 1,2, líneas <4) con líneas, categoría y `MinutosEspera` calculado en SQL con TZ Lima |
+| PUT | `/api/cocina/linea` | Cambiar estado de un plato `{nroTicket, codpro, estado}` (valida 1–3), registra usuario |
+| PUT | `/api/cocina/ticket/:nro/todo-listo` | Todas las líneas <3 → Listo(3) |
+| PUT | `/api/cocina/ticket/:nro/entregado` | Todas → Entregado(4); sale del tablero |
+
+Todos emiten `broadcastSSE({type:'cocina_updated'})`. Los guardados de pedido/ticket también lo emiten; `DELETE /comanda` limpia sus filas de cocina.
+
+### 21.5 Frontend
+| Pieza | Detalle |
+|-------|---------|
+| Sidebar | Nuevo ítem "Pedido Cocina" (`fa-fire-burner`) |
+| Tablero | 3 columnas Kanban (Pendiente/En Preparación/Listo) con contadores |
+| Tarjeta | N° ticket, mesa, timer ⏱ con semáforo (verde <10', amarillo <20', rojo >20' con pulso animado), platos con chip de color por categoría (hash del nombre → paleta) |
+| Interacción | Tap en plato cicla 1→2→3 (optimista); botones "TODO LISTO" / "ENTREGAR" por tarjeta |
+| Sonido | Beep doble Web Audio API (toggle 🔊) cuando entra una comanda nueva. `AudioContext` persistente desbloqueado por el gesto del toggle (política autoplay de navegadores); el beep NO depende del flag silencioso de recargas SSE |
+| Timers | Refresco cada 30s solo actualiza textos/clases (sin recargar datos); base `MinutosEspera` calculada en SQL (TZ-safe) |
+| SSE | Evento `cocina_updated` recarga el tablero si está visible |
+
+### 21.6 Responsive
+- Móvil ≤480px: chips-filtro (Todas/Pendientes/Preparación/Listas), columnas apiladas, columnas vacías ocultas (clase `sin-tarjetas` puesta por JS), targets táctiles ampliados
+
+### 21.7 Archivos Modificados
+| Archivo | Cambios |
+|---------|---------|
+| migrations/001_create_cocina_pedidos.sql | **Nuevo** |
+| server.js | Helper `syncCocinaLineas`, hooks en POST pedido/ticket, limpieza en DELETE comanda, 4 endpoints cocina |
+| public/dashboard.html | Ítem sidebar + vista `view-cocina` completa |
+| public/script.js | Módulo KDS (~230 líneas): carga, render Kanban, ciclo estados, SSE, beep, timers |
+| public/style.css | Sección `.cocina-*` (~250 líneas) |
+| public/responsive.css | Ajustes móviles del tablero |
+
+### 21.8 QA Realizado
+- Migración aplicada contra BD real: ✅
+- Login + `GET /cocina/pedidos` (200, tablero vacío): ✅
+- Validación de estado inválido (400): ✅
+- Auth sin sesión (401): ✅
+- Pendiente en dispositivo real: flujo completo mozo→cocina multi-dispositivo
+
+---
+
 ## Próximos Pasos (Pendientes)
 
 ### POS
@@ -863,4 +935,4 @@ Al modificar la cantidad de un producto (+/-), los ítems del detalle del pedido
 
 ---
 
-*Última actualización: Agosto 2026 - v3.1*
+*Última actualización: Agosto 2026 - v3.2*

@@ -1306,6 +1306,7 @@ const originalShowView = showView;
 showView = function(viewName) {
     originalShowView(viewName);
     if (viewName === 'pos-tables') loadPOSTables();
+    if (viewName === 'cocina') loadCocinaPedidos();
 };
 
 // ==========================================
@@ -1398,9 +1399,301 @@ function handleSSEEvent(data) {
             }
         }
     }
+
+    if (data.type === 'cocina_updated') {
+        const cocinaView = document.getElementById('view-cocina');
+        if (cocinaView && cocinaView.style.display !== 'none') {
+            console.log('SSE: Actualizando tablero de cocina...');
+            loadCocinaPedidos(true);
+        }
+    }
 }
 
 connectSSE();
+
+// ==========================================
+//  FASE 21: PEDIDO COCINA (KDS)
+// ==========================================
+let cocinaFiltro = 'todas';
+let cocinaSoundOn = false;
+let cocinaUltimoTotal = null;
+let cocinaFetchTime = null;
+let cocinaData = [];
+let cocinaAudioCtx = null;
+
+function unlockCocinaAudio() {
+    try {
+        if (!cocinaAudioCtx) {
+            cocinaAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (cocinaAudioCtx.state === 'suspended') cocinaAudioCtx.resume();
+    } catch (e) { /* audio no disponible */ }
+}
+
+function toggleCocinaSound() {
+    cocinaSoundOn = !cocinaSoundOn;
+    const icon = document.getElementById('cocina-sound-icon');
+    if (icon) icon.className = cocinaSoundOn ? 'fas fa-volume-high' : 'fas fa-volume-xmark';
+    if (cocinaSoundOn) unlockCocinaAudio();
+}
+
+function playTonoCocina(frecuencia, inicio, duracion) {
+    const ctx = cocinaAudioCtx;
+    if (!ctx || ctx.state !== 'running') return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.value = frecuencia;
+    const t0 = ctx.currentTime + inicio;
+    gain.gain.setValueAtTime(0.4, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + duracion);
+    osc.start(t0);
+    osc.stop(t0 + duracion);
+}
+
+function playCocinaBeep() {
+    if (!cocinaSoundOn) return;
+    try {
+        if (!cocinaAudioCtx) unlockCocinaAudio();
+        if (cocinaAudioCtx && cocinaAudioCtx.state === 'suspended') cocinaAudioCtx.resume();
+        // Doble pitido para destacar en ambiente ruidoso
+        playTonoCocina(880, 0, 0.25);
+        playTonoCocina(660, 0.3, 0.35);
+    } catch (e) { /* audio no disponible */ }
+}
+
+function setCocinaFiltro(f) {
+    cocinaFiltro = f;
+    document.querySelectorAll('.cocina-chip').forEach(c => c.classList.toggle('active', c.dataset.filtro === f));
+    renderCocinaBoard();
+}
+
+function cocinaColorCategoria(nombre) {
+    if (!nombre) return '#94a3b8';
+    let hash = 0;
+    for (let i = 0; i < nombre.length; i++) hash = nombre.charCodeAt(i) + ((hash << 5) - hash);
+    const paleta = ['#ef4444', '#f97316', '#d97706', '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#db2777'];
+    return paleta[Math.abs(hash) % paleta.length];
+}
+
+function fmtCantCocina(c) {
+    const n = parseFloat(c);
+    return Number.isInteger(n) ? n : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function semaforoCocina(minutos) {
+    if (minutos >= 20) return 'tarde';
+    if (minutos >= 10) return 'por-vencer';
+    return 'a-tiempo';
+}
+
+function isCocinaViewVisible() {
+    const v = document.getElementById('view-cocina');
+    return v && v.style.display !== 'none';
+}
+
+async function loadCocinaPedidos(silencioso = false) {
+    const empresaSelect = document.getElementById('cocina-empresa-select');
+    const board = document.getElementById('cocina-board');
+    if (!empresaSelect || !board) return;
+    if (!empresaSelect.value) {
+        cocinaData = [];
+        renderCocinaBoard();
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/cocina/pedidos?empresa=${empresaSelect.value}`);
+        if (!res.ok) throw new Error('Error al cargar comandas');
+        const data = await res.json();
+        cocinaData = data.pedidos || [];
+        cocinaFetchTime = Date.now();
+
+        const totalTickets = new Set(cocinaData.map(r => r.NroTicket)).size;
+        if (cocinaSoundOn && cocinaUltimoTotal !== null && totalTickets > cocinaUltimoTotal) {
+            playCocinaBeep();
+        }
+        cocinaUltimoTotal = totalTickets;
+
+        renderCocinaBoard();
+    } catch (e) {
+        console.error(e);
+        if (!silencioso) alert('Error al cargar pedidos de cocina: ' + e.message);
+    }
+}
+
+function agruparCocinaPorTicket() {
+    const mapa = new Map();
+    cocinaData.forEach(r => {
+        if (!mapa.has(r.NroTicket)) {
+            mapa.set(r.NroTicket, {
+                NroTicket: r.NroTicket,
+                NroMesa: r.NroMesa,
+                FechaTicket: r.FechaTicket,
+                MinutosEspera: r.MinutosEspera || 0,
+                lineas: []
+            });
+        }
+        mapa.get(r.NroTicket).lineas.push(r);
+    });
+    return Array.from(mapa.values()).sort((a, b) =>
+        new Date(a.FechaTicket) - new Date(b.FechaTicket));
+}
+
+function columnaDeTicket(t) {
+    const estados = t.lineas.map(l => l.EstadoCocina);
+    if (estados.every(e => e === 3)) return 'listo';
+    if (estados.every(e => e >= 2)) return 'preparacion';
+    return 'pendiente';
+}
+
+function renderCocinaBoard() {
+    const board = document.getElementById('cocina-board');
+    if (!board) return;
+
+    const columnas = {
+        pendiente: board.querySelector('[data-col="pendiente"] .cocina-col-body'),
+        preparacion: board.querySelector('[data-col="preparacion"] .cocina-col-body'),
+        listo: board.querySelector('[data-col="listo"] .cocina-col-body')
+    };
+    Object.values(columnas).forEach(b => { if (b) b.innerHTML = ''; });
+
+    const tickets = agruparCocinaPorTicket();
+
+    document.querySelectorAll('.cocina-columna').forEach(col => {
+        const colKey = col.dataset.col;
+        const count = tickets.filter(t => columnaDeTicket(t) === colKey &&
+            (cocinaFiltro === 'todas' || cocinaFiltro === colKey)).length;
+        const countEl = col.querySelector('.cocina-col-count');
+        if (countEl) countEl.innerText = count;
+    });
+
+    if (!cocinaData.length) {
+        columnas.pendiente.innerHTML =
+            '<div class="cocina-vacio"><i class="fas fa-mug-hot"></i><p>Sin comandas pendientes</p></div>';
+        return;
+    }
+
+    tickets.forEach(t => {
+        const colKey = columnaDeTicket(t);
+        if (cocinaFiltro !== 'todas' && cocinaFiltro !== colKey) return;
+        const card = construirTarjetaCocina(t);
+        columnas[colKey].appendChild(card);
+    });
+
+    document.querySelectorAll('.cocina-columna').forEach(col => {
+        const body = col.querySelector('.cocina-col-body');
+        col.classList.toggle('sin-tarjetas', !body || body.children.length === 0);
+    });
+}
+
+function construirTarjetaCocina(t) {
+    const minutos = (t.MinutosEspera || 0) +
+        (cocinaFetchTime ? Math.floor((Date.now() - cocinaFetchTime) / 60000) : 0);
+    const todosListos = t.lineas.every(l => l.EstadoCocina === 3);
+
+    const card = document.createElement('div');
+    card.className = `cocina-card ${semaforoCocina(minutos)} ${todosListos ? 'todos-listos' : ''}`;
+    card.dataset.minutos = t.MinutosEspera || 0;
+    card.dataset.ticket = t.NroTicket;
+
+    const head = document.createElement('div');
+    head.className = 'cocina-card-head';
+    head.innerHTML = `
+        <span class="cocina-ticket">${t.NroTicket}</span>
+        <span class="cocina-mesa">Mesa ${t.NroMesa}</span>
+        <span class="cocina-timer"><i class="fas fa-stopwatch"></i> ${minutos}'</span>
+    `;
+    card.appendChild(head);
+
+    const items = document.createElement('div');
+    items.className = 'cocina-items';
+    t.lineas.forEach(l => {
+        const item = document.createElement('div');
+        item.className = `cocina-item estado-${l.EstadoCocina}`;
+        item.onclick = () => ciclarCocinaLinea(t.NroTicket, l.Codpro, l.EstadoCocina);
+        item.innerHTML = `
+            <span class="cocina-item-chip" style="background:${cocinaColorCategoria(l.Categoria)}"></span>
+            <span class="cocina-item-cant">${fmtCantCocina(l.Cantidad)}×</span>
+            <span class="cocina-item-nombre">${l.Descripcion}</span>
+            <i class="fas fa-check cocina-item-check"></i>
+        `;
+        items.appendChild(item);
+    });
+    card.appendChild(items);
+
+    const actions = document.createElement('div');
+    actions.className = 'cocina-card-actions';
+    if (todosListos) {
+        actions.innerHTML = `<button type="button" class="cocina-btn-entregar" onclick="entregarCocina('${t.NroTicket}')">
+            <i class="fas fa-check-double"></i> ENTREGAR</button>`;
+    } else {
+        actions.innerHTML = `<button type="button" class="cocina-btn-listo" onclick="todoListoCocina('${t.NroTicket}')">
+            <i class="fas fa-bell-concierge"></i> TODO LISTO</button>`;
+    }
+    card.appendChild(actions);
+
+    return card;
+}
+
+async function ciclarCocinaLinea(nroTicket, codpro, estadoActual) {
+    const siguiente = estadoActual < 3 ? estadoActual + 1 : null;
+    if (!siguiente) return;
+    try {
+        const res = await fetch('/api/cocina/linea', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nroTicket, codpro, estado: siguiente })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const fila = cocinaData.find(r => r.NroTicket === nroTicket && r.Codpro === codpro);
+        if (fila) fila.EstadoCocina = siguiente;
+        renderCocinaBoard();
+    } catch (e) {
+        console.error(e);
+        alert('Error al actualizar el plato: ' + e.message);
+    }
+}
+
+async function todoListoCocina(nroTicket) {
+    try {
+        const res = await fetch(`/api/cocina/ticket/${nroTicket}/todo-listo`, { method: 'PUT' });
+        if (!res.ok) throw new Error(await res.text());
+        cocinaData.forEach(r => { if (r.NroTicket === nroTicket && r.EstadoCocina < 3) r.EstadoCocina = 3; });
+        renderCocinaBoard();
+    } catch (e) {
+        console.error(e);
+        alert('Error: ' + e.message);
+    }
+}
+
+async function entregarCocina(nroTicket) {
+    try {
+        const res = await fetch(`/api/cocina/ticket/${nroTicket}/entregado`, { method: 'PUT' });
+        if (!res.ok) throw new Error(await res.text());
+        cocinaData = cocinaData.filter(r => r.NroTicket !== nroTicket);
+        cocinaUltimoTotal = new Set(cocinaData.map(r => r.NroTicket)).size;
+        renderCocinaBoard();
+    } catch (e) {
+        console.error(e);
+        alert('Error: ' + e.message);
+    }
+}
+
+setInterval(() => {
+    if (!isCocinaViewVisible() || !cocinaData.length || !cocinaFetchTime) return;
+    const transcurrido = Math.floor((Date.now() - cocinaFetchTime) / 60000);
+    document.querySelectorAll('.cocina-card').forEach(card => {
+        const base = parseInt(card.dataset.minutos) || 0;
+        const minutos = base + transcurrido;
+        const timer = card.querySelector('.cocina-timer');
+        if (timer) timer.innerHTML = `<i class="fas fa-stopwatch"></i> ${minutos}'`;
+        ['a-tiempo', 'por-vencer', 'tarde'].forEach(c => card.classList.remove(c));
+        card.classList.add(semaforoCocina(minutos));
+    });
+}, 30000);
 function toggleTheme() {
     const current = document.documentElement.getAttribute('data-theme') || 'light';
     const target = current === 'light' ? 'dark' : 'light';

@@ -2056,3 +2056,236 @@ form label {
         max-height: 95vh;
     }
 }
+
+/* =========================================
+   PEDIDO COCINA (KDS) - Fase 21
+   ========================================= */
+.cocina-filters {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+    background: var(--card-bg);
+    padding: 12px 15px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+
+.cocina-sound-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: var(--bg-color);
+    color: var(--text-color);
+    cursor: pointer;
+    font-size: 1rem;
+    flex-shrink: 0;
+    transition: all 0.2s;
+}
+
+.cocina-sound-btn:hover {
+    border-color: var(--accent);
+}
+
+.cocina-chips {
+    display: none;
+    gap: 8px;
+    margin-bottom: 12px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+
+.cocina-chip {
+    padding: 9px 16px;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    color: var(--text-color);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.cocina-chip.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.cocina-board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+    align-items: start;
+}
+
+.cocina-columna {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 10px;
+    min-height: 200px;
+}
+
+.cocina-col-header {
+    font-weight: 800;
+    padding: 10px 12px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: white;
+    font-size: 0.95rem;
+}
+
+.cocina-col-pendiente { background: #ef4444; }
+.cocina-col-preparacion { background: #f59e0b; }
+.cocina-col-listo { background: #22c55e; }
+
+.cocina-col-count {
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 10px;
+    padding: 1px 10px;
+    font-size: 0.85rem;
+}
+
+.cocina-card {
+    background: var(--card-bg);
+    border: 2px solid var(--border-color);
+    border-left-width: 6px;
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow);
+}
+
+.cocina-card.a-tiempo { border-left-color: #22c55e; }
+.cocina-card.por-vencer { border-left-color: #f59e0b; }
+.cocina-card.tarde { border-left-color: #ef4444; animation: cocinaPulso 1.5s infinite; }
+.cocina-card.todos-listos { border-top: 3px solid #22c55e; }
+
+@keyframes cocinaPulso {
+    0%, 100% { box-shadow: var(--shadow); }
+    50% { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.2); }
+}
+
+.cocina-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.cocina-ticket {
+    font-weight: 900;
+    font-size: 1.05rem;
+    color: var(--text-color);
+}
+
+.cocina-mesa {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 3px 10px;
+    font-size: 0.85rem;
+}
+
+.cocina-timer {
+    font-family: 'Consolas', monospace;
+    font-weight: 700;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    font-size: 0.9rem;
+}
+
+.cocina-card.tarde .cocina-timer { color: #ef4444; }
+
+.cocina-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.cocina-item.estado-1 { background: var(--card-bg); }
+.cocina-item.estado-2 { background: #fef3c7; border-color: #fcd34d; }
+.cocina-item.estado-3 { background: #dcfce7; border-color: #86efac; }
+
+[data-theme="dark"] .cocina-item.estado-2 { background: rgba(245, 158, 11, 0.15); }
+[data-theme="dark"] .cocina-item.estado-3 { background: rgba(34, 197, 94, 0.15); }
+
+.cocina-item-chip {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.cocina-item-cant {
+    font-weight: 900;
+    color: var(--accent);
+    min-width: 28px;
+    text-align: right;
+}
+
+.cocina-item-nombre {
+    flex: 1;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.cocina-item-check {
+    opacity: 0;
+    color: #16a34a;
+}
+
+.cocina-item.estado-3 .cocina-item-check { opacity: 1; }
+.cocina-item.estado-3 .cocina-item-nombre { text-decoration: line-through; opacity: 0.75; }
+
+.cocina-card-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+}
+
+.cocina-btn-listo,
+.cocina-btn-entregar {
+    flex: 1;
+    padding: 11px;
+    border: none;
+    border-radius: 10px;
+    font-weight: 800;
+    cursor: pointer;
+    color: #fff;
+    font-size: 0.9rem;
+    transition: filter 0.15s;
+}
+
+.cocina-btn-listo { background: #f59e0b; }
+.cocina-btn-entregar { background: #22c55e; }
+.cocina-btn-listo:hover,
+.cocina-btn-entregar:hover { filter: brightness(0.92); }
+
+.cocina-vacio {
+    text-align: center;
+    padding: 30px 10px;
+    color: var(--text-secondary);
+}
+
+.cocina-vacio i {
+    font-size: 2rem;
+    margin-bottom: 8px;
+    display: block;
+}
