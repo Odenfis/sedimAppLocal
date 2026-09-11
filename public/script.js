@@ -107,6 +107,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             }
             if (user.usuario) {
                 document.getElementById('sidebar-user-name').innerText = toTitleCase(user.usuario);
+                const info = document.querySelector('.sidebar-footer .user-info');
+                if (info) { info.title = user.usuario; info.setAttribute('aria-label', `Usuario: ${user.usuario}`); }
             }
             if (document.getElementById('view-pos-tables').style.display !== 'none') {
                 loadPOSTables();
@@ -271,11 +273,8 @@ let posSearchTerm = '';
 let posIsReadOnly = false;
 let posCurrentTurnoLabel = null;
 let posAutoSaveTimer = null;
-let posAutoSaveInFlight = false;
-let posAutoSavePending = false;
+let posCartGroupMembers = new Map();
 const POS_AUTOSAVE_DEBOUNCE_MS = 700;
-let lastSelfSaveAt = 0;
-const SSE_SELF_ECHO_WINDOW_MS = 3000;
 
 function getTurnoValue(empresa, turnoLabel) {
     const map = {
@@ -433,8 +432,11 @@ function filterTables(area) {
 }
 
 async function openPOSOrder(tableNum, tableEmpresa = null) {
+    if (!await orderBeforeOpen()) return;
+    orderReset();
+    posIsReadOnly = false;
     posCurrentTable = tableNum;
-    posCurrentTableEmpresa = tableEmpresa;
+    posCurrentTableEmpresa = tableEmpresa || document.getElementById('pos-empresa-select')?.value;
     document.getElementById('pos-current-table').innerText = tableNum;
     showView('pos-order');
     closeCartSheet();
@@ -460,6 +462,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
         try {
             const res = await fetch(`/api/pos/pedido?mesa=${tableNum}&empresa=${empresa}`);
             const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'No se pudo cargar el pedido');
             if (data.success && data.pedido) {
                 posCurrentNroTicket = data.pedido.NroTicket;
                 document.getElementById('pos-guests').value = data.pedido.Comensales || 1;
@@ -472,30 +475,16 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                     }
                 }
                 
-                if (data.items && data.items.length > 0) {
-                    posCart = [];
-                    data.items.forEach(item => {
-                        const esAfecto = item.Afecto === 1 || item.Afecto === true;
-                        const precioBase = parseFloat(item.Precio);
-                        const precioFinal = redondear2(precioBase * factorIgv(esAfecto));
-                        const existente = posCart.find(p => p.codPro === item.Codpro);
-                        if (existente) {
-                            existente.cantidad += parseFloat(item.Cantidad);
-                        } else {
-                            posCart.push({
-                                codPro: item.Codpro,
-                                nombre: (item.Descripcion || '').trim(),
-                                precio: precioFinal,
-                                precioBase: precioBase,
-                                cantidad: parseFloat(item.Cantidad),
-                                descuento: 0,
-                                afecto: esAfecto ? 1 : 0
-                            });
-                        }
-                    });
-                    updateCartUI();
-                }
-
+                posCart = (data.items || []).map(item => ({
+                    lineaId: item.lineaId, codPro: item.Codpro.trim(), nombre: item.Descripcion.trim(),
+                    precioBase: Number(item.Precio), precio: precioFinalUnitario(Number(item.Precio), item.Afecto),
+                    cantidad: Number(item.Cantidad), afecto: item.Afecto, descuento: 0,
+                    notasRapidas: item.notasRapidas || [], nota: item.nota || '', enviada: item.enviada,
+                    pendienteId: item.pendienteId, pendienteEnvio: item.pendienteEnvio, estadoCocina: item.estadoCocina,
+                    anulada: item.anulada
+                }));
+                orderAccept(data);
+                updateCartUI();
                 posIsReadOnly = data.pedido.Estado === 2;
                 document.getElementById('btn-guardar-mesa').classList.add('active-state');
                 updatePOSViewMode();
@@ -505,7 +494,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
             }
         } catch (e) {
             console.error('Error al cargar pedido:', e);
-            posIsReadOnly = false;
+            orderConflict = true; orderSaveError = e.message;
+            posIsReadOnly = true;
             updatePOSViewMode();
         }
     } else {
@@ -513,6 +503,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
         updatePOSViewMode();
     }
     
+    renderOrderStatus();
     if (!posIsReadOnly) {
         await loadPOSCategories();
         await loadPOSProducts();
@@ -584,6 +575,7 @@ function updatePOSViewMode() {
         if (badge) badge.style.display = 'none';
         if (reabrirBtn) reabrirBtn.style.display = 'none';
     }
+    updateCartUI();
 }
 
 async function loadMozos(empresa) {
@@ -647,132 +639,30 @@ function openMozoModal() {
 }
 
 function selectMozo(codemp, nombre) {
+    if (orderBusy || posIsReadOnly) return;
     document.getElementById('pos-mojo-select').value = codemp;
     document.getElementById('pos-mojo-name').innerText = nombre;
     document.querySelector('.pos-mojo-badge').classList.add('has-mozos');
     closeModal('modal-mozo');
+    if (posCurrentNroTicket || posCart.length) scheduleAutoSave();
 }
 
 function updateStateButtons() {
     const empresa = document.getElementById('pos-empresa-select')?.value;
-    posCurrentTableEmpresa = empresa;
+    posCurrentTableEmpresa = posCurrentTableEmpresa || empresa;
 }
 
-function buildPosPedidoPayload() {
-    const mozoInput = document.getElementById('pos-mojo-select');
-    const mozo = mozoInput ? mozoInput.value : 1;
-
-    return {
-        mesa: posCurrentTable,
-        empresa: posCurrentTableEmpresa,
-        turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
-        guests: document.getElementById('pos-guests').value,
-        mozo: mozo,
-        items: posCart.map(i => ({
-            codPro: i.codPro,
-            nombre: i.nombre,
-            cantidad: i.cantidad,
-            precio: i.precioBase != null ? i.precioBase : i.precio,
-            importe: redondear2(i.precio * i.cantidad),
-            afecto: i.afecto
-        })),
-        nroTicket: posCurrentNroTicket
-    };
-}
-
-async function savePedido(payload) {
-    const res = await fetch('/api/pos/pedido', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText);
-    }
-    return await res.json();
-}
-
-async function markMesaOcupada() {
-    await fetch(`/api/pos/tables/${posCurrentTable}/estado`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ estado: 2, empresa: posCurrentTableEmpresa })
-    });
-}
-
-function onPedidoSaved() {
-    document.getElementById('btn-guardar-mesa').classList.add('active-state');
-    document.getElementById('btn-reservar-mesa').classList.remove('active-state');
-    loadPOSTables();
-}
+function buildPosPedidoPayload() { return orderPayload(); }
 
 function isPOSOrderViewVisible() {
     const view = document.getElementById('view-pos-order');
     return view && view.style.display !== 'none';
 }
 
-function scheduleAutoSave() {
-    if (posIsReadOnly) return;
-    clearTimeout(posAutoSaveTimer);
-    posAutoSaveTimer = setTimeout(async () => {
-        await runAutoSave();
-    }, POS_AUTOSAVE_DEBOUNCE_MS);
-}
-
-async function runAutoSave() {
-    if (posIsReadOnly) return;
-    if (posCart.length === 0) return;
-    if (!isPOSOrderViewVisible()) return;
-    if (posAutoSaveInFlight) {
-        posAutoSavePending = true;
-        return;
-    }
-    posAutoSaveInFlight = true;
-    try {
-        const result = await savePedido(buildPosPedidoPayload());
-        posCurrentNroTicket = result.nroTicket;
-        lastSelfSaveAt = Date.now();
-        await markMesaOcupada();
-        onPedidoSaved();
-    } catch (e) {
-        console.error('Error en guardado automático del pedido:', e);
-    } finally {
-        posAutoSaveInFlight = false;
-        const wasPending = posAutoSavePending;
-        posAutoSavePending = false;
-        if (wasPending && posCart.length > 0 && !posIsReadOnly && isPOSOrderViewVisible()) {
-            runAutoSave();
-        }
-    }
-}
-
+function scheduleAutoSave() { orderSchedule(); }
+async function runAutoSave() { return orderFlush(); }
 async function guardarMesa() {
-    if (posIsReadOnly) return;
-    if (!posCurrentTable || !posCurrentTableEmpresa) {
-        alert('Error: No se ha seleccionado una mesa');
-        return;
-    }
-    
-    if (posCart.length === 0) {
-        alert('Agregue productos al pedido antes de guardar');
-        return;
-    }
-    
-    clearTimeout(posAutoSaveTimer);
-    
-    try {
-        const result = await savePedido(buildPosPedidoPayload());
-        posCurrentNroTicket = result.nroTicket;
-        lastSelfSaveAt = Date.now();
-        await markMesaOcupada();
-        posAutoSavePending = false;
-        onPedidoSaved();
-        alert('Pedido guardado - Mesa OCUPADA');
-    } catch (e) {
-        console.error('Error al guardar pedido:', e);
-        alert('Error al guardar pedido: ' + e.message);
-    }
+    try { await orderFlush(); } catch (e) { alert(e.message); }
 }
 
 async function reservarMesa() {
@@ -815,7 +705,7 @@ async function liberarMesa() {
         const res = await fetch(`/api/pos/tables/${posCurrentTable}/liberar-reservada`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ empresa: posCurrentTableEmpresa })
+            body: JSON.stringify({ empresa: posCurrentTableEmpresa, version: orderVersion, operacionId: orderOperation() })
         });
 
         const data = await res.json();
@@ -835,36 +725,7 @@ async function liberarMesa() {
     }
 }
 
-async function borrarComanda() {
-    if (posIsReadOnly) return;
-    if (!posCurrentNroTicket) {
-        alert('No hay ticket activo');
-        return;
-    }
-
-    if (!confirm('¿Borrar comanda? Se eliminarán todos los productos del pedido.')) return;
-
-    try {
-        const res = await fetch(`/api/pos/comanda/${posCurrentNroTicket}?empresa=${posCurrentTableEmpresa}`, {
-            method: 'DELETE'
-        });
-        const data = await res.json();
-
-        if (data.success) {
-            alert('Comanda eliminada');
-            posCurrentTable = null;
-            posCurrentTableEmpresa = null;
-            posCurrentNroTicket = null;
-            posCart = [];
-            showView('pos-tables');
-            loadPOSTables();
-        } else {
-            alert(data.message);
-        }
-    } catch (e) {
-        alert('Error de conexión');
-    }
-}
+async function borrarComanda() { return orderDelete(); }
 
 async function loadPOSCategories() {
     console.log("POS: Cargando categorías...");
@@ -1064,14 +925,15 @@ function searchPOSProducts() {
 }
 
 function addToCart(product) {
-    const existing = posCart.find(item => item.codPro === product.CodPro);
+    if (posIsReadOnly || orderBusy) return;
+    const existing = posCart.find(item => item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item));
     const precioBase = typeof product.PventaMa === 'number' ? product.PventaMa : (parseFloat(product.PventaMa) || 0);
     const esAfecto = product.Afecto === 1 || product.Afecto === true;
     if (existing) {
         existing.cantidad++;
     } else {
         posCart.push({
-            codPro: product.CodPro,
+            lineaId: newOrderId(), codPro: product.CodPro.trim(), notasRapidas: [], nota: '', enviada: null,
             nombre: product.Nombre,
             precio: precioFinalUnitario(precioBase, esAfecto),
             precioBase: precioBase,
@@ -1090,12 +952,19 @@ function bindCartDelegation(container) {
     cartDelegationBound = true;
     container.addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-action]');
-        if (!btn || posIsReadOnly) return;
-        const idx = posCart.findIndex(i => i.codPro === btn.dataset.cod);
-        if (idx === -1) return;
+        if (!btn || posIsReadOnly || orderBusy) return;
+        const memberIds = posCartGroupMembers.get(btn.dataset.cod) || [btn.dataset.cod];
+        const indexes = memberIds.map(id => posCart.findIndex(i => i.lineaId === id)).filter(i => i >= 0);
+        if (!indexes.length) return;
+        const editable = indexes.filter(i => !posCart[i].pendienteId);
+        if (!editable.length) return;
+        const pending = editable.find(i => !posCart[i].enviada);
+        const idx = pending ?? editable[0];
+        if (btn.dataset.action === 'notes') return openOrderNotes(idx);
+        if (btn.dataset.action === 'split') return splitOrderLine(idx);
         if (btn.dataset.action === 'inc') changeQty(idx, 1);
         else if (btn.dataset.action === 'dec') changeQty(idx, -1);
-        else if (btn.dataset.action === 'del') removeFromCart(idx);
+        else if (btn.dataset.action === 'del') removeCartGroup(memberIds);
     });
 }
 
@@ -1108,32 +977,61 @@ function updateCartUI() {
     let totalIgv = 0;
     let total = 0;
 
-    const filas = posCart.map((item) => {
+    const allocatedAmounts = orderAmounts(posCart, GLOBAL_IGVV_PCT);
+    const grouped = new Map();
+    posCart.forEach((item, index) => {
+        const precioBase = item.precioBase != null ? item.precioBase : item.precio;
+        const key = JSON.stringify([item.codPro, precioBase, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
+        if (!grouped.has(key)) grouped.set(key, { item, indexes: [], cod: item.lineaId });
+        grouped.get(key).indexes.push(index);
+    });
+    posCartGroupMembers = new Map([...grouped.values()].map(g => [g.cod, g.indexes.map(i => posCart[i].lineaId)]));
+
+    const filas = [...grouped.values()].map(group => {
+        const item = group.item;
         const esAfecto = item.afecto === 1 || item.afecto === true;
         const precioBaseUnit = item.precioBase != null ? item.precioBase : (item.precio / factorIgv(esAfecto));
-        const importe = redondear2(item.precio * item.cantidad);
-        const subtotalLinea = redondear2(precioBaseUnit * item.cantidad);
+        const cantidad = redondear2(group.indexes.reduce((sum, index) => sum + posCart[index].cantidad, 0));
+        const importe = redondear2(group.indexes.reduce((sum, index) => sum + allocatedAmounts[index], 0));
+        const subtotalLinea = redondear2(group.indexes.reduce((sum, index) => {
+            const line = posCart[index], base = line.precioBase != null ? line.precioBase : precioBaseUnit;
+            return sum + redondear2(base * line.cantidad);
+        }, 0));
         const igvLinea = importe - subtotalLinea;
         subtotal += subtotalLinea;
         totalIgv += igvLinea;
         total += importe;
 
-        const controles = posIsReadOnly
+        const hasSent = group.indexes.some(index => !!posCart[index].enviada);
+        const pendingAdded = redondear2(group.indexes.reduce((sum, index) => sum + (!posCart[index].enviada ? posCart[index].cantidad : 0), 0));
+        const pendingLabel = hasSent && pendingAdded > 0 ? `<span class="order-quantity-pending">+${pendingAdded} pendiente de enviar</span>` : '';
+        const pendingRecognition = group.indexes.some(index => posCart[index].pendienteId);
+        const changesPending = group.indexes.some(index => orderLinePending(posCart[index]));
+        const kitchenStatus = orderKitchenStatus(group.indexes.map(index => posCart[index]));
+        const statusPrefix = pendingRecognition ? 'Cocina debe reconocer el cambio' : changesPending && hasSent ? 'Cambios pendientes' : '';
+        const lineStatus = statusPrefix && kitchenStatus !== 'Sin enviar' ? `${statusPrefix} · ${kitchenStatus}` : statusPrefix || kitchenStatus;
+        const canSplit = group.indexes.length === 1 && !item.enviada && item.cantidad > 0.01;
+        const controles = (posIsReadOnly || pendingRecognition)
             ? `<div style="font-weight:bold; white-space:nowrap;">S/ ${importe.toFixed(2)}</div>`
             : `<div class="cart-item-controls">
-                    <button type="button" class="qty-btn" data-action="dec" data-cod="${item.codPro}">-</button>
-                    <span>${item.cantidad}</span>
-                    <button type="button" class="qty-btn" data-action="inc" data-cod="${item.codPro}">+</button>
-                    <button type="button" class="qty-btn" style="color:red" data-action="del" data-cod="${item.codPro}"><i class="fas fa-times"></i></button>
+                    <button type="button" class="qty-btn" data-action="dec" data-cod="${item.lineaId}">-</button>
+                    <span>${cantidad}</span>
+                    <button type="button" class="qty-btn" data-action="inc" data-cod="${item.lineaId}">+</button>
+                    <button type="button" class="qty-btn" style="color:red" data-action="del" data-cod="${item.lineaId}"><i class="fas fa-times"></i></button>
                 </div>
                 <div style="font-weight:bold; margin-left:10px;">S/ ${importe.toFixed(2)}</div>`;
 
         return {
-            cod: item.codPro,
+            cod: group.cod,
             html: `
                 <div class="cart-item-info">
-                    <span class="cart-item-name">${item.nombre}</span>
-                    <span class="cart-item-details">S/ ${item.precio.toFixed(2)} x ${item.cantidad}</span>
+                    <span class="cart-item-name">${escapeOrderText(item.nombre)}</span>
+                    <span class="cart-item-details">S/ ${item.precio.toFixed(2)} x ${cantidad}</span>
+                    ${pendingLabel}
+                    <span class="order-line-notes">${escapeOrderText(orderNotes(item))}</span>
+                    <small class="order-kitchen-line-status">${escapeOrderText(lineStatus)}</small>
+                    ${!posIsReadOnly ? `<span class="order-line-tools"><button type="button" data-action="notes" data-cod="${group.cod}" ${pendingRecognition ? 'disabled' : ''}>✎ Notas</button>
+                    ${canSplit ? `<button type="button" data-action="split" data-cod="${group.cod}">Separar</button>` : ''}</span>` : ''}
                 </div>${controles}`
         };
     });
@@ -1159,6 +1057,8 @@ function updateCartUI() {
         }
         if (el.className !== claseEsperada) el.className = claseEsperada;
         el.dataset.sig = f.html;
+        const position = filas.indexOf(f);
+        if (container.children[position] !== el) container.insertBefore(el, container.children[position] || null);
     });
 
     Object.entries(previosPorCod).forEach(([cod, el]) => {
@@ -1167,16 +1067,43 @@ function updateCartUI() {
 
     container.scrollTop = scrollPrevio;
 
+    const cancellations = document.getElementById('order-pending-cancellations');
+    if (cancellations) {
+        cancellations.hidden = !orderPendingCancellations.length;
+        cancellations.replaceChildren();
+        if (orderPendingCancellations.length) {
+            const title = document.createElement('strong'); title.textContent = 'Anulaciones pendientes de enviar'; cancellations.appendChild(title);
+            for (const line of orderPendingCancellations) {
+                const row = document.createElement('div');
+                row.textContent = `${fmtCantCocina(line.cantidad)} × ${line.nombre}${orderNotes(line) ? ` · ${orderNotes(line)}` : ''}`;
+                cancellations.appendChild(row);
+            }
+        }
+    }
+
     document.getElementById('pos-subtotal').innerText = `S/ ${subtotal.toFixed(2)}`;
     document.getElementById('pos-igv').innerText = `S/ ${totalIgv.toFixed(2)}`;
     document.getElementById('pos-total').innerText = `S/ ${total.toFixed(2)}`;
     updateCartFab();
+    renderOrderStatus();
+}
+
+function removeCartGroup(memberIds) {
+    if (posIsReadOnly || orderBusy) return;
+    const ids = new Set(memberIds);
+    if (posCart.some(line => ids.has(line.lineaId) && line.pendienteId)) return;
+    posCart = posCart.filter(line => !ids.has(line.lineaId));
+    updateCartUI(); scheduleAutoSave();
 }
 
 function changeQty(index, delta) {
-    if (posIsReadOnly) return;
+    if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
+    if (delta > 0 && posCart[index].enviada) {
+        const l = posCart[index]; posCart.push({ ...l, lineaId: newOrderId(), cantidad: delta, enviada: null, pendienteId: null, pendienteEnvio: true });
+        updateCartUI(); scheduleAutoSave(); return;
+    }
     posCart[index].cantidad += delta;
-    if (posCart[index].cantidad < 1) {
+    if (posCart[index].cantidad <= 0) {
         removeFromCart(index);
     } else {
         updateCartUI();
@@ -1185,14 +1112,15 @@ function changeQty(index, delta) {
 }
 
 function removeFromCart(index) {
-    if (posIsReadOnly) return;
+    if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
     posCart.splice(index, 1);
     updateCartUI();
     scheduleAutoSave();
 }
 
 function clearCurrentOrder() {
-    if (posIsReadOnly) return;
+    if (posIsReadOnly || orderBusy) return;
+    if (posCart.some(l => l.pendienteId)) return alert('Cocina debe reconocer los cambios pendientes primero.');
     if (confirm("¿Limpiar todo el pedido?")) {
         posCart = [];
         updateCartUI();
@@ -1200,83 +1128,7 @@ function clearCurrentOrder() {
     }
 }
 
-async function processPOSPayment() {
-    if (posIsReadOnly) return;
-    if (posCart.length === 0) return alert("El carrito está vacío");
-    
-    const total = parseFloat(document.getElementById('pos-total').innerText.replace('S/ ', ''));
-    const igv = parseFloat(document.getElementById('pos-igv').innerText.replace('S/ ', ''));
-    
-    try {
-        if (posCurrentNroTicket) {
-            const res = await fetch(`/api/pos/pedido/${posCurrentNroTicket}/pagar`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    mesa: posCurrentTable, 
-                    empresa: posCurrentTableEmpresa,
-                    total: total,
-                    igv: igv
-                })
-            });
-            if (!res.ok) {
-                const err = await res.text();
-                console.error('Error al pagar pedido:', err);
-                return alert('Error al generar preventa: ' + err);
-            }
-        } else {
-            const mozoInput = document.getElementById('pos-mojo-select');
-            const mozo = mozoInput ? mozoInput.value : 1;
-            const data = {
-                table: posCurrentTable,
-                guests: document.getElementById('pos-guests').value,
-                mozo: mozo,
-                items: posCart.map(i => ({
-                    codPro: i.codPro,
-                    nombre: i.nombre,
-                    cantidad: i.cantidad,
-                    precio: i.precioBase != null ? i.precioBase : i.precio,
-                    importe: redondear2(i.precio * i.cantidad),
-                    afecto: i.afecto
-                })),
-                total: total,
-                igv: igv,
-                empresa: posCurrentTableEmpresa,
-                turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel)
-            };
-            const res = await fetch('/api/pos/ticket', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            if (!res.ok) {
-                const err = await res.text();
-                console.error('Error al crear ticket:', err);
-                return alert('Error al generar preventa: ' + err);
-            }
-        }
-        
-        const mesaRes = await fetch(`/api/pos/tables/${posCurrentTable}/estado`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ estado: 5, empresa: posCurrentTableEmpresa })
-        });
-        if (!mesaRes.ok) {
-            console.error('Error al actualizar estado de mesa');
-        }
-        
-        alert("Preventa generada con éxito");
-        posCurrentTable = null;
-        posCurrentTableEmpresa = null;
-        posCurrentNroTicket = null;
-        closeCartSheet();
-        showView('pos-tables');
-        loadPOSTables();
-    } catch (e) {
-        console.error('Error en processPOSPayment:', e);
-        alert("Error de conexión: " + e.message);
-    }
-}
+async function processPOSPayment() { return orderPay(); }
 
 async function reabrirPedido() {
     if (!posCurrentNroTicket) return;
@@ -1286,7 +1138,7 @@ async function reabrirPedido() {
         const res = await fetch(`/api/pos/pedido/${posCurrentNroTicket}/reabrir`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ empresa: posCurrentTableEmpresa })
+            body: JSON.stringify({ empresa: posCurrentTableEmpresa, version: orderVersion, operacionId: orderOperation() })
         });
         const data = await res.json();
 
@@ -1304,9 +1156,14 @@ async function reabrirPedido() {
 // Modificar showView para cargar POS
 const originalShowView = showView;
 showView = function(viewName) {
+    if (viewName !== 'pos-order' && (orderBusy || orderConflict)) return;
+    if (viewName !== 'pos-order' && (orderDirty || orderSavePromise)) {
+        orderFlush().then(() => showView(viewName)).catch(e => alert(e.message)); return;
+    }
     originalShowView(viewName);
     if (viewName === 'pos-tables') loadPOSTables();
     if (viewName === 'cocina') loadCocinaPedidos();
+    if (viewName === 'cierres') loadShiftClosurePreview();
 };
 
 // ==========================================
@@ -1337,7 +1194,7 @@ function updateCartFab() {
     const totalEl = document.getElementById('pos-cart-fab-total');
     if (!countEl || !totalEl) return;
     const count = posCart.reduce((acc, i) => acc + i.cantidad, 0);
-    const total = redondear2(posCart.reduce((acc, i) => acc + redondear2(i.precio * i.cantidad), 0));
+    const total = redondear2(orderAmounts(posCart, GLOBAL_IGVV_PCT).reduce((acc, amount) => acc + amount, 0));
     countEl.innerText = count;
     totalEl.innerText = `S/ ${total.toFixed(2)}`;
 }
@@ -1390,8 +1247,12 @@ function handleSSEEvent(data) {
             empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
             const orderView = document.getElementById('view-pos-order');
             if (orderView && orderView.style.display !== 'none') {
-                if (Date.now() - lastSelfSaveAt < SSE_SELF_ECHO_WINDOW_MS) {
+                if (ownOrderOperations.has(data.operacionId)) {
                     console.log('SSE: Evento propio (eco del guardado), se omite recarga del pedido');
+                    return;
+                }
+                if (orderDirty || orderSavePromise || orderBusy || document.getElementById('order-notes-dialog').open) {
+                    if (data.version !== orderVersion) { orderConflict = true; orderSaveError = 'El pedido cambió en otro dispositivo. Revise la versión actual.'; renderOrderStatus(); }
                     return;
                 }
                 console.log('SSE: Mesa asignada cambió, recargando pedido...');
@@ -1400,13 +1261,44 @@ function handleSSEEvent(data) {
         }
     }
 
+    if (data.type === 'impresion_updated' && posCurrentNroTicket && !orderDirty && !orderBusy) {
+        orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`).then(orderAccept).catch(() => {});
+    }
+    if (data.type === 'impresion_updated' && typeof cocinaTicketActual !== 'undefined' && cocinaTicketActual?.EnvioId === data.envioId) {
+        cocinaTicketActual.Impresion = { estado: data.estado };
+        const status = document.getElementById('cocina-ticket-print-status');
+        if (status) status.textContent = estadoImpresionCocina(cocinaTicketActual.Impresion);
+        const button = document.getElementById('cocina-ticket-print');
+        if (button) button.disabled = ['en_cola','procesando'].includes(data.estado);
+    }
     if (data.type === 'cocina_updated') {
+        if (posCurrentNroTicket && data.nroTicket === posCurrentNroTicket &&
+            Number(data.empresa) === Number(posCurrentTableEmpresa) && isPOSOrderViewVisible()) syncPOSKitchenStatuses();
         const cocinaView = document.getElementById('view-cocina');
         if (cocinaView && cocinaView.style.display !== 'none') {
             console.log('SSE: Actualizando tablero de cocina...');
             loadCocinaPedidos(true);
         }
     }
+}
+
+let kitchenStatusSync = null;
+async function syncPOSKitchenStatuses() {
+    if (!posCurrentNroTicket || kitchenStatusSync) return kitchenStatusSync;
+    const nro = posCurrentNroTicket;
+    kitchenStatusSync = orderRequest(`/api/pos/pedido/${encodeURIComponent(nro)}/estados-cocina?empresa=${posCurrentTableEmpresa}`)
+        .then(data => {
+            if (posCurrentNroTicket !== nro) return;
+            const byId = new Map((data.estados || []).map(state => [state.lineaId, state]));
+            for (const line of posCart) {
+                const state = byId.get(line.lineaId);
+                if (state) { line.estadoCocina = state.estadoCocina; line.pendienteId = state.pendienteId; line.anulada = state.anulada; }
+            }
+            if (!orderDirty && !orderSummary.pendientes) orderSummary.estado = orderKitchenHeadline(posCart);
+            updateCartUI(); renderOrderStatus();
+        }).catch(error => console.warn('No se pudieron sincronizar estados de Cocina:', error.message))
+        .finally(() => { kitchenStatusSync = null; });
+    return kitchenStatusSync;
 }
 
 connectSSE();
@@ -1498,6 +1390,7 @@ async function loadCocinaPedidos(silencioso = false) {
     const empresaSelect = document.getElementById('cocina-empresa-select');
     const board = document.getElementById('cocina-board');
     if (!empresaSelect || !board) return;
+    if (typeof cocinaVista !== 'undefined' && cocinaVista === 'historial') return loadCocinaHistorial(1);
     if (!empresaSelect.value) {
         cocinaData = [];
         renderCocinaBoard();
@@ -1506,9 +1399,20 @@ async function loadCocinaPedidos(silencioso = false) {
 
     try {
         const res = await fetch(`/api/cocina/pedidos?empresa=${empresaSelect.value}`);
-        if (!res.ok) throw new Error('Error al cargar comandas');
         const data = await res.json();
-        cocinaData = data.pedidos || [];
+        if (!res.ok) {
+            const message = res.status === 401 ? 'Sesión expirada. Vuelva a iniciar sesión.' : res.status === 400 ? 'Seleccione una empresa válida.' : res.status === 404 ? 'No hay configuración de cocina para esta empresa.' : 'No se pudo cargar la cocina. Revise el registro del servidor.';
+            throw new Error(message);
+        }
+        // Normaliza el contrato agrupado de la API al modelo interno del tablero.
+        cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
+            NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
+            FechaTicket: p.fechaEnvio, MinutosEspera: p.minutosEspera, Documento: p.documento,
+            Impresion: p.impresion,
+            EstadoCocina: l.estado, LineaId: l.lineaId, Codpro: l.codPro, Cantidad: l.cantidad,
+            Descripcion: l.nombre, notasRapidas: l.notasRapidas || [], nota: l.nota || '',
+            Categoria: l.Categoria, pendiente: l.correccionPendiente || null
+        })));
         cocinaFetchTime = Date.now();
 
         const totalTickets = new Set(cocinaData.map(r => r.NroTicket)).size;
@@ -1520,7 +1424,7 @@ async function loadCocinaPedidos(silencioso = false) {
         renderCocinaBoard();
     } catch (e) {
         console.error(e);
-        if (!silencioso) alert('Error al cargar pedidos de cocina: ' + e.message);
+        if (!silencioso) alert(e.message);
     }
 }
 
@@ -1533,6 +1437,7 @@ function agruparCocinaPorTicket() {
                 NroMesa: r.NroMesa,
                 FechaTicket: r.FechaTicket,
                 MinutosEspera: r.MinutosEspera || 0,
+                EnvioId: r.EnvioId, NumeroEnvio: r.NumeroEnvio, Mozo: r.Mozo, Documento: r.Documento, Impresion: r.Impresion,
                 lineas: []
             });
         }
@@ -1543,6 +1448,7 @@ function agruparCocinaPorTicket() {
 }
 
 function columnaDeTicket(t) {
+    if (t.lineas.some(l => l.pendiente)) return 'pendiente';
     const estados = t.lineas.map(l => l.EstadoCocina);
     if (estados.every(e => e === 3)) return 'listo';
     if (estados.every(e => e >= 2)) return 'preparacion';
@@ -1592,7 +1498,7 @@ function renderCocinaBoard() {
 function construirTarjetaCocina(t) {
     const minutos = (t.MinutosEspera || 0) +
         (cocinaFetchTime ? Math.floor((Date.now() - cocinaFetchTime) / 60000) : 0);
-    const todosListos = t.lineas.every(l => l.EstadoCocina === 3);
+    const todosListos = t.lineas.every(l => l.EstadoCocina >= 3 && !l.pendiente);
 
     const card = document.createElement('div');
     card.className = `cocina-card ${semaforoCocina(minutos)} ${todosListos ? 'todos-listos' : ''}`;
@@ -1601,9 +1507,11 @@ function construirTarjetaCocina(t) {
 
     const head = document.createElement('div');
     head.className = 'cocina-card-head';
-    head.innerHTML = `
+        head.innerHTML = `
         <span class="cocina-ticket">${t.NroTicket}</span>
         <span class="cocina-mesa">Mesa ${t.NroMesa}</span>
+        <span class="cocina-envio">Envío ${t.NumeroEnvio || '—'}</span>
+        <span class="cocina-mozo">${escapeOrderText(t.Mozo || '')}</span>
         <span class="cocina-timer"><i class="fas fa-stopwatch"></i> ${minutos}'</span>
     `;
     card.appendChild(head);
@@ -1613,13 +1521,21 @@ function construirTarjetaCocina(t) {
     t.lineas.forEach(l => {
         const item = document.createElement('div');
         item.className = `cocina-item estado-${l.EstadoCocina}`;
-        item.onclick = () => ciclarCocinaLinea(t.NroTicket, l.Codpro, l.EstadoCocina);
+        item.onclick = () => l.pendiente ? null : ciclarCocinaLinea(t.NroTicket, l.LineaId, l.EstadoCocina);
         item.innerHTML = `
             <span class="cocina-item-chip" style="background:${cocinaColorCategoria(l.Categoria)}"></span>
             <span class="cocina-item-cant">${fmtCantCocina(l.Cantidad)}×</span>
-            <span class="cocina-item-nombre">${l.Descripcion}</span>
+            <span class="cocina-item-nombre">${escapeOrderText(l.Descripcion)}<small class="order-line-notes">${escapeOrderText(orderNotes(l))}</small></span>
             <i class="fas fa-check cocina-item-check"></i>
         `;
+        if (l.pendiente) {
+            const notice = document.createElement('div'); notice.className = 'kitchen-correction';
+            const m = l.pendiente;
+            const text = document.createElement('p'); text.textContent = `${m.tipo} · ANTES: ${m.anterior?.cantidad || 0} × ${m.anterior?.nombre || ''} ${orderNotes(m.anterior || {})} → AHORA: ${m.nueva ? `${m.nueva.cantidad} × ${m.nueva.nombre} ${orderNotes(m.nueva)}` : 'ANULADO'}`;
+            const ack = document.createElement('button'); ack.textContent = 'Reconocer cambio';
+            ack.onclick = e => { e.stopPropagation(); acknowledgeKitchenLine(t.NroTicket, l.LineaId); };
+            notice.append(text, ack); item.append(notice);
+        }
         items.appendChild(item);
     });
     card.appendChild(items);
@@ -1635,20 +1551,144 @@ function construirTarjetaCocina(t) {
     }
     card.appendChild(actions);
 
+    const ticketBtn = document.createElement('button');
+    ticketBtn.type = 'button'; ticketBtn.className = 'cocina-btn-ticket'; ticketBtn.textContent = 'Ver ticket';
+    ticketBtn.onclick = e => { e.stopPropagation(); abrirTicketCocina(t); };
+    actions.appendChild(ticketBtn);
+
     return card;
 }
 
-async function ciclarCocinaLinea(nroTicket, codpro, estadoActual) {
+let cocinaTicketActual = null;
+let cocinaPrintAttempt = null;
+function estadoImpresionCocina(impresion) {
+    if (!impresion) return 'Documento listo para imprimir.';
+    const labels = { en_cola:'En cola de impresión', procesando:'Transmitiendo a impresora', enviado:'Enviado a impresora', error:'Error de impresión', incierto:'Impresión incierta: revise el papel antes de reimprimir' };
+    const estado = impresion.estado || impresion.Estado;
+    const error = impresion.error || impresion.Error;
+    return `${labels[estado] || estado}${error ? `: ${error}` : ''}`;
+}
+function abrirTicketCocina(t) {
+    const dialog = document.getElementById('cocina-ticket-dialog');
+    const pre = document.getElementById('cocina-ticket-documento');
+    if (!dialog || !pre) return;
+    cocinaTicketActual = t;
+    cocinaPrintAttempt = null;
+    const printButton = document.getElementById('cocina-ticket-print');
+    const estado = t.Impresion?.estado || t.Impresion?.Estado;
+    if (printButton) printButton.disabled = !t.EnvioId || ['en_cola','procesando'].includes(estado);
+    if (t.Documento) {
+        pre.textContent = t.Documento;
+        const status = document.getElementById('cocina-ticket-print-status');
+        if (status) status.textContent = estadoImpresionCocina(t.Impresion);
+        dialog.showModal(); return;
+    }
+    const fecha = t.FechaTicket ? new Date(t.FechaTicket).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false }) : '';
+    const lines = ['COMANDA DE COCINA', `Ticket: ${t.NroTicket}`, `Envío: ${t.NumeroEnvio || '—'}`, `Mesa: ${t.NroMesa}`, `Mozo: ${t.Mozo || ''}`, `Fecha: ${fecha}`, '------------------------------'];
+    t.lineas.forEach(l => {
+        const movement = l.pendiente;
+        lines.push(movement ? movement.tipo : 'ADICIÓN');
+        const render = x => { if (!x) return; lines.push(`${fmtCantCocina(x.cantidad)} x ${x.nombre}`); [...(x.notasRapidas || []), x.nota || ''].filter(Boolean).forEach(n => lines.push(`  NOTA: ${n}`)); };
+        if (movement?.anterior) { lines.push('ANTES:'); render(movement.anterior); }
+        lines.push(movement ? 'AHORA:' : ''); render(movement?.nueva || l);
+        lines.push('------------------------------');
+    });
+    pre.textContent = lines.filter(Boolean).join('\n');
+    const status = document.getElementById('cocina-ticket-print-status');
+    if (status) status.textContent = t.Documento ? 'Documento registrado en la cola de impresión.' : 'Documento aún no disponible.';
+    dialog.showModal();
+}
+
+async function imprimirTicketCocina() {
+    const t = cocinaTicketActual, button = document.getElementById('cocina-ticket-print');
+    const status = document.getElementById('cocina-ticket-print-status');
+    if (!t?.EnvioId || !t?.NroTicket || button?.disabled) return;
+    button.disabled = true;
+    if (status) status.textContent = 'Solicitando impresión…';
+    try {
+        cocinaPrintAttempt ||= newOrderId();
+        await orderRequest(`/api/pos/pedido/${encodeURIComponent(t.NroTicket)}/envios/${encodeURIComponent(t.EnvioId)}/reimprimir`, 'POST',
+            { empresa: kitchenCompany(), clave: cocinaPrintAttempt });
+        if (status) status.textContent = 'Reimpresión en cola.';
+    } catch (e) {
+        if (status) status.textContent = e.message;
+        button.disabled = false;
+    }
+}
+
+let cocinaVista = 'tablero';
+function limaDateInput() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+}
+function setCocinaVista(vista) {
+    cocinaVista = vista === 'historial' ? 'historial' : 'tablero';
+    document.querySelectorAll('.cocina-view-tab').forEach(b => b.classList.toggle('active', b.dataset.vista === cocinaVista));
+    document.getElementById('cocina-board').hidden = cocinaVista !== 'tablero';
+    document.getElementById('cocina-chips').hidden = cocinaVista !== 'tablero';
+    document.getElementById('cocina-history').hidden = cocinaVista !== 'historial';
+    if (cocinaVista === 'historial') {
+        const from = document.getElementById('cocina-history-from'), to = document.getElementById('cocina-history-to');
+        if (!from.value) from.value = limaDateInput();
+        if (!to.value) to.value = limaDateInput();
+        loadCocinaHistorial(1);
+    }
+}
+async function loadCocinaHistorial(page = 1) {
+    const empresa = document.getElementById('cocina-empresa-select').value;
+    const results = document.getElementById('cocina-history-results');
+    if (!empresa) { results.textContent = 'Seleccione una empresa.'; return; }
+    const params = new URLSearchParams({ empresa, pagina: page, tamano: 20,
+        desde: document.getElementById('cocina-history-from').value,
+        hasta: document.getElementById('cocina-history-to').value,
+        mesa: document.getElementById('cocina-history-table').value,
+        ticket: document.getElementById('cocina-history-ticket').value,
+        estado: document.getElementById('cocina-history-state').value });
+    results.textContent = 'Cargando historial…';
+    try {
+        const data = await orderRequest(`/api/cocina/historial?${params}`);
+        results.replaceChildren();
+        if (!data.envios.length) results.textContent = 'No hay envíos para estos filtros.';
+        for (const envio of data.envios) {
+            const article = document.createElement('article'); article.className = 'cocina-history-card';
+            const heading = document.createElement('h3'); heading.textContent = `${envio.nroTicket} · Envío ${envio.Numero}`;
+            const meta = document.createElement('p');
+            meta.textContent = `Mesa ${envio.NroMesa} · ${new Date(envio.Fecha).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false })} · ${envio.estadoPedido}`;
+            const audit = document.createElement('p'); audit.textContent = `${envio.Movimientos} movimiento(s) · ${envio.Reconocidos} reconocimiento(s)`;
+            const actions = document.createElement('div'); actions.className = 'cocina-history-actions';
+            const view = document.createElement('button'); view.type = 'button'; view.textContent = 'Ver ticket';
+            const latestJob = envio.trabajos[envio.trabajos.length - 1] || null;
+            view.onclick = () => abrirTicketCocina({ Documento: envio.Documento, NroTicket: envio.nroTicket,
+                EnvioId: envio.Id, Impresion: latestJob }); actions.appendChild(view);
+            const reprint = document.createElement('button'); reprint.type = 'button'; reprint.textContent = 'Reimprimir';
+            reprint.disabled = envio.trabajos.some(j => ['en_cola','procesando'].includes(j.Estado));
+            reprint.onclick = async () => {
+                if (!confirm('Revise si el ticket ya salió. Se imprimirá una copia marcada REIMPRESIÓN.')) return;
+                reprint.disabled = true;
+                try { await orderRequest(`/api/pos/pedido/${encodeURIComponent(envio.nroTicket)}/envios/${envio.Id}/reimprimir`, 'POST', { empresa: Number(empresa), clave: newOrderId() }); await loadCocinaHistorial(page); }
+                catch (e) { alert(e.message); reprint.disabled = false; }
+            };
+            actions.appendChild(reprint); article.append(heading, meta, audit, actions); results.appendChild(article);
+        }
+        const pages = Math.max(1, Math.ceil(data.total / data.tamano));
+        const pager = document.getElementById('cocina-history-pagination'); pager.replaceChildren();
+        const previous = document.createElement('button'); previous.textContent = 'Anterior'; previous.disabled = data.pagina <= 1; previous.onclick = () => loadCocinaHistorial(data.pagina - 1);
+        const label = document.createElement('span'); label.textContent = `Página ${data.pagina} de ${pages}`;
+        const next = document.createElement('button'); next.textContent = 'Siguiente'; next.disabled = data.pagina >= pages; next.onclick = () => loadCocinaHistorial(data.pagina + 1);
+        pager.append(previous, label, next);
+    } catch (e) { results.textContent = e.message; }
+}
+
+async function ciclarCocinaLinea(nroTicket, lineaId, estadoActual) {
     const siguiente = estadoActual < 3 ? estadoActual + 1 : null;
     if (!siguiente) return;
     try {
         const res = await fetch('/api/cocina/linea', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nroTicket, codpro, estado: siguiente })
+            body: JSON.stringify({ nroTicket, lineaId, empresa: kitchenCompany(), estado: siguiente })
         });
         if (!res.ok) throw new Error(await res.text());
-        const fila = cocinaData.find(r => r.NroTicket === nroTicket && r.Codpro === codpro);
+        const fila = cocinaData.find(r => r.NroTicket === nroTicket && r.LineaId === lineaId);
         if (fila) fila.EstadoCocina = siguiente;
         renderCocinaBoard();
     } catch (e) {
@@ -1659,10 +1699,9 @@ async function ciclarCocinaLinea(nroTicket, codpro, estadoActual) {
 
 async function todoListoCocina(nroTicket) {
     try {
-        const res = await fetch(`/api/cocina/ticket/${nroTicket}/todo-listo`, { method: 'PUT' });
+        const res = await fetch(`/api/cocina/ticket/${nroTicket}/todo-listo`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ empresa: kitchenCompany() }) });
         if (!res.ok) throw new Error(await res.text());
-        cocinaData.forEach(r => { if (r.NroTicket === nroTicket && r.EstadoCocina < 3) r.EstadoCocina = 3; });
-        renderCocinaBoard();
+        await loadCocinaPedidos(true);
     } catch (e) {
         console.error(e);
         alert('Error: ' + e.message);
@@ -1671,7 +1710,7 @@ async function todoListoCocina(nroTicket) {
 
 async function entregarCocina(nroTicket) {
     try {
-        const res = await fetch(`/api/cocina/ticket/${nroTicket}/entregado`, { method: 'PUT' });
+        const res = await fetch(`/api/cocina/ticket/${nroTicket}/entregado`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ empresa: kitchenCompany() }) });
         if (!res.ok) throw new Error(await res.text());
         cocinaData = cocinaData.filter(r => r.NroTicket !== nroTicket);
         cocinaUltimoTotal = new Set(cocinaData.map(r => r.NroTicket)).size;
@@ -1694,6 +1733,76 @@ setInterval(() => {
         card.classList.add(semaforoCocina(minutos));
     });
 }, 30000);
+
+// ==========================================
+// FASE 24: CIERRE Y RETENCION DE TURNOS
+// ==========================================
+let selectedShiftClosure = null;
+function shiftCloseScope() {
+    const date = document.getElementById('shift-close-date');
+    if (date && !date.value) date.value = limaDateInput();
+    return { empresa: Number(document.getElementById('shift-close-company').value),
+        turno: Number(document.getElementById('shift-close-turn').value), fechaNegocio: date.value };
+}
+function renderShiftClosurePreview(data) {
+    const container = document.getElementById('shift-close-preview');
+    if (!container) return;
+    selectedShiftClosure = data.cierre || null;
+    container.replaceChildren();
+    const summary = document.createElement('div'); summary.className = 'shift-close-summary';
+    const metrics = [
+        ['Tickets identificados', data.totalTickets], ['Pedidos activos', data.bloqueos.pedidosActivos],
+        ['Cocina pendiente', data.bloqueos.cocinaPendiente], ['Correcciones', data.bloqueos.correccionesPendientes],
+        ['Impresiones activas', data.bloqueos.impresionesActivas]
+    ];
+    for (const [label, value] of metrics) {
+        const metric = document.createElement('div'); metric.className = 'shift-close-metric';
+        const strong = document.createElement('strong'); strong.textContent = value;
+        metric.append(strong, document.createTextNode(label)); summary.append(metric);
+    }
+    container.append(summary);
+    const status = document.createElement('p'); status.className = data.elegible ? 'shift-close-ok' : 'shift-close-warning';
+    status.textContent = data.elegible ? 'El alcance no tiene operaciones pendientes.' : 'Resuelva los bloqueos antes de cerrar.'; container.append(status);
+    if (data.registrosSinTurno) {
+        const warning = document.createElement('p'); warning.className = 'shift-close-warning';
+        warning.textContent = `${data.registrosSinTurno} registro(s) históricos de la empresa no tienen turno/fecha verificables y no serán purgados.`; container.append(warning);
+    }
+    if (selectedShiftClosure) {
+        const existing = document.createElement('p'); existing.textContent = `Cierre: ${selectedShiftClosure.estado}. Purga prevista: ${selectedShiftClosure.purgaProgramada ? new Date(selectedShiftClosure.purgaProgramada).toLocaleString('es-PE') : '—'}`;
+        container.append(existing);
+    }
+    const canClose = data.elegible && (!selectedShiftClosure || selectedShiftClosure.estado === 'reabierto');
+    document.getElementById('shift-close-submit').disabled = !canClose;
+    document.getElementById('shift-reopen-submit').disabled = !selectedShiftClosure || !['cerrado','error'].includes(selectedShiftClosure.estado);
+    document.getElementById('shift-purge-submit').disabled = !selectedShiftClosure || !['cerrado','error'].includes(selectedShiftClosure.estado) || new Date(selectedShiftClosure.purgaProgramada) > new Date();
+}
+async function loadShiftClosurePreview() {
+    const container = document.getElementById('shift-close-preview'); if (!container) return;
+    const params = new URLSearchParams(shiftCloseScope()); container.textContent = 'Revisando datos del turno…';
+    try { renderShiftClosurePreview(await orderRequest(`/api/admin/cierres/preview?${params}`)); }
+    catch (error) { selectedShiftClosure = null; container.textContent = error.message; }
+}
+async function shiftClosureAction(url, confirmacion, question) {
+    const pin = document.getElementById('shift-close-pin');
+    if (!pin.value) return alert('Ingrese el PIN de mantenimiento.');
+    if (!confirm(question)) return;
+    const buttons = document.querySelectorAll('.shift-close-actions button'); buttons.forEach(button => { button.disabled = true; });
+    try { await orderRequest(url, 'POST', { ...shiftCloseScope(), pin: pin.value, confirmacion, clave: newOrderId() }); await loadShiftClosurePreview(); }
+    catch (error) { alert(error.message); }
+    finally { pin.value = ''; }
+}
+function closeSelectedShift() {
+    return shiftClosureAction('/api/admin/cierres', 'CERRAR TURNO', 'El turno quedará cerrado y sus datos se archivarán. ¿Continuar?');
+}
+function reopenSelectedShift() {
+    if (!selectedShiftClosure) return;
+    return shiftClosureAction(`/api/admin/cierres/${selectedShiftClosure.id}/reabrir`, 'REABRIR TURNO', '¿Reabrir este turno y retirar su archivo pendiente?');
+}
+function purgeSelectedShift() {
+    if (!selectedShiftClosure) return;
+    return shiftClosureAction(`/api/admin/cierres/${selectedShiftClosure.id}/purgar`, 'PURGAR DATOS', 'La retención venció. Se borrarán los auxiliares ya archivados. ¿Continuar?');
+}
+
 function toggleTheme() {
     const current = document.documentElement.getAttribute('data-theme') || 'light';
     const target = current === 'light' ? 'dark' : 'light';

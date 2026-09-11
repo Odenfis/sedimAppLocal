@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --check lib/orders.js && node --check lib/shift-closures.js && node --check lib/order-domain.js && node --check lib/print-worker.js && node --check lib/escpos-tcp.js && node --check public/script.js && node --check public/orders-ui.js && node --check public/order-math.js && node --check migrate.js && node --check scripts/recover-table-order.js",
+    "preflight:phase22": "node scripts/preflight-phase22.js",
+    "test:ui": "playwright test",
+    "test:sql": "node test/sql-phase22.js",
+    "recover:table-order": "node scripts/recover-table-order.js"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +24,11 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
+    "iconv-lite": "0.7.0",
     "mssql": "^12.2.0",
     "tmp": "^0.2.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

@@ -3,3 +3,6 @@ npm-debug.log
 .env
 .git
 .gitignore
+
+test-results
+playwright-report

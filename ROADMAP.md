@@ -935,4 +935,192 @@ Todos emiten `broadcastSSE({type:'cocina_updated'})`. Los guardados de pedido/ti
 
 ---
 
-*Última actualización: Agosto 2026 - v3.2*
+*Última actualización: 11 de septiembre de 2026 - v3.4 en validación (Fase 23)*
+
+## Fase 22: Notas, envíos explícitos y cola de impresión (Implementada en código; validación física pendiente)
+
+### Estado actual
+
+- Implementados: notas por línea, separación de cantidades, autoguardado, envío explícito, diferencias incrementales, correcciones, anulaciones, reconocimiento de Cocina, documentos inmutables, reimpresión auditada, cola persistente e historial visual.
+- Validado en código: dominio, navegador y SQL Server mediante un esquema aislado de `tempdb`.
+- Aplicado en la base local: las tablas auxiliares de Fase 22 existen y el flujo se utilizó para recuperar el pedido afectado de mesa 1.
+- Pendiente operativo: reconocer en Cocina las cuatro anulaciones del ticket `T001-248347`; la última liberará la mesa 1.
+- La impresora fue identificada posteriormente como 3nStar RPT004 Ethernet/USB compatible con ESC/POS; la integración y validación física corresponden a la Fase 23.
+
+### Revisión de aislamiento de tablas
+
+Las migraciones `002` y `003` fueron rediseñadas para crear y poblar únicamente tablas nuevas. No ejecutan `ALTER`, `DROP`, `DELETE` ni `UPDATE` sobre `Ticket_c`, `Ticket_d`, `Productos`, `Empleados`, `Tablas`, `Valores`, `Mesas` ni `Cocina_pedidos`. `Cocina_pedidos` conserva su estructura y registros; el estado nuevo se guarda en `Cocina_estados`. `Cocina_pedidos_legacy` recibe una copia en una tabla nueva cuando existe.
+
+`migrate.js` valida cada archivo antes de enviarlo a SQL Server y rechaza operaciones prohibidas o escrituras fuera de la lista de tablas nuevas autorizadas. La transacción y el bloqueo de migraciones se mantienen. El preflight aplica la misma política antes de abrir una conexión de producción.
+
+Las operaciones de runtime de POS siguen pudiendo escribir el pedido comercial según el flujo normal de ventas; esa autorización no se aplica a las migraciones. `Cocina_pedidos` permanece sin cambios y el tablero nuevo usa `Cocina_estados`.
+
+### Cambio de flujo respecto de la fase 21
+
+El autoguardado ya no agrega ni modifica platos en cocina. **Enviar a Cocina**, situado encima de Generar Preventa, registra únicamente las novedades. La preventa se bloquea en cliente y servidor si quedan cambios sin enviar. La ruta antigua de preventa directa devuelve 409 para impedir saltarse este paso.
+
+### POS y cocina
+
+- Líneas con GUID estable, diez notas rápidas de la referencia y nota personalizada de hasta 500 caracteres. Un mismo producto admite instrucciones distintas y separación de cantidades.
+- Agregar unidades a un producto enviado crea una nueva línea pendiente. Las líneas se renderizan por ID conservando su posición.
+- Estados del pedido: Sin enviar, Cambios pendientes y Enviado a cocina. Historial con documento y estado de cada trabajo de impresión.
+- Correcciones y anulaciones incluyen antes/después. Cocina conserva su versión operativa hasta el reconocimiento si el plato está en preparación, listo o entregado. El reconocimiento conserva el estado de preparación.
+- No se puede editar ni entregar una línea con reconocimiento pendiente. “Todo listo” actúa únicamente sobre líneas sin bloqueo; las demás siguen disponibles.
+- El tiempo de espera parte de `Fecha_envio`, almacenada en UTC. El documento muestra fecha/hora de Lima.
+- Comportamiento histórico de esta fase: borrar una comanda enviada producía anulaciones y podía usar `Ticket_c.Estado=4`. La Fase 23 reemplaza este flujo por eliminación física inmediata del ticket comercial y liberación de la mesa.
+- Quitar una línea enviada la mantiene visible en POS como **Anulación pendiente de enviar**, aunque ya no forme parte del importe comercial.
+- La cancelación usa una clave estable guardada en `sessionStorage`; un reintento devuelve el envío original incluso si la primera respuesta se perdió.
+- Una anulación conserva el JSON operativo anterior en `Cocina_estados.Operativa` y actualiza `Anulada`; nunca intenta almacenar SQL `NULL` ni el JSON escalar `null`.
+- Notas e instrucciones se muestran como texto; no se interpretan como HTML ni comandos de impresora.
+
+### Historial de Cocina
+
+El módulo **Pedido Cocina** conserva el tablero operativo y agrega la vista **Historial**. La consulta es paginada y permite filtrar por empresa, rango de fechas de Lima, mesa, ticket y estado del pedido. Cada registro muestra número de envío, fecha, movimientos, reconocimientos, documento original y trabajos de impresión. Desde la misma vista se puede consultar el ticket o solicitar una reimpresión auditada.
+
+Los pedidos anulados desaparecen del tablero una vez resueltos, pero sus envíos y documentos permanecen disponibles en el historial.
+
+### Persistencia y compatibilidad
+
+`002_pedido_lineas_envios.sql` y `003_cocina_historico.sql` agregan control/versionado, líneas operativas, envíos/detalles y trabajos de impresión. `001_create_cocina_pedidos.sql` permanece intacta. El ejecutor aplica **todas las migraciones pendientes y sus registros en una sola transacción**, con bloqueo entre instancias. El servidor abre el puerto después de completar el arranque/migración.
+
+Las instantáneas de línea y movimiento usan JSON validado con `ISJSON`; los IDs, relaciones, orden, baja, versión, estado, fechas y claves únicas son columnas SQL. La instantánea comercial permanece en `Ticket_d`, agrupada por producto/precio; las instrucciones no alteran su descripción comercial. Al separar cantidades fraccionarias, un reparto determinista de centavos entre variantes conserva el total comercial del producto. Los productos y mozos se validan por empresa. Los precios de nuevas líneas y su afectación provienen del catálogo; las líneas existentes conservan su precio.
+
+La migración inicializa `Pedido_control` y `Pedido_lineas` a partir de los pedidos comerciales activos, sin crear envíos ni trabajos de impresión. Los registros existentes de `Cocina_pedidos` se conservan intactos y se copian a `Cocina_pedidos_legacy` para consulta de compatibilidad; el nuevo flujo operativo comienza en las tablas auxiliares.
+
+El 10/09/2026 se consultó el catálogo real sin modificarlo: compatibilidad SQL Server **150**, estructura base coincidente, ningún trigger en Ticket_c/Ticket_d y **112 referencias de objetos** a esas tablas. Existen procedimientos externos relacionados con tickets. Un índice por ticket y bloqueos de fila/rango protegen la lectura y reconstrucción comercial durante cada transacción. `SnapshotComercial` detecta cambios en Ticket_d ajenos a SedimApp y responde 409 en vez de sobrescribirlos. Se debe coordinar qué aplicación edita cada pedido; no hay conciliación automática de cambios externos.
+
+### Contratos nuevos/actualizados
+
+| Método y ruta | Contrato |
+|---|---|
+| GET `/api/pos/pedido?mesa=X&empresa=Y` | `items` por `lineaId`, notas, `enviada`, `pendienteId`; `version`, resumen `cocina`, último estado `impresion` |
+| POST `/api/pos/pedido` | `version` esperada para actualizar, `operacionId`, líneas con ID/notas; admite detalle vacío para un ticket existente |
+| POST `/api/pos/pedido/:nro/enviar-cocina` | `{empresa, version, clave, operacionId}`; `clave` GUID idempotente por ticket; devuelve `envioId` y estado actualizado |
+| GET `/api/pos/pedido/:nro/envios?empresa=X` | Historial y trabajos de impresión |
+| GET `/api/pos/pedido/:nro/envios/:envio/documento?empresa=X` | Documento textual inmutable |
+| POST `/api/pos/pedido/:nro/envios/:envio/reimprimir` | `{empresa, clave}`; copia auditada, sin otro envío de cocina; bloqueada si ya existe trabajo en cola/procesando |
+| PUT `/api/pos/pedido/:nro/pagar` y `/reabrir` | `{empresa, version, operacionId}`; actualizaciones de ticket/mesa transaccionales |
+| DELETE `/api/pos/comanda/:nro?empresa=X` | Body `{version, clave, operacionId}`; desde Fase 23 elimina el ticket comercial y conserva la auditoría auxiliar |
+| PUT `/api/cocina/linea` | `{empresa, nroTicket, lineaId, estado}`; ID estable sustituye Codpro como identidad |
+| PUT `/api/cocina/linea/:linea/reconocer` | `{empresa, nroTicket}`; registra usuario/fecha y aplica corrección |
+| PUT `/api/cocina/ticket/:nro/todo-listo` y `/entregado` | Body `{empresa}`; entrega bloqueada con correcciones pendientes |
+| GET `/api/cocina/historial` | Filtros `empresa`, `desde`, `hasta`, `mesa`, `ticket`, `estado`, `pagina`, `tamano`; devuelve envíos, documentos, reconocimientos y trabajos |
+
+SSE incluye empresa, mesa, ticket, versión e identificador de operación. El cliente conserva el borrador ante 409 y permite compararlo con la versión del servidor antes de descartarlo. Autoguardado, envío y preventa se serializan; los reintentos del envío conservan su clave en sessionStorage.
+
+### Impresora: estado de implementación
+
+La cola y los documentos se implementaron en esta fase. La Fase 23 agrega el transporte físico para la 3nStar RPT004; continúa deshabilitado hasta completar su validación física.
+
+Variables documentadas en `.env.example`: `PRINTER_ENABLED=false`, `PRINTER_HOST`, `PRINTER_PROTOCOL=unverified`, `PRINTER_PORT`, `PRINTER_TIMEOUT_MS=5000`. Papel acordado: 80 mm; ancho imprimible: 72 mm. El documento usa 42 caracteres por línea, pendiente de validar con la fuente física del equipo.
+
+El adaptador futuro debe implementar `send(documento, configuracion)` y devolver `{transmitted:true}` solo tras transmitir; un error solo puede indicar `beforeTransmission=true` si se sabe que **ningún byte** pudo llegar. Debe aplicar timeout, codificación y corte conforme al manual, sin interpretar texto del usuario como comandos. Se inyecta al iniciar `startPrintWorker`.
+
+Estados persistidos: `en_cola`, `procesando`, `enviado`, `error`, `incierto`. `enviado` significa **enviado a impresora**, no impresión física confirmada. El trabajador serializa por bloqueo SQL entre instancias, registra el intento antes de transmitir y recupera trabajos interrumpidos como inciertos. Máximo tres intentos automáticos solo ante errores previos a transmisión; los casos ambiguos requieren revisión y reimpresión explícita.
+
+### Despliegue y validación pendientes
+
+1. Ejecutar `npm run preflight:phase22` para inspeccionar esquema/índices/dependencias y validar sintaxis con PARSEONLY (no ejecuta migraciones).
+2. Coordinar escritores externos, obtener respaldo y pausar operación antes de actualizar. No mezclar versiones del servidor durante el cambio del flujo operativo.
+3. Ejecutar pruebas de integración en un esquema aislado de tempdb con `npm run test:sql`; este comando crea fixtures y elimina su propio esquema al terminar, sin usar la base del negocio.
+4. Reiniciar el servidor con el código actualizado y verificar el registro de migraciones antes de continuar las pruebas reales.
+5. Confirmar marca/modelo/manual POS-D; verificar protocolo, puerto, acceso LAN desde Docker, caracteres españoles, corte y consulta de estado. Integrar el adaptador y efectuar impresión de muestra.
+6. Probar físicamente desde celular y tablet: dos platos iguales con notas distintas, primer envío, adición, corrección, reconocimiento, desconexión/reconexión y reimpresión auditada.
+
+La fase sigue pendiente de aceptación física. Las pruebas de interfaz usan APIs simuladas y las pruebas SQL usan tablas aisladas en `tempdb`; la recuperación descrita abajo sí se ejecutó de forma controlada contra el pedido local afectado.
+
+### Incidencia y recuperación de mesa 1 (10/09/2026)
+
+**Causa:** al cancelar una línea enviada se intentaba reemplazar `Cocina_estados.Operativa` por SQL `NULL`; al reconocer una anulación iniciada se intentaba guardar el JSON escalar `null`. La columna es obligatoria y su restricción `ISJSON` exige un documento JSON válido, por lo que SQL Server revertía la transacción y Cocina no recibía la anulación.
+
+**Corrección:** las anulaciones conservan la última versión operativa. Para líneas pendientes se actualiza directamente `Anulada`; para líneas en preparación, listas o entregadas se registra `PendienteId` y Cocina debe reconocer el cambio. Movimiento, documento, estado y trabajo de impresión permanecen en una transacción.
+
+**Recuperación:** el comando `npm run recover:table-order -- --empresa 2 --mesa 1` localizó y exportó el ticket `T001-248347` antes de intervenir. Tenía cuatro líneas dadas de baja, dos envíos previos y cuatro estados entregados. La ejecución controlada con `--apply` creó el envío 3 con cuatro movimientos `ANULACIÓN`, elevó la versión de 15 a 16 y dejó cuatro reconocimientos pendientes. No se borraron tablas, documentos, correlativos ni pedidos ajenos.
+
+La exportación se guarda en `backups/`, carpeta excluida de Git por contener datos operativos. El comando funciona en modo diagnóstico por defecto y solo modifica el pedido cuando recibe `--apply`.
+
+### Verificación de esta entrega (10/09/2026)
+
+- `npm run check`: sintaxis JavaScript validada.
+- `npm test`: **12 pruebas de dominio aprobadas**, incluidas notas, diferencias, cantidades fraccionarias, documentos, validación de migraciones y clasificación de fallos.
+- `npm run test:ui`: **6 pruebas Chrome aprobadas**, incluidas notas/separación, serialización del guardado, conflicto 409, móvil, reconocimiento y visibilidad de una anulación hasta enviarla.
+- `npm run test:sql`: **11 escenarios SQL aprobados**, incluida la reproducción de fallo de cola, rollback, concurrencia, corrección/reconocimiento, anulación directa con JSON válido, reintento idempotente, historial y liberación posterior al reconocimiento. El esquema temporal se eliminó al finalizar.
+- `git diff --check`: sin errores de espacios o formato del parche.
+- Pendiente histórico: reconocimiento operativo del ticket recuperado y aceptación física de impresión; la integración RPT004 se continúa en Fase 23.
+
+---
+
+## Fase 23: Borrado comercial definitivo, cantidades e impresión RPT004 (Implementada en código; validación física pendiente)
+
+### Pedidos y mesas
+
+- Un pedido existente cuyo detalle queda vacío elimina `Ticket_d` y después `Ticket_c` dentro de la misma transacción. La mesa vuelve inmediatamente a `Estado=1` si no tiene otro pedido activo.
+- El flujo nuevo no escribe `Ticket_c.Estado=4`. `POST /api/pos/pedido` con detalle vacío y `DELETE /api/pos/comanda/:nro` comparten la misma operación idempotente.
+- `Pedido_control`, `Pedido_lineas`, `Cocina_envios`, detalles, estados y trabajos de impresión se conservan como auditoría. Las líneas quedan de baja, los estados inactivos y los envíos históricos.
+- El historial usa la cabecera JSON del envío cuando `Ticket_c` ya no existe; estos pedidos se presentan como anulados y desaparecen del tablero operativo.
+
+### Cantidades e interfaz
+
+- Las adiciones posteriores a un envío conservan GUID independientes para Cocina, pero las líneas con producto, precio e instrucciones idénticas se agrupan visualmente.
+- El contador muestra la cantidad comercial total y la etiqueta `+N pendiente de enviar`; las instrucciones diferentes nunca se agrupan.
+- El sidebar colapsado oculta el nombre del usuario, centra los iconos del pie y conserva el usuario mediante atributos accesibles.
+- El ticket de Cocina admite documentos extensos mediante un cuerpo desplazable y acciones fijas. El botón Copiar fue reemplazado por Imprimir y reutiliza la reimpresión auditada e idempotente.
+
+### 3nStar RPT004
+
+- Transporte TCP ESC/POS implementado con `node:net`, codificación CP850, puerto configurable con valor inicial 9100, avance y corte automático.
+- Configuración: `PRINTER_PROTOCOL=escpos_tcp`, `PRINTER_HOST`, `PRINTER_PORT=9100`, `PRINTER_CODEPAGE=cp850`, `PRINTER_CUT=true` y `PRINTER_ENABLED=false` hasta la prueba física.
+- La respuesta de Cocina incluye `envioId` y el último estado de impresión. El diálogo muestra cola, transmisión, error o estado incierto y bloquea duplicados mientras exista un trabajo pendiente.
+
+### Validación
+
+- Pruebas de dominio incluyen la trama ESC/POS y caracteres españoles.
+- Pruebas de navegador cubren cantidad agrupada, borrado automático, sidebar colapsado, ticket de 100 líneas y doble clic de impresión.
+- Pruebas SQL cubren eliminación de `Ticket_d`/`Ticket_c`, mesa libre, ausencia de estado 4, reintento idempotente y conservación del historial.
+- Pendiente física: asignar IP fija o reserva DHCP, confirmar puerto mediante autoprueba, validar CP850, ancho 42/48, corte y comportamiento sin papel antes de activar `PRINTER_ENABLED=true`.
+
+---
+
+## Fase 24: Estados visibles de Cocina y cierre seguro de turnos (Implementada en código)
+
+### Estados del producto y tiempo real
+
+- `Cocina_estados` continúa como única fuente del progreso. Detalle Pedido presenta `Enviado a Cocina`, `En preparación`, `Listo en Cocina` y `Producto Entregado` para estados 1–4.
+- Las líneas comerciales agrupadas muestran una etiqueta única cuando coinciden y un desglose por cantidades cuando tienen estados distintos. Las unidades aún no enviadas y las correcciones pendientes permanecen visibles por separado.
+- `GET /api/pos/pedido/:nro/estados-cocina` devuelve únicamente metadatos de Cocina por `lineaId`. Los eventos SSE los fusionan sin reemplazar cantidades, precios, notas ni un borrador local.
+- “Todo listo” y “Entregar” conservan las validaciones transaccionales existentes. El ticket entregado sale del tablero, mientras el POS puede consultar su estado 4.
+
+### Cierre, archivo y retención
+
+- La migración `005_cierres_turno.sql` crea `Cierres_turno`, `Cierre_turno_archivos` y `Cierre_turno_operaciones` sin modificar las tablas comerciales ni `Cocina_pedidos`.
+- Cada cierre se limita a empresa, turno y fecha de negocio. Un bloqueo de aplicación e idempotency key evitan cierres simultáneos o duplicados.
+- El cierre falla si encuentra pedidos comerciales activos, platos sin entregar, correcciones sin reconocer o trabajos de impresión en cola/procesando.
+- Cada ticket elegible se archiva como JSON completo con hash SHA-256 individual y global. Las cabeceras de nuevos envíos incluyen `turno` y `fechaNegocio`; los históricos que carecen de ambos quedan pendientes de conciliación y fuera de la purga.
+- El alcance cerrado rechaza pedidos nuevos y reimpresiones. Puede reabrirse antes de purgarse.
+- La retención predeterminada es de 30 días. El trabajador revisa cierres vencidos al arrancar y cada seis horas, verifica los hashes y elimina exclusivamente las tablas auxiliares en orden de dependencias. Un error revierte la transacción, conserva el archivo y deja el cierre en estado `error`.
+- `Ticket_c`, `Ticket_d`, `Mesas` y `Cocina_pedidos` nunca forman parte de esta purga.
+
+### Seguridad e interfaz
+
+- Las mutaciones requieren sesión, confirmación explícita y `MAINTENANCE_PIN_HASH`; bcrypt compara el PIN sin almacenarlo ni registrarlo. Cinco fallos bloquean nuevos intentos durante cinco minutos.
+- La nueva vista **Cierre de Turno** muestra alcance, bloqueos, registros históricos no conciliables, retención y acciones habilitadas según el estado.
+- Variables: `MAINTENANCE_PIN_HASH`, `KITCHEN_RETENTION_DAYS=30` y `KITCHEN_RETENTION_INTERVAL_MS=21600000`.
+
+### Contratos
+
+| Método y ruta | Contrato |
+|---|---|
+| GET `/api/pos/pedido/:nro/estados-cocina?empresa=X` | Estado, corrección y anulación por `lineaId`, sin sustituir el pedido local |
+| GET `/api/admin/cierres/preview` | Alcance, tickets, bloqueos, históricos sin turno y cierre existente |
+| POST `/api/admin/cierres` | Cierra y archiva con PIN, confirmación `CERRAR TURNO` y clave GUID |
+| GET `/api/admin/cierres/:id` | Estado, conteos, hash global y hashes por ticket |
+| POST `/api/admin/cierres/:id/reabrir` | Reabre antes de la purga con PIN y confirmación explícita |
+| POST `/api/admin/cierres/:id/purgar` | Purga solo después de vencer la retención y superar la verificación de integridad |
+
+### Validación de esta entrega (11/09/2026)
+
+- `npm run check`: sintaxis validada, incluido el servicio de cierres.
+- `npm test`: **14 pruebas aprobadas**, incluida la agregación homogénea/mixta de estados.
+- `npm run test:ui`: **12 pruebas Chrome aprobadas**, incluidos Listo/Entregado, estados mixtos y pantalla protegida de cierre.
+- `npm run test:sql`: **13 escenarios aprobados** en esquema aislado de `tempdb`, incluido estado 4 visible, reapertura, archivo/hash, bloqueo del turno, purga idempotente y conservación comercial/heredada.
+- `git diff --check`: sin errores de formato.

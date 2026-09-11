@@ -1,62 +1,43 @@
 const fs = require('fs');
 const path = require('path');
 const { getConnection, sql } = require('./db');
-
-async function runMigrations() {
-    let pool;
-    try {
-        pool = await getConnection();
-        console.log('🚀 Checking for pending migrations...');
-
-        // 1. Create Migrations table if it doesn't exist
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Migrations' AND xtype='U')
-            CREATE TABLE Migrations (
-                Id INT PRIMARY KEY IDENTITY(1,1),
-                MigrationName NVARCHAR(255) NOT NULL,
-                AppliedAt DATETIME DEFAULT GETDATE()
-            )
-        `);
-
-        // 2. Get list of applied migrations
-        const result = await pool.request().query('SELECT MigrationName FROM Migrations');
-        const appliedMigrations = result.recordset.map(r => r.MigrationName);
-
-        // 3. Read migrations folder
-        const migrationsDir = path.join(__dirname, 'migrations');
-        const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
-
-        let appliedCount = 0;
-
-        for (const file of files) {
-            if (!appliedMigrations.includes(file)) {
-                console.log(`Applying migration: ${file}...`);
-                const query = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-                
-                await pool.request().query(query);
-                await pool.request()
-                    .input('name', sql.NVarChar, file)
-                    .query('INSERT INTO Migrations (MigrationName) VALUES (@name)');
-                
-                console.log(`✅ Successfully applied ${file}`);
-                appliedCount++;
-            }
+function validateMigration(source, file) {
+    const stripped = source.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    if (/\b(?:ALTER|DROP|TRUNCATE|DELETE|UPDATE|MERGE|EXEC|TRIGGER)\b/i.test(stripped)) {
+        throw new Error(`Migración ${file} contiene una operación prohibida sobre el esquema protegido`);
+    }
+    const writes = [...stripped.matchAll(/\bINSERT\s+(?:INTO\s+)?(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi), ...stripped.matchAll(/\bCREATE\s+INDEX\s+\[?[A-Za-z0-9_]+\]?\s+ON\s+(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi)];
+    for (const match of writes) {
+        const table = match[1].toLowerCase();
+        if (!['pedido_control','pedido_lineas','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','migrations'].includes(table)) {
+            throw new Error(`Migración ${file} intenta escribir o indexar una tabla no autorizada: ${table}`);
         }
-
-        if (appliedCount === 0) {
-            console.log('✨ Database is up to date.');
-        } else {
-            console.log(`📦 Applied ${appliedCount} new migrations.`);
-        }
-
-    } catch (err) {
-        console.error('❌ No se pudo aplicar migraciones:', err.message);
-        throw err;
     }
 }
-
-if (require.main === module) {
-    runMigrations();
+async function runMigrations() {
+    const pool = await getConnection();
+    const tx = new sql.Transaction(pool);
+    await tx.begin();
+    try {
+        await new sql.Request(tx).query(`
+            DECLARE @result INT;
+            EXEC @result=sp_getapplock @Resource='sedim-migrations',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=30000;
+            IF @result<0 THROW 51000, 'No se obtuvo bloqueo de migraciones', 1;
+            IF OBJECT_ID('Migrations') IS NULL CREATE TABLE Migrations (
+                Id INT PRIMARY KEY IDENTITY(1,1), MigrationName NVARCHAR(255) NOT NULL, AppliedAt DATETIME DEFAULT GETDATE()
+            );`);
+        const applied = (await new sql.Request(tx).query('SELECT MigrationName FROM Migrations')).recordset.map(r => r.MigrationName);
+        const files = fs.readdirSync(path.join(__dirname, 'migrations')).filter(f => f.endsWith('.sql')).sort();
+        for (const file of files.filter(f => !applied.includes(f))) {
+            const source = fs.readFileSync(path.join(__dirname, 'migrations', file), 'utf8');
+            validateMigration(source, file);
+            await new sql.Request(tx).query(source);
+            await new sql.Request(tx).input('name', sql.NVarChar(255), file).query('INSERT Migrations(MigrationName) VALUES(@name)');
+            console.log(`Migración preparada: ${file}`);
+        }
+        await tx.commit();
+    } catch (e) { try { await tx.rollback(); } catch {} throw e; }
 }
-
+if (require.main === module) runMigrations().then(() => sql.close()).catch(e => { console.error(e.message); process.exitCode = 1; sql.close(); });
 module.exports = runMigrations;
+module.exports.validateMigration = validateMigration;

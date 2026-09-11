@@ -419,6 +419,7 @@ button {
 /* Ocultar SOLO textos y flechas (No ocultar .submenu-toggle) */
 .sidebar.collapsed .brand,
 .sidebar.collapsed li span,
+.sidebar.collapsed #sidebar-user-name,
 .sidebar.collapsed .arrow-icon {
     display: none !important;
 }
@@ -459,6 +460,21 @@ button {
     border-radius: 10px;
     position: relative;
     /* Para manejo de clicks */
+}
+
+.sidebar.collapsed .sidebar-footer .user-info,
+.sidebar.collapsed .sidebar-footer li {
+    width: 45px;
+    height: 45px;
+    margin: 5px auto;
+    padding: 0 !important;
+    justify-content: center;
+    box-sizing: border-box;
+}
+
+.sidebar.collapsed .sidebar-footer i {
+    margin: 0 !important;
+    min-width: 0 !important;
 }
 
 /* Ajuste específico para los contenedores de submenú (Operaciones/Reportes) */
@@ -2195,6 +2211,26 @@ form label {
     padding: 3px 10px;
     font-size: 0.85rem;
 }
+.cocina-envio,.cocina-mozo { font-size:.78rem; color:var(--text-secondary); }
+.cocina-btn-ticket { width:100%; margin-top:8px; border:1px solid var(--accent); border-radius:8px; padding:9px; background:transparent; color:var(--accent); font-weight:700; cursor:pointer; }
+.cocina-ticket-preview { background:#fff; color:#111; border:1px solid #ddd; padding:18px; font:14px/1.45 Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; width:min(72mm,100%); box-sizing:border-box; margin:0 auto; }
+.cocina-ticket-dialog { width:min(520px,94vw); max-width:none; max-height:90dvh; overflow:hidden; }
+.cocina-ticket-dialog[open] { display:flex; flex-direction:column; }
+.cocina-ticket-body { min-height:0; overflow:auto; overscroll-behavior:contain; padding:16px 4px; }
+.cocina-ticket-actions { flex:none; margin-top:10px; padding-top:12px; border-top:1px solid var(--border-color); background:var(--card-bg); }
+.cocina-ticket-actions button:disabled { opacity:.55; cursor:not-allowed; }
+.order-pending-cancellations { margin:10px 0; padding:10px; border:1px solid #ef4444; border-radius:8px; background:rgba(239,68,68,.08); color:var(--text-color); }
+.order-pending-cancellations strong { display:block; color:#dc2626; margin-bottom:5px; }
+.order-pending-cancellations div { font-size:.86rem; padding:3px 0; }
+.cocina-history { margin-top:14px; }
+#cocina-history-filters { display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:12px; background:var(--card-bg); border:1px solid var(--border-color); border-radius:10px; }
+#cocina-history-filters label { display:grid; gap:4px; font-size:.82rem; color:var(--text-secondary); }
+#cocina-history-filters input,#cocina-history-filters select,#cocina-history-filters button { min-height:36px; padding:7px 9px; border:1px solid var(--border-color); border-radius:7px; background:var(--card-bg); color:var(--text-color); }
+#cocina-history-results { display:grid; gap:10px; margin-top:12px; }
+.cocina-history-card { padding:14px; border:1px solid var(--border-color); border-left:4px solid var(--accent); border-radius:10px; background:var(--card-bg); }
+.cocina-history-card h3,.cocina-history-card p { margin:0 0 6px; }
+.cocina-history-actions,#cocina-history-pagination { display:flex; gap:8px; align-items:center; }
+#cocina-history-pagination { justify-content:center; margin:14px 0; }
 
 .cocina-timer {
     font-family: 'Consolas', monospace;
@@ -2289,3 +2325,44 @@ form label {
     margin-bottom: 8px;
     display: block;
 }
+/* Fase 22: instrucciones, envíos y correcciones */
+.pos-order-actions { display: flex; flex-direction: column; gap: 8px; }
+.btn-send-kitchen { background: #19a8ce; color: #102d37; border: 0; border-radius: 12px; padding: 14px 18px; font-weight: 700; cursor: pointer; }
+.btn-send-kitchen:disabled { opacity: .5; cursor: not-allowed; }
+.order-secondary, .order-line-tools button { border: 1px solid #9ca3af; border-radius: 8px; padding: 8px 10px; background: transparent; color: inherit; cursor: pointer; }
+.order-line-notes { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: #bc651c; font-size: .85rem; margin-top: 5px; }
+.order-quantity-pending { display:block; margin-top:4px; color:#b45309; font-size:.82rem; font-weight:700; }
+.order-kitchen-line-status { display:block; margin-top:4px; color:var(--accent); font-weight:700; }
+.order-line-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+#order-save-message, #order-print-status { overflow-wrap: anywhere; }
+#order-save-message { color: #b45309; }
+.order-dialog { width: min(650px, 92vw); max-height: 90dvh; box-sizing: border-box; overflow-y: auto; border: 1px solid #777; border-radius: 20px; padding: 28px; background: var(--card-bg, #fff); color: var(--text-color, #252525); }
+.order-dialog::backdrop { background: #0009; }
+.order-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.order-dialog-heading h2 { margin: 0; }
+.order-dialog button { min-height: 44px; cursor: pointer; }
+.order-dialog-heading button { border: 0; background: transparent; font-size: 28px; color: inherit; }
+#order-note-product { color: #bc651c; }
+#order-quick-notes { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; }
+#order-quick-notes button { padding: 10px 14px; border: 1px solid #888; border-radius: 12px; background: transparent; color: inherit; }
+#order-quick-notes button[aria-pressed="true"] { background: #b9edf8; color: #133844; border-color: #19a8ce; }
+.order-dialog textarea { display: block; width: 100%; box-sizing: border-box; margin: 10px 0; padding: 15px; border: 1px solid #888; border-radius: 14px; font: inherit; resize: vertical; background: transparent; color: inherit; }
+.order-dialog-actions { display: flex; gap: 12px; margin-top: 25px; }
+.order-dialog-actions button { flex: 1; border-radius: 12px; border: 1px solid #888; padding: 10px; }
+.order-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+#order-history-content section { border-bottom: 1px solid #aaa; padding-bottom: 20px; margin-bottom: 20px; }
+.kitchen-correction { flex-basis: 100%; border: 2px solid #e99b25; border-radius: 8px; padding: 10px; background: #fff1d5; color: #3c2606; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kitchen-correction button { padding: 10px; min-height: 44px; }
+.cocina-item:has(.kitchen-correction) { flex-wrap: wrap; }
+@media(max-width:480px) { .order-dialog { padding: 18px; } .order-dialog-heading h2 { font-size: 1.3rem; } .order-dialog-actions { flex-wrap: wrap; } .order-line-tools button { min-height: 44px; } }
+.shift-close-layout { display:grid; grid-template-columns:minmax(260px,360px) minmax(320px,1fr); gap:20px; margin-top:20px; }
+.shift-close-card { background:var(--card-bg); border:1px solid var(--border-color); border-radius:16px; padding:22px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:14px; }
+.shift-close-card label { display:flex; flex-direction:column; gap:6px; font-weight:700; }
+.shift-close-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+.shift-close-metric { padding:12px; border:1px solid var(--border-color); border-radius:10px; }
+.shift-close-metric strong { display:block; font-size:1.3rem; }
+.shift-close-warning { color:#b45309; font-weight:700; }
+.shift-close-ok { color:var(--green-status); font-weight:700; }
+.shift-close-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.shift-close-actions button { min-height:44px; padding:10px 14px; }
+@media(max-width:800px) { .shift-close-layout { grid-template-columns:1fr; } }

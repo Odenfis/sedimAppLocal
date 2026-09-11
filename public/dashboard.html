@@ -36,10 +36,13 @@
                 <li onclick="showView('cocina')" data-module="cocina">
                     <i class="fas fa-fire-burner"></i> <span>Pedido Cocina</span>
                 </li>
+                <li onclick="showView('cierres')" data-module="cierres">
+                    <i class="fas fa-lock"></i> <span>Cierre de Turno</span>
+                </li>
             </ul>
 
             <div class="sidebar-footer">
-                <div class="user-info">
+                <div class="user-info" aria-label="Usuario: Usuario" title="Usuario">
                     <i class="fas fa-user"></i> <span id="sidebar-user-name">Usuario</span>
                 </div>
                 <li onclick="logout()" class="logout-btn">
@@ -154,6 +157,7 @@
                         <div id="pos-cart-items" class="pos-cart-items">
                             <!-- Ítems del carrito -->
                         </div>
+                        <div id="order-pending-cancellations" class="order-pending-cancellations" hidden></div>
 
                         <div class="pos-cart-totals">
                             <div class="total-row"><span>Subtotal:</span> <span id="pos-subtotal">S/ 0.00</span></div>
@@ -162,6 +166,13 @@
                         </div>
 
                         <div class="pos-order-actions">
+                            <strong id="order-kitchen-status" role="status">Sin enviar</strong>
+                            <small id="order-save-message" role="status"></small>
+                            <button id="order-retry-save" hidden onclick="guardarMesa()">Reintentar guardado</button>
+                            <button id="order-review-conflict" hidden onclick="reviewOrderConflict()">Revisar versión actual</button>
+                            <small id="order-print-status" role="status"></small>
+                            <button id="order-envios" class="order-secondary" onclick="showOrderHistory()">Historial e impresión</button>
+                            <button id="btn-enviar-cocina" class="btn-send-kitchen" onclick="sendOrderKitchen()">Enviar a Cocina</button>
                             <button class="btn-pay-now" onclick="processPOSPayment()">
                                 <i class="fas fa-file-invoice"></i> GENERAR PREVENTA
                             </button>
@@ -200,6 +211,11 @@
                     </button>
                 </div>
 
+                <div class="cocina-chips">
+                    <button class="cocina-chip cocina-view-tab active" data-vista="tablero" onclick="setCocinaVista('tablero')">Tablero</button>
+                    <button class="cocina-chip cocina-view-tab" data-vista="historial" onclick="setCocinaVista('historial')">Historial</button>
+                </div>
+
                 <div id="cocina-chips" class="cocina-chips">
                     <button class="cocina-chip active" data-filtro="todas" onclick="setCocinaFiltro('todas')">Todas</button>
                     <button class="cocina-chip" data-filtro="pendiente" onclick="setCocinaFiltro('pendiente')">Pendientes</button>
@@ -221,7 +237,55 @@
                         <div class="cocina-col-body"></div>
                     </div>
                 </div>
+                <section id="cocina-history" class="cocina-history" hidden>
+                    <form id="cocina-history-filters" onsubmit="event.preventDefault(); loadCocinaHistorial(1)">
+                        <label>Desde <input id="cocina-history-from" type="date"></label>
+                        <label>Hasta <input id="cocina-history-to" type="date"></label>
+                        <label>Mesa <input id="cocina-history-table" type="number" min="1"></label>
+                        <label>Ticket <input id="cocina-history-ticket" maxlength="20"></label>
+                        <label>Estado <select id="cocina-history-state"><option value="">Todos</option><option value="activo">Activo</option><option value="cerrado">Cerrado</option><option value="anulado">Anulado</option></select></label>
+                        <button type="submit">Buscar</button>
+                    </form>
+                    <div id="cocina-history-results"></div>
+                    <div id="cocina-history-pagination"></div>
+                </section>
             </div>
+
+            <dialog id="cocina-ticket-dialog" class="order-dialog cocina-ticket-dialog">
+                <div class="order-dialog-heading"><h2>Ticket de Cocina</h2><button onclick="document.getElementById('cocina-ticket-dialog').close()" aria-label="Cerrar">×</button></div>
+                <div class="cocina-ticket-body"><pre id="cocina-ticket-documento" class="cocina-ticket-preview"></pre></div>
+                <p id="cocina-ticket-print-status" role="status"></p>
+                <div class="order-dialog-actions cocina-ticket-actions"><button id="cocina-ticket-print" onclick="imprimirTicketCocina()"><i class="fas fa-print"></i> Imprimir</button><button onclick="document.getElementById('cocina-ticket-dialog').close()">Cerrar</button></div>
+            </dialog>
+
+            <section id="view-cierres" class="view-section" style="display:none;">
+                <header><h1>Cierre de Turno</h1></header>
+                <div class="shift-close-layout">
+                    <form class="shift-close-card" onsubmit="event.preventDefault(); loadShiftClosurePreview()">
+                        <h2>Alcance</h2>
+                        <label>Empresa
+                            <select id="shift-close-company" required>
+                                <option value="02">Cocineria</option><option value="04">Mar Picante 1</option><option value="06">Inversiones Abruzzo SAC</option>
+                            </select>
+                        </label>
+                        <label>Turno
+                            <select id="shift-close-turn" required><option value="1">Turno 1</option><option value="2">Turno 2</option></select>
+                        </label>
+                        <label>Fecha de negocio <input id="shift-close-date" type="date" required></label>
+                        <button type="submit" class="order-secondary">Revisar cierre</button>
+                    </form>
+                    <section class="shift-close-card" aria-live="polite">
+                        <h2>Validación</h2>
+                        <div id="shift-close-preview">Seleccione el alcance para revisar.</div>
+                        <label>PIN de mantenimiento <input id="shift-close-pin" type="password" inputmode="numeric" autocomplete="off"></label>
+                        <div class="shift-close-actions">
+                            <button id="shift-close-submit" type="button" onclick="closeSelectedShift()" disabled>Cerrar y archivar</button>
+                            <button id="shift-reopen-submit" type="button" onclick="reopenSelectedShift()" disabled>Reabrir</button>
+                            <button id="shift-purge-submit" type="button" class="btn-delete" onclick="purgeSelectedShift()" disabled>Purgar vencido</button>
+                        </div>
+                    </section>
+                </div>
+            </section>
 
             <!-- MODAL MOZO -->
             <div id="modal-mozo" class="modal">
@@ -239,6 +303,27 @@
         </div>
     </div>
 
+    <dialog id="order-notes-dialog" class="order-dialog" aria-labelledby="order-notes-title">
+        <div class="order-dialog-heading"><h2 id="order-notes-title">Instrucciones de Cocina</h2><button aria-label="Cerrar" onclick="closeOrderNotes()">×</button></div>
+        <h3 id="order-note-product"></h3><hr>
+        <p>Notas rápidas comunes:</p><div id="order-quick-notes"></div>
+        <label for="order-note-text">Nota personalizada:</label>
+        <textarea id="order-note-text" maxlength="500" rows="4" placeholder="Ej.: Sin sal, término 3/4…"></textarea>
+        <small>Máximo 500 caracteres. Las instrucciones se aplican a toda esta línea.</small>
+        <div class="order-dialog-actions"><button onclick="saveOrderNotes(true)">Borrar nota</button><button onclick="closeOrderNotes()">Cancelar</button><button class="btn-send-kitchen" onclick="saveOrderNotes()">Guardar</button></div>
+    </dialog>
+    <dialog id="order-history-dialog" class="order-dialog" aria-label="Historial e impresión">
+        <div class="order-dialog-heading"><h2>Envíos a cocina</h2><button onclick="document.getElementById('order-history-dialog').close()" aria-label="Cerrar">×</button></div>
+        <div id="order-history-content"></div>
+    </dialog>
+    <dialog id="order-conflict-dialog" class="order-dialog" aria-label="Revisar conflicto">
+        <h2>El pedido cambió</h2><h3>Tu borrador (conservado)</h3><pre id="order-conflict-local"></pre>
+        <h3>Versión del servidor</h3><pre id="order-conflict-server"></pre>
+        <button onclick="document.getElementById('order-conflict-dialog').close()">Conservar borrador</button>
+        <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
+    </dialog>
+    <script src="order-math.js"></script>
+    <script src="orders-ui.js"></script>
     <script src="script.js"></script>
 </body>
 
