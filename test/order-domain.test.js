@@ -61,9 +61,14 @@ test('solo reintenta fallos explícitamente anteriores a transmisión, máximo 3
 });
 
 test('RPT004 recibe trama ESC/POS CP850 con avance y corte configurables', async () => {
-    const frame = buildEscPosFrame('COMANDA\nJosé · ñ', { codepage: 'cp850', cut: true });
-    assert.deepEqual([...frame.subarray(0, 5)], [0x1b, 0x40, 0x1b, 0x74, 0x02]);
-    assert.ok(frame.includes(Buffer.from([0xa4]))); // ñ en CP850
+    const spanish = 'áéíóú ÁÉÍÓÚ ñÑ üÜ ¿¡';
+    const frame = buildEscPosFrame(`COMANDA\n${spanish}`, { codepage: 'cp850', cut: true });
+    assert.deepEqual([...frame.subarray(0, 7)], [0x1b, 0x40, 0x1c, 0x2e, 0x1b, 0x74, 0x02]);
+    assert.ok(frame.includes(Buffer.from([
+        0xa0, 0x82, 0xa1, 0xa2, 0xa3, 0x20,
+        0xb5, 0x90, 0xd6, 0xe0, 0xe9, 0x20,
+        0xa4, 0xa5, 0x20, 0x81, 0x9a, 0x20, 0xa8, 0xad
+    ])));
     assert.deepEqual([...frame.subarray(-3)], [0x1d, 0x56, 0x00]);
     const withoutCut = buildEscPosFrame('uno', { codepage: 'cp850', cut: false });
     assert.notDeepEqual([...withoutCut.subarray(-3)], [0x1d, 0x56, 0x00]);

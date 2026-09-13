@@ -1960,7 +1960,7 @@ form label {
 }
 
 /* MEDIA QUERIES */
-@media (max-width: 1024px) {
+@media (max-width: 1200px) {
     .sidebar {
         position: fixed;
         height: 100%;

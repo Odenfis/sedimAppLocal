@@ -241,8 +241,8 @@ function toggleSubmenu(element) {
 function toggleSidebar() {
     const sidebar = document.getElementById('sidebar');
     const overlay = document.getElementById('mobile-overlay');
-    const isMobile = window.innerWidth <= 1024;
-    if (isMobile) { sidebar.classList.toggle('open'); overlay.classList.toggle('active'); }
+    const isCompact = window.innerWidth <= 1200;
+    if (isCompact) { sidebar.classList.toggle('open'); overlay.classList.toggle('active'); }
     else {
         sidebar.classList.toggle('collapsed');
         const icon = document.querySelector('.toggle-btn i');
@@ -250,12 +250,15 @@ function toggleSidebar() {
         else { icon.classList.remove('fa-arrow-right'); icon.classList.add('fa-bars'); }
     }
 }
+let lastViewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
 window.addEventListener('resize', () => {
-    if (window.innerWidth > 1024) {
+    const viewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+    if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('mobile-overlay').classList.remove('active');
     }
-    if (window.innerWidth > 480) closeCartSheet();
+    if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) closeCartSheet();
+    lastViewportOrientation = viewportOrientation;
 });
 // ... existing code ...
 async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; }
@@ -531,7 +534,7 @@ function updatePOSViewMode() {
     if (posIsReadOnly) {
         if (payBtn) {
             payBtn.disabled = true;
-            payBtn.innerHTML = '<i class="fas fa-check-circle"></i> PREVENTA REALIZADA';
+            payBtn.innerHTML = '<i class="fas fa-check-circle"></i> <span>PREVENTA REALIZADA</span>';
             payBtn.style.background = '#9ca3af';
             payBtn.style.cursor = 'not-allowed';
             payBtn.style.boxShadow = 'none';
@@ -554,7 +557,7 @@ function updatePOSViewMode() {
     } else {
         if (payBtn) {
             payBtn.disabled = false;
-            payBtn.innerHTML = '<i class="fas fa-file-invoice"></i> GENERAR PREVENTA';
+            payBtn.innerHTML = '<i class="fas fa-file-invoice"></i> <span>GENERAR PREVENTA</span>';
             payBtn.style.background = '';
             payBtn.style.cursor = 'pointer';
             payBtn.style.boxShadow = '';
@@ -1081,6 +1084,9 @@ function updateCartUI() {
         }
     }
 
+    const emptyState = document.getElementById('pos-cart-empty');
+    if (emptyState) emptyState.hidden = filas.length > 0 || orderPendingCancellations.length > 0;
+
     document.getElementById('pos-subtotal').innerText = `S/ ${subtotal.toFixed(2)}`;
     document.getElementById('pos-igv').innerText = `S/ ${totalIgv.toFixed(2)}`;
     document.getElementById('pos-total').innerText = `S/ ${total.toFixed(2)}`;
@@ -1161,33 +1167,90 @@ showView = function(viewName) {
         orderFlush().then(() => showView(viewName)).catch(e => alert(e.message)); return;
     }
     originalShowView(viewName);
+    const cartTrigger = document.getElementById('pos-cart-fab');
+    if (cartTrigger) cartTrigger.hidden = viewName !== 'pos-order';
+    if (viewName !== 'pos-order') closeCartSheet();
     if (viewName === 'pos-tables') loadPOSTables();
     if (viewName === 'cocina') loadCocinaPedidos();
     if (viewName === 'cierres') loadShiftClosurePreview();
 };
 
 // ==========================================
-//  RESPONSIVE: BOTTOM-SHEET CARRITO (MÓVIL)
+//  RESPONSIVE: DRAWER DEL CARRITO (MÓVIL Y TABLET)
 // ==========================================
-function isMobileView() {
-    return window.innerWidth <= 480;
+const compactOrderMedia = window.matchMedia('(max-width: 1200px)');
+let cartSheetReturnFocus = null;
+let cartSheetFocusTimer = null;
+
+function isCompactOrderView() { return compactOrderMedia.matches; }
+
+function syncCartSheetAccessibility() {
+    const sheet = document.getElementById('pos-order-sidebar');
+    const trigger = document.getElementById('pos-cart-fab');
+    if (!sheet || !trigger) return;
+    const compact = isCompactOrderView();
+    const open = sheet.classList.contains('open') && compact;
+    sheet.setAttribute('aria-hidden', String(compact && !open));
+    sheet.setAttribute('aria-modal', String(open));
+    trigger.setAttribute('aria-expanded', String(open));
+    const totals = document.getElementById('pos-totals-details');
+    if (totals && !compact) totals.open = true;
 }
 
 function toggleCartSheet(force) {
-    const sheet = document.querySelector('.pos-order-sidebar');
+    const sheet = document.getElementById('pos-order-sidebar');
     const backdrop = document.getElementById('cart-sheet-backdrop');
-    if (!sheet || !backdrop || !isMobileView()) return;
+    if (!sheet || !backdrop || !isCompactOrderView()) return;
     const abrir = force !== undefined ? force : !sheet.classList.contains('open');
+    clearTimeout(cartSheetFocusTimer);
+    if (abrir && !sheet.classList.contains('open')) cartSheetReturnFocus = document.activeElement;
     sheet.classList.toggle('open', abrir);
     backdrop.classList.toggle('active', abrir);
+    document.body.classList.toggle('cart-drawer-open', abrir);
+    syncCartSheetAccessibility();
+    if (abrir) cartSheetFocusTimer = setTimeout(() => {
+        if (sheet.classList.contains('open') && isCompactOrderView() && !document.querySelector('dialog[open]')) document.getElementById('pos-cart-close')?.focus();
+    }, 300);
+    else {
+        document.getElementById('pos-totals-details')?.removeAttribute('open');
+        if (cartSheetReturnFocus?.isConnected) cartSheetReturnFocus.focus();
+        cartSheetReturnFocus = null;
+    }
 }
 
 function closeCartSheet() {
-    const sheet = document.querySelector('.pos-order-sidebar');
+    const sheet = document.getElementById('pos-order-sidebar');
     const backdrop = document.getElementById('cart-sheet-backdrop');
+    const wasOpen = sheet?.classList.contains('open');
+    clearTimeout(cartSheetFocusTimer);
     if (sheet) sheet.classList.remove('open');
     if (backdrop) backdrop.classList.remove('active');
+    document.body.classList.remove('cart-drawer-open');
+    document.getElementById('pos-totals-details')?.removeAttribute('open');
+    syncCartSheetAccessibility();
+    if (wasOpen && cartSheetReturnFocus?.isConnected) cartSheetReturnFocus.focus();
+    cartSheetReturnFocus = null;
 }
+
+compactOrderMedia.addEventListener('change', closeCartSheet);
+document.addEventListener('keydown', event => {
+    const sheet = document.getElementById('pos-order-sidebar');
+    if (!sheet?.classList.contains('open') || !isCompactOrderView()) return;
+    if (document.querySelector('dialog[open]')) return;
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCartSheet();
+        return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...sheet.querySelectorAll('button:not([disabled]):not([hidden]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
+        .filter(element => element.getClientRects().length);
+    if (!focusable.length) { event.preventDefault(); sheet.focus(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+syncCartSheetAccessibility();
 
 function updateCartFab() {
     const countEl = document.getElementById('pos-cart-fab-count');

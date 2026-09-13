@@ -935,7 +935,7 @@ Todos emiten `broadcastSSE({type:'cocina_updated'})`. Los guardados de pedido/ti
 
 ---
 
-*Última actualización: 11 de septiembre de 2026 - v3.4 en validación (Fase 23)*
+*Última actualización: 12 de septiembre de 2026 - v3.5 (Fase 25 implementada; validación física pendiente)*
 
 ## Fase 22: Notas, envíos explícitos y cola de impresión (Implementada en código; validación física pendiente)
 
@@ -1124,3 +1124,42 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `npm run test:ui`: **12 pruebas Chrome aprobadas**, incluidos Listo/Entregado, estados mixtos y pantalla protegida de cierre.
 - `npm run test:sql`: **13 escenarios aprobados** en esquema aislado de `tempdb`, incluido estado 4 visible, reapertura, archivo/hash, bloqueo del turno, purga idempotente y conservación comercial/heredada.
 - `git diff --check`: sin errores de formato.
+
+---
+
+## Fase 25: Rediseño responsive del detalle del pedido (Implementada en código; validación física pendiente)
+
+### Experiencia adaptativa
+
+- En celular (`≤480px`), Detalle del Pedido se abre como bottom-sheet casi a pantalla completa, respetando safe areas.
+- En tablet (`481–1024px`), el pedido usa un drawer lateral superpuesto de hasta 560 px; al cerrarlo, los productos recuperan todo el ancho.
+- En desktop se conserva el layout de dos columnas y el detalle adopta un ancho fluido entre 360 y 460 px.
+- La misma instancia del carrito se reutiliza en todos los tamaños; no existen copias del pedido ni cambios en APIs, persistencia o reglas comerciales.
+
+### Jerarquía y uso
+
+- Cabecera fija con Historial, Limpiar y cierre explícito; lista como única región principal desplazable; Total, estado y acciones principales permanecen visibles en el pie.
+- Subtotal e IGV se presentan en un desglose expandible en móvil/tablet y continúan visibles en desktop.
+- Las líneas se adaptan como tarjetas con nombres y notas extensas, estados de Cocina, controles táctiles mínimos de 44 px y precio alineado sin desbordamiento.
+- El pedido vacío tiene un estado visual explícito. La barra flotante conserva cantidad y total y funciona tanto en celular como en tablet.
+
+### Accesibilidad y compatibilidad
+
+- El drawer incorpora `aria-expanded`, `aria-hidden`, semántica de diálogo, foco inicial, trampa de foco, cierre por Escape/backdrop y retorno del foco al disparador.
+- Al cerrar, navegar o cruzar el breakpoint de 1024 px se limpian clases, backdrop, scroll bloqueado y desglose expandido.
+- Se preservan autoguardado, envío explícito, estados de Cocina, historial/impresión, preventa, modo solo lectura y resolución de conflictos 409.
+
+### Corrección iPad Safari horizontal (12/09/2026)
+
+- El iPad de 10 pulgadas en horizontal expone un viewport CSS cercano a 1194 px y por ello entraba incorrectamente al layout desktop anterior de `>1024px`.
+- El modo tablet se amplió hasta 1200 px: tanto el menú principal como el detalle del pedido funcionan como drawers, dejando todo el ancho disponible al catálogo.
+- Desktop comienza en 1201 px y conserva las dos columnas. No se usa detección por navegador o dispositivo.
+- Los cambios de orientación cierran y normalizan ambos drawers, el backdrop, el bloqueo de scroll y el desglose de totales.
+
+### Validación automatizada
+
+- Playwright cubre 390×844, 440×956, 768×1024, 1024×1366, iPad Safari horizontal 1194×834, su rotación 834×1194 y desktop 1280×800.
+- Se verifica altura útil mínima de la lista en móvil, ausencia de desbordamiento horizontal, drawer lateral de tablet, layout desktop, desglose, Escape, backdrop, foco y cambio de breakpoint.
+- `npm run check`: aprobado. `npm test`: 14 pruebas aprobadas. `npm run test:ui`: 14 pruebas Chrome aprobadas.
+- `npm run test:sql`: ejecutado dos veces; los escenarios previos avanzan hasta que falla la aserción histórica de pedido anulado en `test/sql-phase22.js:137`. Fase 25 no modifica backend, contratos ni SQL.
+- Pendiente física: confirmar ergonomía final y comportamiento con barras/teclado reales en celular y tablet antes de marcar la fase como completada.

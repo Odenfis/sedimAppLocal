@@ -235,6 +235,100 @@ test('modal en móvil: texto literal, notas borrables y ancho sin desbordamiento
     await expect(page.locator('.order-line-notes').first()).toHaveText('');
 });
 
+test('detalle móvil usa casi toda la pantalla, prioriza la lista y conserva el foco', async ({ page }) => {
+    await page.setViewportSize({ width: 440, height: 956 });
+    await fixture(page);
+    await page.locator('#pos-cart-fab').click();
+    await expect(page.locator('#pos-cart-fab')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#pos-order-sidebar')).toHaveAttribute('aria-modal', 'true');
+    await expect(page.locator('#pos-cart-close')).toBeFocused();
+    await expect(page.locator('#pos-cart-empty')).toBeVisible();
+    await expect(page.locator('#pos-subtotal')).toBeHidden();
+    await page.locator('#pos-totals-details summary').click();
+    await expect(page.locator('#pos-subtotal')).toBeVisible();
+    await page.locator('#pos-totals-details summary').click();
+    await page.evaluate(() => {
+        posCart = Array.from({ length: 12 }, (_, index) => ({
+            lineaId: newOrderId(), codPro: `02${String(index).padStart(3, '0')}`,
+            nombre: `Producto con nombre extenso número ${index + 1}`, precio: 20,
+            precioBase: 20, cantidad: 1, descuento: 0, afecto: true,
+            notasRapidas: ['Sin cebolla'], nota: 'Preparación especial para esta mesa', enviada: null
+        }));
+        updateCartUI();
+    });
+
+    const sheet = await page.locator('#pos-order-sidebar').boundingBox();
+    const list = await page.locator('.pos-cart-scroll-region').boundingBox();
+    expect(sheet.height).toBeGreaterThanOrEqual(945);
+    expect(list.height).toBeGreaterThanOrEqual(956 * .45);
+    await expect(page.locator('#pos-total')).toBeVisible();
+    await expect(page.locator('#btn-enviar-cocina')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#pos-cart-fab')).toBeFocused();
+    await page.locator('#pos-cart-fab').click();
+    await page.locator('#cart-sheet-backdrop').click({ position: { x: 10, y: 5 } });
+    await expect(page.locator('#pos-cart-fab')).toHaveAttribute('aria-expanded', 'false');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#pos-cart-fab').click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(page.locator('.pos-cart-totals')).toBeVisible();
+});
+
+test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 1024 });
+    await fixture(page);
+    const main = await page.locator('.pos-order-main').boundingBox();
+    const layout = await page.locator('.pos-order-layout').boundingBox();
+    expect(main.width).toBeGreaterThan(layout.width * .95);
+    await page.locator('#pos-cart-fab').click();
+    let sheet = await page.locator('#pos-order-sidebar').boundingBox();
+    expect(sheet.width).toBeGreaterThanOrEqual(480);
+    expect(sheet.width).toBeLessThanOrEqual(560);
+    expect(sheet.x).toBeGreaterThan(0);
+    await page.locator('#pos-cart-close').click();
+
+    await page.setViewportSize({ width: 1024, height: 1366 });
+    await page.locator('#pos-cart-fab').click();
+    sheet = await page.locator('#pos-order-sidebar').boundingBox();
+    expect(sheet.width).toBeCloseTo(560, 1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('.mobile-menu-btn')).toBeVisible();
+    let sidebar = await page.locator('#sidebar').boundingBox();
+    expect(sidebar.x).toBeLessThan(0);
+    const ipadMain = await page.locator('.pos-order-main').boundingBox();
+    const ipadLayout = await page.locator('.pos-order-layout').boundingBox();
+    expect(ipadMain.width).toBeGreaterThan(ipadLayout.width * .95);
+
+    await page.locator('.mobile-menu-btn').click();
+    await expect(page.locator('#sidebar')).toHaveClass(/open/);
+    await expect.poll(async () => (await page.locator('#sidebar').boundingBox()).x).toBeGreaterThanOrEqual(0);
+    await page.locator('#mobile-overlay').click({ position: { x: 500, y: 100 } });
+    await page.locator('#pos-cart-fab').click();
+    sheet = await page.locator('#pos-order-sidebar').boundingBox();
+    expect(sheet.width).toBeCloseTo(560, 1);
+    expect(sheet.x).toBeGreaterThan(600);
+
+    await page.setViewportSize({ width: 834, height: 1194 });
+    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#cart-sheet-backdrop')).not.toHaveClass(/active/);
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(page.locator('#pos-cart-fab')).toBeHidden();
+    await expect(page.locator('#pos-order-sidebar')).toHaveAttribute('aria-hidden', 'false');
+    await expect(page.locator('#pos-subtotal')).toBeVisible();
+    sheet = await page.locator('#pos-order-sidebar').boundingBox();
+    expect(sheet.width).toBeGreaterThanOrEqual(360);
+    expect(sheet.width).toBeLessThanOrEqual(460);
+});
+
 test('cocina presenta antes/después y permite reconocer conservando preparación', async ({ page }) => {
     const state = await fixture(page);
     const id='11111111-1111-4111-8111-111111111111';

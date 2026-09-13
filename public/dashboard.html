@@ -148,47 +148,69 @@
                         </div>
                     </div>
 
-                    <div class="pos-order-sidebar">
+                    <div id="pos-order-sidebar" class="pos-order-sidebar" role="dialog" aria-modal="false" aria-hidden="false" aria-labelledby="pos-sidebar-title" tabindex="-1">
                         <div class="pos-sidebar-header">
-                            <h3>Detalle del Pedido</h3>
-                            <button class="btn-clear" onclick="clearCurrentOrder()"><i class="fas fa-trash"></i> Limpiar</button>
+                            <div class="pos-sidebar-heading">
+                                <span class="pos-sidebar-handle" aria-hidden="true"></span>
+                                <h3 id="pos-sidebar-title">Detalle del Pedido</h3>
+                            </div>
+                            <div class="pos-sidebar-header-actions">
+                                <button id="order-envios" class="order-secondary pos-history-btn" onclick="showOrderHistory()" title="Historial e impresión"><i class="fas fa-clock-rotate-left"></i> <span>Historial</span></button>
+                                <button class="btn-clear" onclick="clearCurrentOrder()"><i class="fas fa-trash"></i> <span>Limpiar</span></button>
+                                <button id="pos-cart-close" class="pos-cart-close" type="button" onclick="toggleCartSheet(false)" aria-label="Cerrar detalle del pedido"><i class="fas fa-xmark"></i></button>
+                            </div>
                         </div>
 
-                        <div id="pos-cart-items" class="pos-cart-items">
-                            <!-- Ítems del carrito -->
+                        <div class="pos-cart-scroll-region">
+                            <div id="pos-cart-empty" class="pos-cart-empty" hidden>
+                                <i class="fas fa-basket-shopping" aria-hidden="true"></i>
+                                <strong>El pedido está vacío</strong>
+                                <span>Selecciona productos para agregarlos.</span>
+                            </div>
+                            <div id="pos-cart-items" class="pos-cart-items">
+                                <!-- Ítems del carrito -->
+                            </div>
+                            <div id="order-pending-cancellations" class="order-pending-cancellations" hidden></div>
                         </div>
-                        <div id="order-pending-cancellations" class="order-pending-cancellations" hidden></div>
 
                         <div class="pos-cart-totals">
-                            <div class="total-row"><span>Subtotal:</span> <span id="pos-subtotal">S/ 0.00</span></div>
-                            <div class="total-row"><span>IGV:</span> <span id="pos-igv">S/ 0.00</span></div>
                             <div class="total-row grand-total"><span>Total:</span> <span id="pos-total">S/ 0.00</span></div>
+                            <details id="pos-totals-details" class="pos-totals-details">
+                                <summary><span>Ver desglose</span><i class="fas fa-chevron-down" aria-hidden="true"></i></summary>
+                                <div class="pos-totals-breakdown">
+                                    <div class="total-row"><span>Subtotal:</span> <span id="pos-subtotal">S/ 0.00</span></div>
+                                    <div class="total-row"><span>IGV:</span> <span id="pos-igv">S/ 0.00</span></div>
+                                </div>
+                            </details>
                         </div>
 
                         <div class="pos-order-actions">
-                            <strong id="order-kitchen-status" role="status">Sin enviar</strong>
-                            <small id="order-save-message" role="status"></small>
-                            <button id="order-retry-save" hidden onclick="guardarMesa()">Reintentar guardado</button>
-                            <button id="order-review-conflict" hidden onclick="reviewOrderConflict()">Revisar versión actual</button>
-                            <small id="order-print-status" role="status"></small>
-                            <button id="order-envios" class="order-secondary" onclick="showOrderHistory()">Historial e impresión</button>
-                            <button id="btn-enviar-cocina" class="btn-send-kitchen" onclick="sendOrderKitchen()">Enviar a Cocina</button>
-                            <button class="btn-pay-now" onclick="processPOSPayment()">
-                                <i class="fas fa-file-invoice"></i> GENERAR PREVENTA
-                            </button>
+                            <div class="order-status-stack">
+                                <strong id="order-kitchen-status" role="status">Sin enviar</strong>
+                                <small id="order-save-message" role="status"></small>
+                                <button id="order-retry-save" hidden onclick="guardarMesa()">Reintentar guardado</button>
+                                <button id="order-review-conflict" hidden onclick="reviewOrderConflict()">Revisar versión actual</button>
+                                <small id="order-print-status" role="status"></small>
+                            </div>
+                            <div class="order-primary-actions">
+                                <button id="btn-enviar-cocina" class="btn-send-kitchen" onclick="sendOrderKitchen()"><i class="fas fa-fire-burner"></i> <span>Enviar a Cocina</span></button>
+                                <button class="btn-pay-now" onclick="processPOSPayment()">
+                                    <i class="fas fa-file-invoice"></i> <span>GENERAR PREVENTA</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- BARRA FLOTANTE CARRITO (solo móvil, ver responsive.css) -->
-            <button id="pos-cart-fab" class="pos-cart-fab" onclick="toggleCartSheet()" aria-label="Ver detalle del pedido">
+            <!-- BARRA FLOTANTE CARRITO (móvil/tablet, ver responsive.css) -->
+            <button id="pos-cart-fab" class="pos-cart-fab" onclick="toggleCartSheet()" aria-label="Ver detalle del pedido" aria-controls="pos-order-sidebar" aria-expanded="false" hidden>
                 <i class="fas fa-cart-shopping"></i>
                 <span id="pos-cart-fab-count" class="pos-cart-fab-count">0</span>
                 <span>Detalle</span>
                 <span id="pos-cart-fab-total" class="pos-cart-fab-total">S/ 0.00</span>
             </button>
-            <div id="cart-sheet-backdrop" onclick="toggleCartSheet(false)"></div>
+            <div id="cart-sheet-backdrop" onclick="toggleCartSheet(false)" aria-hidden="true"></div>
 
             <!-- VISTA: PEDIDO COCINA (KDS - Fase 21) -->
             <div id="view-cocina" class="view-section" style="display:none;">
