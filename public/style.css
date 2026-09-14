@@ -2366,3 +2366,5 @@ form label {
 .shift-close-actions { display:flex; flex-wrap:wrap; gap:10px; }
 .shift-close-actions button { min-height:44px; padding:10px 14px; }
 @media(max-width:800px) { .shift-close-layout { grid-template-columns:1fr; } }
+/* Capacidades deshabilitadas por configuración de producción. */
+.feature-disabled { display: none !important; }

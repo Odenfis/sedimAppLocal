@@ -3,17 +3,58 @@ const session = require('express-session');
 const path = require('path');
 const { getConnection, sql } = require('./db');
 const runMigrations = require('./migrate');
+const SqlSessionStore = require('./lib/sql-session-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
+const sessionStore = new SqlSessionStore({ ttlMs: SESSION_TTL_MS });
+const loginAttempts = new Map();
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_LOCK_MS = 5 * 60 * 1000;
+
+function enabled(value) { return String(value).toLowerCase() === 'true'; }
+function features() {
+    return {
+        printerEnabled: enabled(process.env.PRINTER_ENABLED) && Boolean(process.env.PRINTER_HOST),
+        closuresEnabled: Boolean(process.env.MAINTENANCE_PIN_HASH)
+    };
+}
+function validateProductionConfig() {
+    const missing = ['DB_USER', 'DB_PASS', 'DB_SERVER', 'DB_NAME', 'SESSION_SECRET'].filter(name => !process.env[name]);
+    if (missing.length) throw new Error(`Faltan variables obligatorias: ${missing.join(', ')}`);
+    const forbiddenSecrets = ['secret', 'cambiame_por_algo_seguro', 'reemplace_con_un_valor_aleatorio_de_32_caracteres_o_mas'];
+    if (forbiddenSecrets.includes(process.env.SESSION_SECRET) || process.env.SESSION_SECRET.length < 32) {
+        throw new Error('SESSION_SECRET debe ser único y tener al menos 32 caracteres');
+    }
+    if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
+}
+function internalError(res, error, context) {
+    console.error(`${context}:`, error);
+    res.status(500).json({ message: 'No se pudo completar la operación.' });
+}
+
+app.disable('x-powered-by');
+if (enabled(process.env.TRUST_PROXY)) app.set('trust proxy', 1);
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    next();
+});
 
 app.use(express.json({ limit: '512kb' }));
+app.use('/vendor/fontawesome', express.static(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free')));
 app.use(express.static('public'));
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret',
+    name: 'sedim.sid',
+    secret: process.env.SESSION_SECRET || 'development-only-session-secret-32',
+    store: sessionStore,
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false, httpOnly: true, maxAge: 1000 * 60 * 60 * 24 }
+    cookie: { secure: enabled(process.env.COOKIE_SECURE), httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS }
 }));
 
 function isAuthenticated(req, res, next) {
@@ -22,29 +63,51 @@ function isAuthenticated(req, res, next) {
 }
 
 app.get('/', (req, res) => res.redirect('/login.html'));
+app.get('/healthz', async (req, res) => {
+    try {
+        const pool = await getConnection();
+        await pool.request().query('SELECT 1 AS ok');
+        res.json({ status: 'ok' });
+    } catch (error) {
+        console.error('Healthcheck DB:', error.message);
+        res.status(503).json({ status: 'unavailable' });
+    }
+});
 
 // ==========================================
 //  LOGIN Y SESIÓN
 // ==========================================
 app.post('/api/login', async (req, res) => {
-    const { usuario, password } = req.body;
+    const { usuario, password } = req.body || {};
+    const key = req.ip;
+    const attempt = loginAttempts.get(key);
+    if (attempt?.lockedUntil > Date.now()) return res.status(429).json({ message: 'Demasiados intentos. Espere cinco minutos.' });
     try {
         const pool = await getConnection();
         const result = await pool.request().input('usuario', sql.NVarChar, usuario)
             .query('SELECT Usuario, Password FROM Usuarios WHERE Usuario = @usuario');
 
-        if (result.recordset.length === 0) return res.status(400).json({ message: 'Usuario no encontrado' });
+        if (result.recordset.length === 0) return loginFailed(key, res);
         const user = result.recordset[0];
-        const realPassword = desencriptarPassword(user.Password);
-        if (password !== realPassword) return res.status(400).json({ message: 'Contraseña incorrecta' });
+        const realPassword = desencriptarPassword(String(user.Password || ''));
+        if (password !== realPassword) return loginFailed(key, res);
 
+        loginAttempts.delete(key);
         req.session.user = { usuario: user.Usuario };
-        req.session.save(() => res.json({ message: 'Login exitoso', user: req.session.user }));
-    } catch (error) { res.status(500).send(error.message); }
+        req.session.save(error => error ? internalError(res, error, 'Guardar sesión') : res.json({ message: 'Login exitoso', user: req.session.user, features: features() }));
+    } catch (error) { internalError(res, error, 'Login'); }
 });
 
-app.post('/api/logout', (req, res) => { req.session.destroy(); res.json({ message: 'Sesión cerrada' }); });
-app.get('/api/session', (req, res) => { req.session.user ? res.json({ user: req.session.user }) : res.status(401).send(); });
+function loginFailed(key, res) {
+    const state = loginAttempts.get(key) || { failures: 0, lockedUntil: 0 };
+    state.failures++;
+    if (state.failures >= LOGIN_MAX_ATTEMPTS) { state.failures = 0; state.lockedUntil = Date.now() + LOGIN_LOCK_MS; }
+    loginAttempts.set(key, state);
+    return res.status(400).json({ message: 'Usuario o contraseña incorrectos' });
+}
+
+app.post('/api/logout', (req, res) => req.session.destroy(error => error ? internalError(res, error, 'Cerrar sesión') : res.json({ message: 'Sesión cerrada' })));
+app.get('/api/session', (req, res) => { req.session.user ? res.json({ user: req.session.user, features: features() }) : res.status(401).send(); });
 
 app.get('/api/users', async (req, res) => {
     const { q } = req.query;
@@ -60,7 +123,7 @@ app.get('/api/users', async (req, res) => {
         const result = await request.query(query);
         res.json(result.recordset);
     } catch (error) {
-        res.status(500).send(error.message);
+        internalError(res, error, 'Listar usuarios');
     }
 });
 
@@ -119,7 +182,7 @@ app.get('/api/pos/tables', isAuthenticated, async (req, res) => {
         query += " ORDER BY Numero";
         const result = await request.query(query);
         res.json(result.recordset);
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Listar mesas'); }
 });
 
 app.put('/api/pos/tables/:numero/estado', isAuthenticated, async (req, res) => {
@@ -141,7 +204,7 @@ app.put('/api/pos/tables/:numero/estado', isAuthenticated, async (req, res) => {
         } else {
             res.status(404).json({ success: false, message: 'Mesa no encontrada' });
         }
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Actualizar mesa'); }
 });
 
 app.put('/api/pos/tables/:numero/liberar-reservada', isAuthenticated, async (req, res) => {
@@ -169,7 +232,7 @@ app.put('/api/pos/tables/:numero/liberar-reservada', isAuthenticated, async (req
 
         broadcastSSE({ type: 'mesa_updated', numero: parseInt(numero), empresa: parseInt(empresa) });
         res.json({ success: true, message: 'Mesa liberada' });
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Liberar mesa'); }
 });
 
 app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
@@ -187,7 +250,7 @@ app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
         `);
 
         res.json(result.recordset);
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Listar mozos'); }
 });
 
 app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
@@ -207,7 +270,7 @@ app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
         }
         const result = await request.query(query);
         res.json(result.recordset.map(r => r.Descripcion));
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Listar categorías'); }
 });
 
 app.get('/api/pos/config', isAuthenticated, async (req, res) => {
@@ -219,7 +282,7 @@ app.get('/api/pos/config', isAuthenticated, async (req, res) => {
             config[r.c_valor.trim().toLowerCase()] = r.n_valor;
         });
         res.json({ igv: config.igv || 18, igvv: config.igvv || 10.5 });
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Configuración POS'); }
 });
 
 app.get('/api/pos/products', isAuthenticated, async (req, res) => {
@@ -244,22 +307,33 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
         query += " ORDER BY P.Nombre ASC";
         const result = await request.query(query);
         res.json(result.recordset);
-    } catch (e) { res.status(500).send(e.message); }
+    } catch (e) { internalError(res, e, 'Listar productos'); }
 });
 
 require('./lib/orders').install(app, isAuthenticated, broadcastSSE);
 require('./lib/shift-closures').install(app, isAuthenticated, broadcastSSE);
 
 async function start() {
+    validateProductionConfig();
     const MAX_REINTENTOS = 12;
     for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
         try {
             await runMigrations();
             const protocol = String(process.env.PRINTER_PROTOCOL || '').toLowerCase();
             const transport = protocol === 'escpos_tcp' ? require('./lib/escpos-tcp').createEscPosTcpTransport() : null;
-            require('./lib/print-worker').startPrintWorker({ transport, notify: broadcastSSE });
-            require('./lib/shift-closures').startRetentionWorker();
-            app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+            const stopPrint = require('./lib/print-worker').startPrintWorker({ transport, notify: broadcastSSE });
+            const stopRetention = features().closuresEnabled ? require('./lib/shift-closures').startRetentionWorker() : () => {};
+            const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+            let stopping = false;
+            const shutdown = signal => {
+                if (stopping) return; stopping = true;
+                console.log(`${signal}: cerrando SedimApp...`);
+                stopPrint(); stopRetention(); sessionStore.stop();
+                server.close(() => sql.close().finally(() => process.exit(0)));
+                setTimeout(() => process.exit(1), 10000).unref();
+            };
+            process.once('SIGTERM', () => shutdown('SIGTERM'));
+            process.once('SIGINT', () => shutdown('SIGINT'));
             return;
         } catch (err) {
             console.error(`[${intento}/${MAX_REINTENTOS}] DB no disponible: ${err.message}. Reintentando en 5s...`);
@@ -270,8 +344,14 @@ async function start() {
     console.error('Verifique: DB_SERVER=host.docker.internal en el .env y que SQL Server acepte TCP en el puerto 1433.');
     process.exitCode = 1;
 }
-if (require.main === module) start();
+if (require.main === module) start().catch(error => {
+    console.error(`Configuración inválida: ${error.message}`);
+    sessionStore.stop();
+    process.exitCode = 1;
+});
 module.exports = app;
+module.exports.features = features;
+module.exports.validateProductionConfig = validateProductionConfig;
 
 function desencriptarPassword(hash) {
     let password = '';

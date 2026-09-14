@@ -117,7 +117,7 @@ function renderOrderStatus() {
     document.getElementById('order-review-conflict').hidden = !orderConflict;
     const print = document.getElementById('order-print-status');
     const labels = { en_cola: 'En cola de impresión', procesando: 'Transmitiendo a impresora', enviado: 'Enviado a impresora', error: 'Error de impresión', incierto: 'Impresión incierta: revise el papel antes de reimprimir' };
-    print.textContent = orderPrinting ? `${labels[orderPrinting.Estado] || orderPrinting.Estado}${orderPrinting.Error ? ': ' + orderPrinting.Error : ''}` : '';
+    print.textContent = APP_FEATURES.printerEnabled && orderPrinting ? `${labels[orderPrinting.Estado] || orderPrinting.Estado}${orderPrinting.Error ? ': ' + orderPrinting.Error : ''}` : '';
     document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || orderBusy || orderConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
     const pay = document.querySelector('.btn-pay-now');
     if (pay) pay.disabled = posIsReadOnly || orderBusy || orderConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
@@ -212,15 +212,18 @@ async function showOrderHistory() {
             const section = document.createElement('section'), h = document.createElement('h3'), pre = document.createElement('pre');
             h.textContent = `Envío ${e.Numero}${e.Historico ? ' · Histórico' : ''}`; pre.textContent = e.Documento; section.append(h, pre);
             for (const j of e.trabajos) { const p = document.createElement('p'); p.textContent = `${j.Estado} · Intentos: ${j.Intentos}${j.Error ? ' · ' + j.Error : ''}`; section.append(p); }
-            const btn = document.createElement('button'); btn.textContent = 'Reimprimir'; btn.disabled = e.trabajos.some(j => ['en_cola', 'procesando'].includes(j.Estado));
-            let attempt = null;
-            btn.onclick = async () => {
-                if (!confirm('Revise si el ticket ya salió. Esta acción imprimirá una copia marcada REIMPRESIÓN.')) return;
-                btn.disabled = true;
-                try { attempt ||= newOrderId(); await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/envios/${e.Id}/reimprimir`, 'POST', { empresa: posCurrentTableEmpresa, clave: attempt }); await showOrderHistory(); }
-                catch (err) { alert(err.message); btn.disabled = false; }
-            };
-            section.append(btn); container.append(section);
+            if (APP_FEATURES.printerEnabled) {
+                const btn = document.createElement('button'); btn.textContent = 'Reimprimir'; btn.disabled = e.trabajos.some(j => ['en_cola', 'procesando'].includes(j.Estado));
+                let attempt = null;
+                btn.onclick = async () => {
+                    if (!confirm('Revise si el ticket ya salió. Esta acción imprimirá una copia marcada REIMPRESIÓN.')) return;
+                    btn.disabled = true;
+                    try { attempt ||= newOrderId(); await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/envios/${e.Id}/reimprimir`, 'POST', { empresa: posCurrentTableEmpresa, clave: attempt }); await showOrderHistory(); }
+                    catch (err) { alert(err.message); btn.disabled = false; }
+                };
+                section.append(btn);
+            }
+            container.append(section);
         }
         if (!data.envios.length) container.textContent = 'Todavía no hay envíos a cocina.';
         const dialog = document.getElementById('order-history-dialog'); if (!dialog.open) dialog.showModal();

@@ -1,14 +1,21 @@
-version: '3.8'
-
 services:
   app:
     build: .
+    image: sedim-app:current
     container_name: sedim-app
+    init: true
     ports:
-      - "${PORT}:3000"
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT}:3000"
     env_file:
       - .env
     restart: always
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 70s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

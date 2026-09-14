@@ -25,6 +25,10 @@ async function main() {
         `);
         console.log(JSON.stringify({ columns: result.recordsets[0], indexes: result.recordsets[1], triggers: result.recordsets[2],
             dependentObjects: result.recordsets[3].length, compatibility: result.recordsets[4] }, null, 2));
+        const active = (await pool.request().query(`SELECT COUNT(*) Total FROM Ticket_c
+            WHERE Estado IN(1,2) AND LEFT(RTRIM(NroTicket),4) IN('T001','T002','T005')`)).recordset[0].Total;
+        if (Number(active) > 0) throw new Error(`Hay ${active} pedido(s) activo(s). Cierre o concilie los pedidos antes de actualizar.`);
+        console.log('Sin pedidos activos: corte habilitado.');
         for (const file of ['002_pedido_lineas_envios.sql','003_cocina_historico.sql']) {
             const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', file), 'utf8');
             // PARSEONLY changes only the connection session; statements are not executed.

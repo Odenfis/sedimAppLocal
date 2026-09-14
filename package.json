@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check lib/orders.js && node --check lib/shift-closures.js && node --check lib/order-domain.js && node --check lib/print-worker.js && node --check lib/escpos-tcp.js && node --check public/script.js && node --check public/orders-ui.js && node --check public/order-math.js && node --check migrate.js && node --check scripts/recover-table-order.js",
+    "check": "node --check server.js && node --check lib/orders.js && node --check lib/shift-closures.js && node --check lib/order-domain.js && node --check lib/print-worker.js && node --check lib/escpos-tcp.js && node --check lib/sql-session-store.js && node --check public/script.js && node --check public/orders-ui.js && node --check public/order-math.js && node --check migrate.js && node --check scripts/recover-table-order.js && node --check test/static-server.js",
     "preflight:phase22": "node scripts/preflight-phase22.js",
     "test:ui": "playwright test",
     "test:sql": "node test/sql-phase22.js",
@@ -16,17 +16,17 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
+    "@fortawesome/fontawesome-free": "^7.3.1",
     "bcryptjs": "^3.0.3",
-    "body-parser": "^2.2.1",
-    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
     "iconv-lite": "0.7.0",
-    "mssql": "^12.2.0",
-    "tmp": "^0.2.5"
+    "mssql": "^12.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0"

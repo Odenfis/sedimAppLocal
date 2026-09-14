@@ -9,7 +9,7 @@ function validateMigration(source, file) {
     const writes = [...stripped.matchAll(/\bINSERT\s+(?:INTO\s+)?(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi), ...stripped.matchAll(/\bCREATE\s+INDEX\s+\[?[A-Za-z0-9_]+\]?\s+ON\s+(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi)];
     for (const match of writes) {
         const table = match[1].toLowerCase();
-        if (!['pedido_control','pedido_lineas','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','migrations'].includes(table)) {
+        if (!['pedido_control','pedido_lineas','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','web_sessions','migrations'].includes(table)) {
             throw new Error(`Migración ${file} intenta escribir o indexar una tabla no autorizada: ${table}`);
         }
     }

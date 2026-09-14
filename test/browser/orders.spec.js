@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, Afecto: 1, Linea: 'Platos' };
-async function fixture(page) {
+async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0,
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0 };
     function data() {
@@ -18,7 +18,7 @@ async function fixture(page) {
         const req = route.request(), url = new URL(req.url()), body = req.postDataJSON();
         const fulfill = (json, status = 200) => route.fulfill({ status, json });
         if (url.pathname === '/api/events') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' });
-        if (url.pathname === '/api/session') return fulfill({ user: { usuario: 'Mozo' } });
+        if (url.pathname === '/api/session') return fulfill({ user: { usuario: 'Mozo' }, ...(options.features ? { features: options.features } : {}) });
         if (url.pathname === '/api/pos/config') return fulfill({ igvv: 10.5 });
         if (url.pathname === '/api/pos/tables') return fulfill([{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 }]);
         if (url.pathname === '/api/pos/mozos') return fulfill([{ Codemp: 1, Nombre: 'José' }]);
@@ -69,6 +69,28 @@ async function fixture(page) {
     await expect(page.locator('#pos-products-grid')).toContainText('Arroz');
     return state;
 }
+test('v1 oculta impresión y cierre cuando no están habilitados', async ({ page }) => {
+    await fixture(page, { features: { printerEnabled: false, closuresEnabled: false } });
+    await expect(page.locator('[data-module="cierres"]')).toBeHidden();
+    await expect(page.locator('#cocina-ticket-print')).toBeHidden();
+});
+test('manifest, iconos y Font Awesome se sirven localmente', async ({ page }) => {
+    await fixture(page);
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+    const manifest = await page.request.get('/manifest.webmanifest');
+    expect(manifest.ok()).toBeTruthy();
+    expect((await manifest.json()).display).toBe('standalone');
+    expect((await page.request.get('/icons/icon-512.png')).ok()).toBeTruthy();
+    expect((await page.request.get('/vendor/fontawesome/css/all.min.css')).ok()).toBeTruthy();
+});
+test('login móvil respeta viewport y no desborda', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route('**/api/users', route => route.fulfill({ status: 200, json: [] }));
+    await page.goto('/login.html');
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content', /viewport-fit=cover/);
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/icons/apple-touch-icon.png');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
 test('notas por línea, split, cancelar, guardar y envío explícito sin doble clic', async ({ page }) => {
     const errors = []; page.on('pageerror', e => errors.push(e.message));
     const state = await fixture(page);

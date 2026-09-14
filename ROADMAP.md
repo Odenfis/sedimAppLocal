@@ -1163,3 +1163,36 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `npm run check`: aprobado. `npm test`: 14 pruebas aprobadas. `npm run test:ui`: 14 pruebas Chrome aprobadas.
 - `npm run test:sql`: ejecutado dos veces; los escenarios previos avanzan hasta que falla la aserción histórica de pedido anulado en `test/sql-phase22.js:137`. Fase 25 no modifica backend, contratos ni SQL.
 - Pendiente física: confirmar ergonomía final y comportamiento con barras/teclado reales en celular y tablet antes de marcar la fase como completada.
+
+---
+
+## Fase 26: Primera versión de producción y acceso tipo app (Implementada en código; corte operativo pendiente)
+
+### Alcance v1
+
+- La primera salida habilita POS y Cocina en la LAN privada del restaurante.
+- Impresión física permanece deshabilitada hasta validar la RPT004. Con `PRINTER_ENABLED=false`, los envíos llegan al KDS sin crear trabajos de impresión; tampoco se ofrece reimpresión.
+- Cierre de Turno permanece oculto y sus endpoints responden 503 mientras no exista `MAINTENANCE_PIN_HASH`.
+
+### Producción y seguridad
+
+- Sesiones persistentes en la tabla auxiliar `Web_sessions`, con expiración, limpieza y cookie `httpOnly`/`SameSite=Lax`.
+- Arranque bloqueado si faltan variables de BD, si `SESSION_SECRET` tiene menos de 32 caracteres o si se intenta habilitar impresión sin host.
+- Login limitado a cinco fallos por IP durante una ventana de cinco minutos; errores internos ya no exponen mensajes SQL al navegador.
+- Recursos Font Awesome servidos localmente, cabeceras defensivas, endpoint `GET /healthz`, apagado ordenado y healthcheck de Compose.
+- Runtime de producción actualizado a Node 22 LTS para cumplir los requisitos de la cadena vigente de SQL Server.
+- Dependencias directas sin uso eliminadas y auditoría npm sin vulnerabilidades conocidas al preparar la entrega.
+
+### Acceso móvil
+
+- Manifest web, metadatos Apple/Android e iconos 180/192/512 derivados del emblema Sedimcorp.
+- Login con viewport adaptable y apertura `standalone` cuando el sistema operativo lo soporte.
+- No se registra service worker en la v1: sobre IP HTTP no ofrece instalación PWA completa y los pedidos nunca deben aparentar guardado offline.
+
+### Despliegue
+
+- `actualizar.bat` exige confirmación de respaldo, usa `git pull --ff-only`, conserva una imagen de rollback, construye sin detener la versión activa, ejecuta el preflight de solo lectura y espera salud antes de aceptar el corte.
+- `PRODUCCION.md` documenta el primer pull, preparación del `.env`, prueba rápida y alta del acceso directo en Android/iPhone/iPad.
+- La reversión restaura la imagen anterior; las migraciones nuevas son únicamente aditivas.
+- Pendiente operativo: respaldo real de SQL Server, actualización del `.env`, corte sin pedidos activos, smoke test en servidor y validación física Android/iPhone/iPad.
+- Pendientes posteriores: HTTPS local, instalación PWA completa, autenticación moderna, aceptación RPT004 y activación de cierres.

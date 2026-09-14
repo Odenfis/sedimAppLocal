@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -146,6 +146,24 @@ async function main() {
             (SELECT Estado FROM Mesas WHERE Numero=3 AND Empresa=2) MesaEstado`)).recordset[0];
         assert.deepEqual(emptyCounts,{Detalles:0,Cabeceras:0,MesaEstado:1});
         passed++; console.log('✓ POST pedido with an empty existing detail performs the same hard deletion');
+        const previousPrinterEnabled = process.env.PRINTER_ENABLED;
+        try {
+            process.env.PRINTER_ENABLED = 'false';
+            const visualOrder = await save([{ ...base, lineaId:randomUUID(), notasRapidas:[], nota:'Solo KDS' }],undefined,undefined,3);
+            const visualSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+                {empresa:2,version:visualOrder.version,clave:randomUUID()},{nro:visualOrder.nroTicket});
+            assert.equal(visualSend.status,200,JSON.stringify(visualSend));
+            const visualJobs = (await pool.request().input('envio',visualSend.envioId).query('SELECT COUNT(*) n FROM Impresion_trabajos WHERE EnvioId=@envio')).recordset[0].n;
+            assert.equal(visualJobs,0);
+            const disabledReprint = await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',
+                {empresa:2,clave:randomUUID()},{nro:visualOrder.nroTicket,envio:visualSend.envioId});
+            assert.equal(disabledReprint.status,503);
+            await call('delete','/api/pos/comanda/:nro',{version:visualSend.version,clave:randomUUID()},{nro:visualOrder.nroTicket},{empresa:2});
+        } finally {
+            if (previousPrinterEnabled === undefined) delete process.env.PRINTER_ENABLED;
+            else process.env.PRINTER_ENABLED = previousPrinterEnabled;
+        }
+        passed++; console.log('✓ KDS funciona sin crear cola y la reimpresión queda deshabilitada en v1');
         await pool.request().query("UPDATE Ticket_d SET Cantidad=3 WHERE NroTicket='T001-000001'");
         assert.equal((await get()).status,409);
         passed++; console.log('✓ external commercial edits are detected before overwriting');
@@ -194,10 +212,10 @@ async function main() {
         assert.equal(kitchenStates.estados[0].estadoCocina,4);
         await pool.request().input('nro',shiftNro).query('UPDATE Ticket_c SET Estado=3 WHERE NroTicket=@nro');
         const businessDay = new Date().toLocaleDateString('en-CA',{timeZone:'America/Lima'});
-        const shiftPreview = await call('get','/api/admin/cierres/preview',{}, {}, {empresa:2,turno:2,fechaNegocio:businessDay});
-        assert.equal(shiftPreview.status,200); assert.equal(shiftPreview.elegible,true); assert.ok(shiftPreview.tickets.includes(shiftNro));
         const previousPin = process.env.MAINTENANCE_PIN_HASH;
         process.env.MAINTENANCE_PIN_HASH = require('bcryptjs').hashSync('2468',4);
+        const shiftPreview = await call('get','/api/admin/cierres/preview',{}, {}, {empresa:2,turno:2,fechaNegocio:businessDay});
+        assert.equal(shiftPreview.status,200); assert.equal(shiftPreview.elegible,true); assert.ok(shiftPreview.tickets.includes(shiftNro));
         const closeKey = randomUUID();
         let closed = await call('post','/api/admin/cierres',{empresa:2,turno:2,fechaNegocio:businessDay,pin:'2468',confirmacion:'CERRAR TURNO',clave:closeKey});
         assert.equal(closed.status,200,JSON.stringify(closed)); assert.equal(closed.estado,'cerrado'); assert.equal(closed.conteos.Pedido_control,1);
@@ -232,7 +250,7 @@ async function main() {
     } finally {
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Pedido_lineas','Pedido_control','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Pedido_lineas','Pedido_control','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();
