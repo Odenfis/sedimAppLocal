@@ -38,11 +38,11 @@ No copie `.env.example` encima de un `.env` existente y nunca suba `.env` a Git.
 ## Actualización
 
 1. Ejecute `actualizar.bat`.
-2. Escriba `RESPALDO` únicamente después de confirmar respaldo y ventana sin pedidos.
-3. El proceso construye la imagen nueva sin detener la actual. El preflight de BD es de solo lectura y aborta si detecta pedidos Guardados/Preventa; después levanta la versión y espera el healthcheck.
-4. Si la versión nueva no queda saludable, el script restaura la imagen anterior. Las migraciones aplicadas se conservan porque son aditivas.
-5. La imagen aprobada también queda etiquetada como `sedim-app:COMMIT`, permitiendo identificar exactamente el código instalado.
-6. Guarde la salida de `docker compose ps` y, ante un fallo, de `docker compose logs app`.
+2. El archivo descarga la última versión, reconstruye el contenedor y comprueba automáticamente que SedimApp responda.
+3. Al terminar correctamente abre la aplicación en el navegador. No requiere escribir confirmaciones ni muestra el catálogo de SQL Server.
+4. Si falla, copie el mensaje mostrado. El diagnóstico ampliado se obtiene con `docker compose logs --tail 50 app`.
+
+El respaldo y una ventana sin atención siguen siendo recomendaciones operativas antes de publicar cambios importantes, pero ya no forman parte del actualizador cotidiano. El preflight completo queda disponible para soporte mediante `npm run preflight:phase22` y no se ejecuta automáticamente.
 
 ## Prueba rápida obligatoria
 

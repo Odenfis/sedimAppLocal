@@ -1191,9 +1191,9 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 
 ### Despliegue
 
-- `actualizar.bat` exige confirmación de respaldo, usa `git pull --ff-only`, conserva una imagen de rollback, construye sin detener la versión activa, ejecuta el preflight de solo lectura y espera salud antes de aceptar el corte.
+- `actualizar.bat` ofrece un flujo cotidiano de tres pasos: descarga por `git pull --ff-only`, reconstrucción/reinicio con Compose y comprobación de salud. La salida extensa de catálogo, la confirmación escrita, el etiquetado y el rollback automático se retiraron del flujo del cliente; el preflight completo permanece disponible para soporte.
 - `PRODUCCION.md` documenta el primer pull, preparación del `.env`, prueba rápida y alta del acceso directo en Android/iPhone/iPad.
-- La reversión restaura la imagen anterior; las migraciones nuevas son únicamente aditivas.
+- Las migraciones continúan siendo aditivas. Si una actualización falla, el script conserva el diagnóstico de Compose y soporte puede realizar la reversión manual cuando corresponda.
 - Pendiente operativo: respaldo real de SQL Server, actualización del `.env`, corte sin pedidos activos, smoke test en servidor y validación física Android/iPhone/iPad.
 - Pendientes posteriores: HTTPS local, instalación PWA completa, autenticación moderna, aceptación RPT004 y activación de cierres.
 
