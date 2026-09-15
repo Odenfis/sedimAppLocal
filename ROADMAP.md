@@ -235,9 +235,10 @@ sedimApp_local/
 ├── server.js              # Backend Express
 ├── db.js                  # Configuración SQL Server
 ├── migrate.js             # Migraciones automáticas de esquema
-├── Dockerfile             # Imagen Node 20 slim
+├── Dockerfile             # Imagen Node 22 slim
 ├── docker-compose.yml     # Orquestación (extra_hosts → host DB)
 ├── actualizar.bat         # Actualización automática del cliente
+├── ACTUALIZACION_CLIENTE.md # Guía operativa de futuras mejoras
 ├── .env.example           # Plantilla de configuración
 ├── ROADMAP.md             # Este archivo
 ├── migrations/
@@ -935,9 +936,9 @@ Todos emiten `broadcastSSE({type:'cocina_updated'})`. Los guardados de pedido/ti
 
 ---
 
-*Última actualización: 12 de septiembre de 2026 - v3.5 (Fase 25 implementada; validación física pendiente)*
+*Última actualización: 14 de septiembre de 2026 - primera versión operativa en el cliente, impresión RPT004 activa y actualización rutinaria documentada.*
 
-## Fase 22: Notas, envíos explícitos y cola de impresión (Implementada en código; validación física pendiente)
+## Fase 22: Notas, envíos explícitos y cola de impresión (Completada; impresión validada posteriormente en Fase 23)
 
 ### Estado actual
 
@@ -1046,11 +1047,11 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `npm run test:ui`: **6 pruebas Chrome aprobadas**, incluidas notas/separación, serialización del guardado, conflicto 409, móvil, reconocimiento y visibilidad de una anulación hasta enviarla.
 - `npm run test:sql`: **11 escenarios SQL aprobados**, incluida la reproducción de fallo de cola, rollback, concurrencia, corrección/reconocimiento, anulación directa con JSON válido, reintento idempotente, historial y liberación posterior al reconocimiento. El esquema temporal se eliminó al finalizar.
 - `git diff --check`: sin errores de espacios o formato del parche.
-- Pendiente histórico: reconocimiento operativo del ticket recuperado y aceptación física de impresión; la integración RPT004 se continúa en Fase 23.
+- La aceptación física de impresión que estaba pendiente en esta fase quedó resuelta posteriormente en la Fase 23.
 
 ---
 
-## Fase 23: Borrado comercial definitivo, cantidades e impresión RPT004 (Implementada en código; validación física pendiente)
+## Fase 23: Borrado comercial definitivo, cantidades e impresión RPT004 (Operativa en el cliente)
 
 ### Pedidos y mesas
 
@@ -1069,7 +1070,7 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 ### 3nStar RPT004
 
 - Transporte TCP ESC/POS implementado con `node:net`, codificación CP850, puerto configurable con valor inicial 9100, avance y corte automático.
-- Configuración: `PRINTER_PROTOCOL=escpos_tcp`, `PRINTER_HOST`, `PRINTER_PORT=9100`, `PRINTER_CODEPAGE=cp850`, `PRINTER_CUT=true` y `PRINTER_ENABLED=false` hasta la prueba física.
+- Configuración operativa: `PRINTER_PROTOCOL=escpos_tcp`, `PRINTER_HOST`, `PRINTER_PORT=9100`, `PRINTER_CODEPAGE=cp850`, `PRINTER_CUT=true` y `PRINTER_ENABLED=true`. La plantilla `.env.example` conserva `false` como valor seguro para instalaciones nuevas aún no validadas.
 - La respuesta de Cocina incluye `envioId` y el último estado de impresión. El diálogo muestra cola, transmisión, error o estado incierto y bloquea duplicados mientras exista un trabajo pendiente.
 
 ### Validación
@@ -1077,7 +1078,7 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Pruebas de dominio incluyen la trama ESC/POS y caracteres españoles.
 - Pruebas de navegador cubren cantidad agrupada, borrado automático, sidebar colapsado, ticket de 100 líneas y doble clic de impresión.
 - Pruebas SQL cubren eliminación de `Ticket_d`/`Ticket_c`, mesa libre, ausencia de estado 4, reintento idempotente y conservación del historial.
-- Pendiente física: asignar IP fija o reserva DHCP, confirmar puerto mediante autoprueba, validar CP850, ancho 42/48, corte y comportamiento sin papel antes de activar `PRINTER_ENABLED=true`.
+- Validación física completada en el cliente y `PRINTER_ENABLED=true` activado el 14/09/2026. Deben conservarse la IP fija o reserva DHCP, el puerto 9100, CP850 y la configuración de corte; cualquier cambio de red o impresora exige repetir la prueba física.
 
 ---
 
@@ -1166,12 +1167,12 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 
 ---
 
-## Fase 26: Primera versión de producción y acceso tipo app (Implementada en código; corte operativo pendiente)
+## Fase 26: Primera versión de producción y acceso tipo app (Operativa en el cliente)
 
 ### Alcance v1
 
 - La primera salida habilita POS y Cocina en la LAN privada del restaurante.
-- Impresión física permanece deshabilitada hasta validar la RPT004. Con `PRINTER_ENABLED=false`, los envíos llegan al KDS sin crear trabajos de impresión; tampoco se ofrece reimpresión.
+- La primera salida se instaló inicialmente con impresión deshabilitada. Tras la validación física, el cliente opera con `PRINTER_ENABLED=true`, impresión automática y reimpresión disponibles.
 - Cierre de Turno permanece oculto y sus endpoints responden 503 mientras no exista `MAINTENANCE_PIN_HASH`.
 
 ### Producción y seguridad
@@ -1192,10 +1193,10 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 ### Despliegue
 
 - `actualizar.bat` ofrece un flujo cotidiano de tres pasos: descarga por `git pull --ff-only`, reconstrucción/reinicio con Compose y comprobación de salud. La salida extensa de catálogo, la confirmación escrita, el etiquetado y el rollback automático se retiraron del flujo del cliente; el preflight completo permanece disponible para soporte.
-- `PRODUCCION.md` documenta el primer pull, preparación del `.env`, prueba rápida y alta del acceso directo en Android/iPhone/iPad.
+- `ACTUALIZACION_CLIENTE.md` documenta el ciclo estable de futuras mejoras, la conservación de `.env`, la comprobación de POS/KDS/impresión y la recuperación ante fallos. `PRODUCCION.md` conserva la instalación inicial y aceptación operativa.
 - Las migraciones continúan siendo aditivas. Si una actualización falla, el script conserva el diagnóstico de Compose y soporte puede realizar la reversión manual cuando corresponda.
-- Pendiente operativo: respaldo real de SQL Server, actualización del `.env`, corte sin pedidos activos, smoke test en servidor y validación física Android/iPhone/iPad.
-- Pendientes posteriores: HTTPS local, instalación PWA completa, autenticación moderna, aceptación RPT004 y activación de cierres.
+- Estado operativo confirmado: Compose, acceso desde celulares e impresión RPT004 funcionando en el cliente.
+- Pendientes posteriores: HTTPS local, instalación PWA completa, autenticación moderna y activación de cierres.
 
 ---
 

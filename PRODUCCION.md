@@ -1,4 +1,6 @@
-# SedimApp v1 — Puesta en producción
+# SedimApp — puesta en producción y operación
+
+Para las actualizaciones normales de la instalación que ya está funcionando, utilice [ACTUALIZACION_CLIENTE.md](ACTUALIZACION_CLIENTE.md).
 
 ## Antes del corte
 
@@ -23,7 +25,8 @@
   BIND_ADDRESS=0.0.0.0
   COOKIE_SECURE=false
   TRUST_PROXY=false
-  PRINTER_ENABLED=false
+  PRINTER_ENABLED=true
+  PRINTER_HOST=IP_FIJA_DE_LA_IMPRESORA
   MAINTENANCE_PIN_HASH=
   ```
 
@@ -50,12 +53,12 @@ El respaldo y una ventana sin atención siguen siendo recomendaciones operativas
 - Seleccionar cada empresa y turno; abrir una mesa libre.
 - Agregar un producto y confirmar autoguardado desde otro dispositivo.
 - En un pedido de prueba, agregar dos unidades de un producto afecto con precio base S/20.00 y confirmar en SQL que `Ticket_d` registra `Cantidad=2`, `Precio=44.20` e `Importe=44.20` con IGV de 10.5%. No ejecutar actualizaciones sobre tickets históricos.
-- Enviar a Cocina y comprobar que aparece en KDS sin crear ni transmitir impresión.
+- Enviar a Cocina y comprobar que aparece en KDS y que la impresora emite una sola comanda.
 - Cambiar el plato a preparación, listo y entregado.
 - Generar y reabrir una preventa.
 - Borrar un pedido de prueba y confirmar que la mesa vuelve a libre.
 - Reiniciar el contenedor y verificar que la sesión continúa vigente.
-- Confirmar que Cierre de Turno y los botones de impresión no aparecen.
+- Confirmar que la reimpresión funciona y que Cierre de Turno no aparece mientras `MAINTENANCE_PIN_HASH` esté vacío.
 
 ## Celulares y tablets
 
@@ -65,8 +68,8 @@ Abra `http://IP_DEL_SERVIDOR:PUERTO` desde la Wi-Fi interna.
 - Android: menú del navegador → **Agregar a pantalla principal** o **Instalar app**, según lo que ofrezca el navegador.
 - Por usar una IP HTTP, Android puede crear un acceso directo en vez de una PWA completa. La operación POS sigue requiriendo conexión a la LAN; no existe guardado offline.
 
-## Activaciones posteriores
+## Estado operativo y activaciones posteriores
 
-- No habilite `PRINTER_ENABLED=true` hasta validar físicamente IP, puerto 9100, CP850, ancho, corte y condiciones sin papel de la RPT004.
+- La impresión RPT004 está habilitada en el cliente. Conserve su IP fija, puerto 9100, CP850 y corte configurados; repita una prueba física después de cualquier cambio de red o impresora.
 - No configure `MAINTENANCE_PIN_HASH` hasta completar la capacitación y validación de cierres.
 - HTTPS local será el paso necesario para instalación PWA completa, cookies seguras y futuras capacidades de service worker.
