@@ -962,7 +962,7 @@ El autoguardado ya no agrega ni modifica platos en cocina. **Enviar a Cocina**, 
 
 ### POS y cocina
 
-- Líneas con GUID estable, diez notas rápidas de la referencia y nota personalizada de hasta 500 caracteres. Un mismo producto admite instrucciones distintas y separación de cantidades.
+- Líneas con GUID estable, doce notas rápidas de la referencia y nota personalizada de hasta 500 caracteres. Un mismo producto admite instrucciones distintas y separación de cantidades.
 - Agregar unidades a un producto enviado crea una nueva línea pendiente. Las líneas se renderizan por ID conservando su posición.
 - Estados del pedido: Sin enviar, Cambios pendientes y Enviado a cocina. Historial con documento y estado de cada trabajo de impresión.
 - Correcciones y anulaciones incluyen antes/después. Cocina conserva su versión operativa hasta el reconocimiento si el plato está en preparación, listo o entregado. El reconocimiento conserva el estado de preparación.
@@ -1219,3 +1219,54 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 
 - La integración SQL conserva una fila histórica con `Precio=20.00` e `Importe=44.20` y exige que una fila nueva de dos unidades quede con `Precio=Importe=44.20`.
 - La respuesta del POS continúa obteniendo el precio base desde `Pedido_lineas`, por lo que guardar y reabrir un pedido no duplica el IGV.
+
+---
+
+## Fase 28: Optimización móvil del catálogo y filtros POS (Implementada en código; validación física pendiente)
+
+### Búsqueda con teclado virtual
+
+- En celulares de hasta 480 px, enfocar el buscador activa un modo compacto que oculta temporalmente la cabecera, las categorías y la barra flotante del carrito.
+- El catálogo usa `window.visualViewport` para ajustarse al espacio que Android o iOS dejan sobre el teclado, con fallback al viewport CSS y sin detección por dispositivo.
+- El buscador permanece visible y la grilla conserva dos columnas con scroll propio. Al agregar un producto se mantienen el foco y la consulta para facilitar cargas repetidas.
+- Las acciones **Limpiar búsqueda**, **Listo** y la tecla Enter permiten limpiar o cerrar el modo explícitamente. Navegar, rotar, superar el breakpoint o entrar en preventa restaura la interfaz normal.
+
+### Filtros móviles
+
+- Los grupos Empresa y Turno, el selector y el toggle limitan su ancho al panel disponible mediante `box-sizing`, `min-width` y `max-width`.
+- Los nombres largos de empresa se truncan visualmente sin alterar su valor y los botones de turno pueden contraerse sin producir scroll horizontal.
+
+### Validación
+
+- Playwright cubre 320, 390 y 440 px de ancho: modo compacto, viewport reducido, foco y consulta persistentes, acciones de salida, rotación, navegación, preventa y ausencia de desbordamiento en los filtros.
+- Pendiente física: confirmar apertura/cierre del teclado y altura útil del catálogo en Android Chrome e iPhone Safari, tanto en navegador como en modo standalone cuando esté disponible.
+
+---
+
+## Fase 29: Confirmación visual y cabecera compacta del POS móvil (Implementada en código; validación física pendiente)
+
+### Confirmación de productos
+
+- Cada toque muestra un check temporal en la tarjeta, un aviso único con producto y cantidad acumulada, y una animación en el contador de **Detalle** cuando está visible.
+- El aviso dice **Agregado al pedido**, sin confundir la inserción local con el autoguardado posterior. Los toques rápidos actualizan el mismo mensaje y reinician sus temporizadores.
+- La región usa semántica `status` y anuncios accesibles. Con movimientos reducidos conserva check, color y texto sin escalas ni desplazamientos.
+
+### Cabecera y espacio útil
+
+- En celulares de hasta 480 px, la cabecera inicia plegada y conserva visibles mesa, timer, mozo y comensales en dos filas compactas.
+- Guardar, Reservar, Borrar y Liberar se muestran mediante un control con estado ARIA. Preventa fuerza la cabecera expandida para mantener disponibles su estado y reapertura.
+- Padding, separaciones, categorías y buscador se compactaron sin reducir los controles táctiles por debajo de 44 px. Las tarjetas conservan dos columnas, tamaño y legibilidad.
+- Navegar, cambiar de mesa, rotar o cruzar el breakpoint limpia confirmaciones y restablece la cabecera.
+
+### Validación
+
+- Playwright cubre toques repetidos, cantidad, aviso único, foco durante búsqueda, temporizadores, movimientos reducidos, expansión, ARIA, ganancia mínima de 48 px, preventa y desktop sin cambios.
+- Pendiente física: validar claridad de la confirmación y cantidad de tarjetas visibles en Android Chrome e iPhone Safari.
+
+---
+
+## Fase 30: Nuevas notas rápidas de temperatura (Implementada en código)
+
+- Se agregaron **Helada** y **Sin Helar** después de **Hielo aparte** en el selector de instrucciones de Cocina.
+- Ambas opciones conservan el comportamiento multiselección existente y pasan por la misma validación, persistencia, historial e impresión que las demás notas rápidas.
+- Las pruebas de dominio verifican aceptación, orden canónico e impresión; Playwright verifica las doce opciones y el guardado de las dos nuevas.

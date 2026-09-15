@@ -3,12 +3,12 @@ let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'S
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
 let orderSaveError = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPendingCancellations = [];
 const ownOrderOperations = new Set();
-const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
+const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
 function newOrderId() {
     // crypto.randomUUID is unavailable on HTTP LAN origins in some browsers.
     const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
     const h = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 function escapeOrderText(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function orderLinePending(l) {
@@ -78,16 +78,20 @@ function orderFinishDeletion() {
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
 }
 function orderPayload() {
-    return { mesa: posCurrentTable, empresa: posCurrentTableEmpresa, turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
+    return {
+        mesa: posCurrentTable, empresa: posCurrentTableEmpresa, turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
         mozo: document.getElementById('pos-mojo-select').value || 1, nroTicket: posCurrentNroTicket,
-        version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({ lineaId: i.lineaId, codPro: i.codPro,
+        version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
+            lineaId: i.lineaId, codPro: i.codPro,
             nombre: i.nombre, precio: i.precioBase ?? i.precio, cantidad: i.cantidad, afecto: i.afecto,
-            notasRapidas: i.notasRapidas || [], nota: i.nota || '' })) };
+            notasRapidas: i.notasRapidas || [], nota: i.nota || ''
+        }))
+    };
 }
 function orderSchedule() {
     if (posIsReadOnly || orderBusy) return;
     orderDirty = true; orderGeneration++; orderSaveError = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
-    posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => {}), POS_AUTOSAVE_DEBOUNCE_MS);
+    posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => { }), POS_AUTOSAVE_DEBOUNCE_MS);
 }
 async function orderFlush() {
     clearTimeout(posAutoSaveTimer);

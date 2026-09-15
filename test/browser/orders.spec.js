@@ -97,6 +97,9 @@ test('notas por línea, split, cancelar, guardar y envío explícito sin doble c
     await page.locator('.pos-product-card').first().click();
     await page.locator('.pos-product-card').first().click();
     await page.locator('[data-action="notes"]').click();
+    await expect(page.locator('#order-quick-notes button')).toHaveCount(12);
+    await expect(page.getByRole('button', { name: '+ Helada', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '+ Sin Helar', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '+ Sin cebolla', exact: true }).click();
     await page.locator('#order-note-text').fill('Alérgico: consultar al mozo');
     await page.locator('#order-notes-dialog').getByRole('button', { name: 'Cancelar', exact: true }).click();
@@ -104,13 +107,15 @@ test('notas por línea, split, cancelar, guardar y envío explícito sin doble c
     page.once('dialog', d => d.accept('1'));
     await page.getByRole('button', { name: 'Separar', exact: true }).click();
     await page.getByRole('button', { name: '+ Sin cebolla', exact: true }).click();
+    await page.getByRole('button', { name: '+ Helada', exact: true }).click();
+    await page.getByRole('button', { name: '+ Sin Helar', exact: true }).click();
     await page.locator('#order-note-text').fill('Sin sal');
     await page.locator('#order-notes-dialog').getByRole('button', { name: 'Guardar', exact: true }).click();
     await expect(page.locator('.cart-item')).toHaveCount(2);
     await expect.poll(() => state.items.length).toBe(2);
     expect(state.sends).toBe(0);
     expect(state.items[0].cantidad + state.items[1].cantidad).toBe(2);
-    expect(state.items[1].notasRapidas).toEqual(['Sin cebolla']);
+    expect(state.items[1].notasRapidas).toEqual(['Sin cebolla', 'Helada', 'Sin Helar']);
     await expect(page.locator('.btn-pay-now')).toBeDisabled();
     await page.locator('#btn-enviar-cocina').dblclick();
     await expect(page.locator('#order-kitchen-status')).toHaveText('Enviado a cocina');
@@ -298,6 +303,188 @@ test('detalle móvil usa casi toda la pantalla, prioriza la lista y conserva el 
     await page.locator('#pos-cart-fab').click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await expect(page.locator('.pos-cart-totals')).toBeVisible();
+});
+
+test('búsqueda móvil compacta aprovecha el viewport y conserva consulta y foco al agregar', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page);
+    const search = page.locator('#pos-product-search');
+    const orderView = page.locator('#view-pos-order');
+
+    await search.fill('Arroz');
+    await expect(orderView).toHaveClass(/pos-mobile-search-mode/);
+    await expect(page.locator('.pos-order-header')).toBeHidden();
+    await expect(page.locator('#pos-categories-container')).toBeHidden();
+    await expect(page.locator('#pos-cart-fab')).toBeHidden();
+    await expect(page.locator('#pos-search-done')).toBeVisible();
+    await expect(page.locator('#pos-search-clear')).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 520 });
+    const searchBox = await page.locator('#pos-search-container').boundingBox();
+    const productsBox = await page.locator('#pos-products-grid').boundingBox();
+    expect(searchBox.y).toBeGreaterThanOrEqual(0);
+    expect(productsBox.height).toBeGreaterThanOrEqual(300);
+    expect(productsBox.y + productsBox.height).toBeLessThanOrEqual(520);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.locator('.pos-product-card').first().click();
+    await expect(search).toHaveValue('Arroz');
+    await expect(search).toBeFocused();
+    await expect(orderView).toHaveClass(/pos-mobile-search-mode/);
+
+    await page.locator('#pos-search-clear').click();
+    await expect(search).toHaveValue('');
+    await expect(search).toBeFocused();
+    await expect(page.locator('#pos-search-clear')).toBeHidden();
+
+    await search.fill('Arroz');
+    await page.locator('#pos-search-done').click();
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+    await expect(search).toHaveValue('Arroz');
+
+    await search.focus();
+    await search.press('Enter');
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+    await expect(page.locator('.pos-order-header')).toBeVisible();
+});
+
+test('agregar producto confirma tarjeta, aviso y contador sin acumular mensajes', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page);
+    const card = page.locator('.pos-product-card').first();
+    const feedback = page.locator('#pos-add-feedback');
+    const cart = page.locator('#pos-cart-fab');
+
+    await card.click();
+    await expect(card).toHaveClass(/is-added/);
+    await expect(feedback).toBeVisible();
+    await expect(feedback).toHaveText('Agregado al pedido: Arroz con mariscos · Cantidad 1');
+    await expect(cart).toHaveClass(/is-bumping/);
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('1');
+
+    await card.click();
+    await expect(feedback).toHaveText('Agregado al pedido: Arroz con mariscos · Cantidad 2');
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('2');
+    await expect(page.locator('#pos-add-feedback')).toHaveCount(1);
+
+    await page.waitForTimeout(1450);
+    await expect(feedback).toBeHidden();
+
+    const search = page.locator('#pos-product-search');
+    await search.fill('Arroz');
+    await card.click();
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue('Arroz');
+    await expect(cart).toBeHidden();
+    await expect(feedback).toContainText('Cantidad 3');
+});
+
+test('cabecera móvil plegable gana espacio y conserva resumen, acciones y preventa', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page);
+    const header = page.locator('.pos-order-header');
+    const toggle = page.locator('#pos-header-toggle');
+    const actions = page.locator('#pos-header-actions-region');
+    const grid = page.locator('#pos-products-grid');
+
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(actions).toBeHidden();
+    await expect(page.locator('.pos-title-mobile')).toBeVisible();
+    await expect(page.locator('#pos-order-timer')).toBeVisible();
+    await expect(page.locator('#pos-mojo-name')).toBeVisible();
+    await expect(page.locator('#pos-guests')).toBeVisible();
+    const collapsedHeight = (await grid.boundingBox()).height;
+
+    await toggle.click();
+    await expect(header).toHaveClass(/mobile-expanded/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(actions).toBeVisible();
+    const expandedHeight = (await grid.boundingBox()).height;
+    expect(collapsedHeight - expandedHeight).toBeGreaterThanOrEqual(48);
+    expect((await toggle.boundingBox()).height).toBeGreaterThanOrEqual(44);
+    expect((await page.locator('.cat-btn').first().boundingBox()).height).toBeGreaterThanOrEqual(44);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.evaluate(() => {
+        posIsReadOnly = true;
+        updatePOSViewMode();
+    });
+    await expect(header).toHaveClass(/mobile-expanded/);
+    await expect(toggle).toBeHidden();
+    await expect(actions).toBeVisible();
+
+    await page.evaluate(() => {
+        posIsReadOnly = false;
+        updatePOSViewMode();
+    });
+    await expect(header).not.toHaveClass(/mobile-expanded/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await toggle.click();
+    await page.evaluate(() => showView('pos-tables'));
+    await expect(header).not.toHaveClass(/mobile-expanded/);
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate(() => showView('pos-order'));
+    await expect(toggle).toBeHidden();
+    await expect(actions).toBeVisible();
+});
+
+test('confirmación conserva información con movimientos reducidos', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 440, height: 956 });
+    await fixture(page);
+    const card = page.locator('.pos-product-card').first();
+    await card.click();
+    await expect(page.locator('#pos-add-feedback')).toContainText('Agregado al pedido');
+    await expect(card).toHaveClass(/is-added/);
+    expect(await card.evaluate(element => getComputedStyle(element).animationName)).toBe('none');
+    expect(await page.locator('#pos-add-feedback').evaluate(element => getComputedStyle(element).animationName)).toBe('none');
+});
+
+test('búsqueda móvil se limpia al rotar, navegar o entrar en preventa', async ({ page }) => {
+    await page.setViewportSize({ width: 440, height: 956 });
+    await fixture(page);
+    const search = page.locator('#pos-product-search');
+    const orderView = page.locator('#view-pos-order');
+
+    await search.focus();
+    await expect(orderView).toHaveClass(/pos-mobile-search-mode/);
+    await page.setViewportSize({ width: 956, height: 440 });
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+
+    await page.setViewportSize({ width: 440, height: 956 });
+    await search.focus();
+    await page.evaluate(() => showView('pos-tables'));
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+
+    await page.evaluate(() => {
+        showView('pos-order');
+        posIsReadOnly = false;
+    });
+    await search.focus();
+    await page.evaluate(() => {
+        posIsReadOnly = true;
+        updatePOSViewMode();
+    });
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+});
+
+test('filtros Empresa y Turno no desbordan con nombres largos en móvil', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await fixture(page);
+    await page.evaluate(() => showView('pos-tables'));
+    await page.selectOption('#pos-empresa-select', '06');
+
+    const fitsInside = async selector => page.locator(selector).evaluate(element => {
+        const parent = element.closest('.pos-area-filters').getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        return box.left >= parent.left && box.right <= parent.right + .5 && element.scrollWidth <= element.clientWidth + .5;
+    });
+    expect(await fitsInside('#view-pos-tables .pos-empresa-group')).toBe(true);
+    expect(await fitsInside('#view-pos-tables .pos-turno-group')).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', async ({ page }) => {

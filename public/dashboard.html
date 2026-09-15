@@ -113,12 +113,13 @@
                     <div class="pos-order-main">
                         <header class="pos-order-header">
                             <div class="pos-header-row top">
-                                <div style="display:flex; align-items:center; gap:12px;">
+                                <div class="pos-header-title" style="display:flex; align-items:center; gap:12px;">
                                     <button class="btn-back" onclick="showView('pos-tables')"><i class="fas fa-arrow-left"></i></button>
-                                    <h1>Ticket de Venta - Mesa <span id="pos-current-table">0</span></h1>
+                                    <h1><span class="pos-title-desktop">Ticket de Venta - </span><span class="pos-title-mobile">Mesa </span><span class="pos-title-desktop">Mesa </span><span id="pos-current-table">0</span></h1>
                                 </div>
                                 <span id="pos-preventa-badge" class="preventa-badge" style="display:none"><i class="fas fa-lock"></i> PREVENTA - Solo Visualización</span>
                                 <span id="pos-order-timer">00:00</span>
+                                <button id="pos-header-toggle" class="pos-header-toggle" type="button" onclick="toggleMobilePOSHeader()" aria-expanded="false" aria-controls="pos-header-actions-region" aria-label="Mostrar acciones de la mesa"><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                             </div>
                             <div class="pos-header-divider"></div>
                             <div class="pos-header-row bottom">
@@ -131,7 +132,7 @@
                                     <input type="hidden" id="pos-mojo-select" value="">
                                     <span class="pos-comensales"><i class="fas fa-users"></i> <input type="number" id="pos-guests" value="1" style="width:50px;"></span>
                                 </div>
-                                <div class="pos-header-actions">
+                                <div id="pos-header-actions-region" class="pos-header-actions">
                                     <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> <span class="btn-label">Guardar</span></button>
                                     <button class="btn-state-mesa btn-reservar" id="btn-reservar-mesa" onclick="reservarMesa()" title="Reservar mesa"><i class="fas fa-calendar-check"></i> <span class="btn-label">Reservar</span></button>
                                     <button class="btn-state-mesa btn-cancelar" id="btn-borrar-comanda" onclick="borrarComanda()" title="Borrar Comanda"><i class="fas fa-trash-alt"></i> <span class="btn-label">Borrar Comanda</span></button>
@@ -146,7 +147,12 @@
                         </div>
 
                         <div id="pos-search-container" class="pos-search-container">
-                            <input type="text" id="pos-product-search" placeholder="Buscar producto..." oninput="searchPOSProducts()">
+                            <div class="pos-search-field">
+                                <input type="text" id="pos-product-search" placeholder="Buscar producto..." enterkeyhint="done" autocomplete="off" oninput="searchPOSProducts()">
+                                <button id="pos-search-clear" class="pos-search-clear" type="button" onclick="clearPOSProductSearch()" aria-label="Limpiar búsqueda" hidden><i class="fas fa-xmark" aria-hidden="true"></i></button>
+                            </div>
+                            <button id="pos-search-done" class="pos-search-done" type="button" onclick="finishPOSProductSearch()">Listo</button>
+                            <div id="pos-add-feedback" class="pos-add-feedback" role="status" aria-live="polite" aria-atomic="true" hidden></div>
                         </div>
 
                         <div id="pos-products-grid" class="pos-products-grid">

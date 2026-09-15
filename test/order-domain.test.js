@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { normalizeItems, snapshot, changes, validateEdits, printText } = require('../lib/order-domain');
+const { QUICK_NOTES, normalizeItems, snapshot, changes, validateEdits, printText } = require('../lib/order-domain');
 const { classifyFailure } = require('../lib/print-worker');
 const { buildEscPosFrame, createEscPosTcpTransport } = require('../lib/escpos-tcp');
 const { orderKitchenStatus, orderKitchenHeadline } = require('../public/orders-ui');
@@ -20,6 +20,15 @@ test('límites, precisión, IDs duplicados y controles de impresora', () => {
 });
 test('notas se guardan como texto, sin interpretar HTML', () => {
     assert.equal(normalizeItems([item({ nota: '<script>alert(1)</script>' })])[0].nota, '<script>alert(1)</script>');
+});
+test('Helada y Sin Helar son notas rápidas válidas, ordenadas e imprimibles', () => {
+    assert.equal(QUICK_NOTES.length, 12);
+    const line = normalizeItems([item({ notasRapidas: ['Sin Helar', 'Helada'] })])[0];
+    assert.deepEqual(line.notasRapidas, ['Helada', 'Sin Helar']);
+    const doc = printText({ empresa: 2, numero: 1, nroTicket: 'T001-000001', mesa: 1, mozo: 'José', fecha: '10/09/2026 12:30' },
+        [{ tipo: 'ADICIÓN', nueva: snapshot(line) }]);
+    assert.match(doc, /NOTA: Helada/);
+    assert.match(doc, /NOTA: Sin Helar/);
 });
 test('cada envío contiene solo altas, correcciones y bajas pendientes', () => {
     const a = normalizeItems([item()])[0];

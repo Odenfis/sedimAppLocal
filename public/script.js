@@ -166,6 +166,11 @@ function aplicarPermisos(permisos) {
 //  NAVEGACIÓN (ACTUALIZADA PARA SUBMENÚS)
 // ==========================================
 function showView(viewName) {
+    if (viewName !== 'pos-order') {
+        resetMobilePOSSearch();
+        resetMobilePOSHeader();
+        resetPOSAddFeedback();
+    }
     // 1. PASO CRUCIAL: Ocultar TODAS las secciones por su clase CSS
     // Esto asegura que 'view-recetas' y cualquier futura vista se puedan ocultar
     document.querySelectorAll('.view-section').forEach(el => {
@@ -269,6 +274,10 @@ window.addEventListener('resize', () => {
         document.getElementById('mobile-overlay').classList.remove('active');
     }
     if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) closeCartSheet();
+    if (window.innerWidth > 480 || viewportOrientation !== lastViewportOrientation) {
+        resetMobilePOSSearch();
+        resetMobilePOSHeader();
+    }
     lastViewportOrientation = viewportOrientation;
 });
 // ... existing code ...
@@ -285,6 +294,193 @@ let posCurrentFloor = null;
 let posCurrentCategory = null;
 let posSearchTerm = '';
 let posIsReadOnly = false;
+
+// Búsqueda móvil: usa el viewport visual real para no quedar detrás del
+// teclado virtual. No depende del navegador ni del sistema operativo.
+const mobilePOSSearchMedia = window.matchMedia('(max-width: 480px)');
+let posSearchKeyboardSeen = false;
+let posSearchViewportBaseline = window.innerHeight;
+let posSearchBlurTimer = null;
+let posAddFeedbackTimer = null;
+let posCartFeedbackTimer = null;
+const posCardFeedbackTimers = new Map();
+
+function setMobilePOSHeaderExpanded(expanded) {
+    const header = document.querySelector('.pos-order-header');
+    const toggle = document.getElementById('pos-header-toggle');
+    if (!header || !toggle) return;
+    header.classList.toggle('mobile-expanded', expanded);
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', expanded ? 'Ocultar acciones de la mesa' : 'Mostrar acciones de la mesa');
+}
+
+function toggleMobilePOSHeader() {
+    if (!mobilePOSSearchMedia.matches || posIsReadOnly) return;
+    const header = document.querySelector('.pos-order-header');
+    setMobilePOSHeaderExpanded(!header?.classList.contains('mobile-expanded'));
+}
+
+function resetMobilePOSHeader() {
+    const toggle = document.getElementById('pos-header-toggle');
+    if (toggle) {
+        toggle.hidden = false;
+        delete toggle.dataset.forcedOpen;
+    }
+    setMobilePOSHeaderExpanded(false);
+}
+
+function syncMobilePOSHeaderReadOnly(readOnly) {
+    const toggle = document.getElementById('pos-header-toggle');
+    if (!toggle) return;
+    if (readOnly) {
+        toggle.dataset.forcedOpen = 'true';
+        toggle.hidden = true;
+        setMobilePOSHeaderExpanded(true);
+        return;
+    }
+    const wasForced = toggle.dataset.forcedOpen === 'true';
+    toggle.hidden = false;
+    delete toggle.dataset.forcedOpen;
+    if (wasForced) setMobilePOSHeaderExpanded(false);
+}
+
+function resetPOSAddFeedback() {
+    clearTimeout(posAddFeedbackTimer);
+    clearTimeout(posCartFeedbackTimer);
+    const feedback = document.getElementById('pos-add-feedback');
+    if (feedback) {
+        feedback.hidden = true;
+        feedback.classList.remove('is-visible');
+        feedback.textContent = '';
+    }
+    document.getElementById('pos-cart-fab')?.classList.remove('is-bumping');
+    document.querySelectorAll('.pos-product-card.is-added').forEach(card => card.classList.remove('is-added'));
+    posCardFeedbackTimers.forEach(timer => clearTimeout(timer));
+    posCardFeedbackTimers.clear();
+}
+
+function showPOSAddFeedback(product, card) {
+    const codPro = String(product.CodPro || '').trim();
+    const quantity = posCart.reduce((total, item) => total + (String(item.codPro || '').trim() === codPro ? Number(item.cantidad) || 0 : 0), 0);
+    const feedback = document.getElementById('pos-add-feedback');
+    if (feedback) {
+        clearTimeout(posAddFeedbackTimer);
+        feedback.textContent = `Agregado al pedido: ${String(product.Nombre || 'Producto').trim()} · Cantidad ${quantity}`;
+        feedback.hidden = false;
+        feedback.classList.remove('is-visible');
+        void feedback.offsetWidth;
+        feedback.classList.add('is-visible');
+        posAddFeedbackTimer = setTimeout(() => {
+            feedback.hidden = true;
+            feedback.classList.remove('is-visible');
+        }, 1400);
+    }
+
+    if (card?.isConnected) {
+        clearTimeout(posCardFeedbackTimers.get(card));
+        card.classList.remove('is-added');
+        void card.offsetWidth;
+        card.classList.add('is-added');
+        posCardFeedbackTimers.set(card, setTimeout(() => {
+            card.classList.remove('is-added');
+            posCardFeedbackTimers.delete(card);
+        }, 450));
+    }
+
+    const cart = document.getElementById('pos-cart-fab');
+    if (cart) {
+        clearTimeout(posCartFeedbackTimer);
+        cart.classList.remove('is-bumping');
+        void cart.offsetWidth;
+        cart.classList.add('is-bumping');
+        posCartFeedbackTimer = setTimeout(() => cart.classList.remove('is-bumping'), 450);
+    }
+}
+
+function updatePOSSearchClear() {
+    const input = document.getElementById('pos-product-search');
+    const clear = document.getElementById('pos-search-clear');
+    if (clear) clear.hidden = !input?.value;
+}
+
+function syncPOSVisualViewport() {
+    const viewport = window.visualViewport;
+    const height = Math.round(viewport?.height || window.innerHeight);
+    const offsetTop = Math.round(viewport?.offsetTop || 0);
+    document.documentElement.style.setProperty('--pos-visual-viewport-height', `${height}px`);
+    document.documentElement.style.setProperty('--pos-visual-viewport-offset-top', `${offsetTop}px`);
+
+    const view = document.getElementById('view-pos-order');
+    if (!view?.classList.contains('pos-mobile-search-mode')) return;
+    if (posSearchViewportBaseline - height > 120) posSearchKeyboardSeen = true;
+    else if (posSearchKeyboardSeen && height >= posSearchViewportBaseline - 80) finishPOSProductSearch();
+}
+
+function startPOSProductSearch() {
+    if (!mobilePOSSearchMedia.matches || posIsReadOnly) return;
+    clearTimeout(posSearchBlurTimer);
+    posSearchViewportBaseline = Math.max(window.innerHeight, window.visualViewport?.height || 0);
+    posSearchKeyboardSeen = false;
+    document.getElementById('view-pos-order')?.classList.add('pos-mobile-search-mode');
+    syncPOSVisualViewport();
+}
+
+function finishPOSProductSearch() {
+    clearTimeout(posSearchBlurTimer);
+    const input = document.getElementById('pos-product-search');
+    if (document.activeElement === input) input.blur();
+    document.getElementById('view-pos-order')?.classList.remove('pos-mobile-search-mode');
+    posSearchKeyboardSeen = false;
+}
+
+function resetMobilePOSSearch() {
+    finishPOSProductSearch();
+    document.documentElement.style.removeProperty('--pos-visual-viewport-height');
+    document.documentElement.style.removeProperty('--pos-visual-viewport-offset-top');
+}
+
+function clearPOSProductSearch() {
+    const input = document.getElementById('pos-product-search');
+    if (!input) return;
+    input.value = '';
+    searchPOSProducts();
+    input.focus({ preventScroll: true });
+}
+
+function retainMobilePOSSearchFocus() {
+    const view = document.getElementById('view-pos-order');
+    const input = document.getElementById('pos-product-search');
+    if (!view?.classList.contains('pos-mobile-search-mode') || !input || posIsReadOnly) return;
+    requestAnimationFrame(() => input.focus({ preventScroll: true }));
+}
+
+const posProductSearchInput = document.getElementById('pos-product-search');
+if (posProductSearchInput) {
+    posProductSearchInput.addEventListener('focus', startPOSProductSearch);
+    posProductSearchInput.addEventListener('pointerdown', startPOSProductSearch);
+    posProductSearchInput.addEventListener('blur', () => {
+        clearTimeout(posSearchBlurTimer);
+        posSearchBlurTimer = setTimeout(() => {
+            if (document.activeElement !== posProductSearchInput) finishPOSProductSearch();
+        }, 160);
+    });
+    posProductSearchInput.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        finishPOSProductSearch();
+    });
+}
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncPOSVisualViewport);
+    window.visualViewport.addEventListener('scroll', syncPOSVisualViewport);
+}
+if (mobilePOSSearchMedia.addEventListener) mobilePOSSearchMedia.addEventListener('change', event => {
+    if (!event.matches) resetMobilePOSSearch();
+});
+else mobilePOSSearchMedia.addListener(event => {
+    if (!event.matches) resetMobilePOSSearch();
+});
+syncPOSVisualViewport();
 let posCurrentTurnoLabel = null;
 let posAutoSaveTimer = null;
 let posCartGroupMembers = new Map();
@@ -447,6 +643,9 @@ function filterTables(area) {
 
 async function openPOSOrder(tableNum, tableEmpresa = null) {
     if (!await orderBeforeOpen()) return;
+    resetMobilePOSSearch();
+    resetMobilePOSHeader();
+    resetPOSAddFeedback();
     orderReset();
     posIsReadOnly = false;
     posCurrentTable = tableNum;
@@ -464,6 +663,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     posCurrentCategory = null;
     const searchInput = document.getElementById('pos-product-search');
     if (searchInput) searchInput.value = '';
+    updatePOSSearchClear();
     document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
     
     document.getElementById('pos-mojo-select').value = '';
@@ -543,6 +743,8 @@ function updatePOSViewMode() {
     const reabrirBtn = document.getElementById('btn-reabrir-pedido');
 
     if (posIsReadOnly) {
+        resetMobilePOSSearch();
+        syncMobilePOSHeaderReadOnly(true);
         if (payBtn) {
             payBtn.disabled = true;
             payBtn.innerHTML = '<i class="fas fa-check-circle"></i> <span>PREVENTA REALIZADA</span>';
@@ -566,6 +768,7 @@ function updatePOSViewMode() {
         if (badge) badge.style.display = 'inline-flex';
         if (reabrirBtn) reabrirBtn.style.display = 'inline-flex';
     } else {
+        syncMobilePOSHeaderReadOnly(false);
         if (payBtn) {
             payBtn.disabled = false;
             payBtn.innerHTML = '<i class="fas fa-file-invoice"></i> <span>GENERAR PREVENTA</span>';
@@ -897,7 +1100,7 @@ function renderPOSProducts(products) {
                     ${esAfecto ? '<div class="pos-product-igv">(inc. IGV)</div>' : ''}
                 </div>
             `;
-            card.onclick = () => addToCart(p);
+            card.onclick = () => addToCart(p, card);
             grid.appendChild(card);
         });
     } catch (err) {
@@ -919,6 +1122,7 @@ function filterPosProducts(category, btnElement = null) {
 function searchPOSProducts() {
     const searchInput = document.getElementById('pos-product-search');
     posSearchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    updatePOSSearchClear();
     
     let filtered = posProducts;
     
@@ -938,7 +1142,7 @@ function searchPOSProducts() {
     renderPOSProducts(filtered);
 }
 
-function addToCart(product) {
+function addToCart(product, card = null) {
     if (posIsReadOnly || orderBusy) return;
     const existing = posCart.find(item => item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item));
     const precioBase = typeof product.PventaMa === 'number' ? product.PventaMa : (parseFloat(product.PventaMa) || 0);
@@ -957,7 +1161,9 @@ function addToCart(product) {
         });
     }
     updateCartUI();
+    showPOSAddFeedback(product, card);
     scheduleAutoSave();
+    retainMobilePOSSearchFocus();
 }
 
 let cartDelegationBound = false;

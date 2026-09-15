@@ -149,6 +149,9 @@ button,
     .pos-empresa-group,
     .pos-turno-group {
         width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
         justify-content: space-between;
         gap: 10px;
     }
@@ -157,14 +160,17 @@ button,
         flex: 1;
         width: auto;
         min-width: 0;
+        max-width: 100%;
     }
 
     .turno-toggle {
         flex: 1;
+        min-width: 0;
     }
 
     .turno-btn {
         flex: 1;
+        min-width: 0;
         padding: 10px 8px;
     }
 
@@ -215,12 +221,16 @@ button,
         grid-template-columns: 1fr;
         height: calc(100vh - 84px);
         height: calc(100dvh - 84px);
-        padding: 10px;
+        padding: 8px;
         gap: 0;
     }
 
+    .pos-order-main {
+        gap: 8px;
+    }
+
     .pos-order-header {
-        padding: 10px 12px;
+        padding: 7px 10px;
     }
 
     /* Fila superior: back + título truncado | timer
@@ -235,6 +245,14 @@ button,
         min-width: 0;
     }
 
+    .pos-title-desktop {
+        display: none;
+    }
+
+    .pos-title-mobile {
+        display: inline;
+    }
+
     .pos-header-row.top h1 {
         font-size: 0.95rem;
         white-space: nowrap;
@@ -244,6 +262,31 @@ button,
 
     #pos-order-timer {
         font-size: 0.95rem;
+    }
+
+    .pos-header-toggle {
+        width: 44px;
+        height: 44px;
+        flex: 0 0 44px;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid var(--border-color);
+        border-radius: 50%;
+        background: var(--bg-color);
+        color: var(--text-color);
+    }
+
+    .pos-header-toggle:not([hidden]) {
+        display: inline-flex;
+    }
+
+    .pos-order-header.mobile-expanded .pos-header-toggle i {
+        transform: rotate(180deg);
+    }
+
+    .pos-header-toggle i {
+        transition: transform .2s ease;
     }
 
     .pos-header-row.top .preventa-badge {
@@ -256,8 +299,8 @@ button,
     }
 
     .btn-back {
-        width: 38px;
-        height: 38px;
+        width: 44px;
+        height: 44px;
     }
 
     /* Fila inferior: info arriba, acciones abajo.
@@ -265,7 +308,7 @@ button,
     .pos-header-row.bottom {
         flex-direction: column;
         align-items: stretch;
-        gap: 8px;
+        gap: 0;
     }
 
     .pos-header-info {
@@ -286,11 +329,22 @@ button,
     }
 
     .pos-header-actions {
+        display: none;
         justify-content: space-between;
         gap: 4px;
     }
 
+    .pos-order-header.mobile-expanded .pos-header-actions {
+        display: flex;
+        margin-top: 8px;
+    }
+
+    .pos-header-divider {
+        margin: 4px 0;
+    }
+
     .btn-state-mesa {
+        min-height: 46px;
         padding: 9px 11px;
         font-size: 0.95rem;
     }
@@ -312,13 +366,67 @@ button,
 
     .cat-btn {
         scroll-snap-align: start;
-        padding: 10px 16px;
+        min-height: 44px;
+        padding: 8px 14px;
         font-size: 0.85rem;
     }
 
-    .pos-search-container input {
+    .pos-search-container {
+        margin: 4px 0;
+    }
+
+    .pos-search-field input {
         font-size: 16px;
-        padding: 11px 15px 11px 38px;
+        padding: 11px 44px 11px 38px;
+    }
+
+    /* Modo búsqueda: ocupa exactamente el viewport visible que deja
+       el teclado virtual, tanto en Android como en iOS. */
+    #view-pos-order.pos-mobile-search-mode .pos-order-layout {
+        position: fixed;
+        top: var(--pos-visual-viewport-offset-top, 0px);
+        left: 0;
+        z-index: 58;
+        width: 100%;
+        height: var(--pos-visual-viewport-height, 100dvh);
+        padding: max(8px, env(safe-area-inset-top, 0px)) 8px 8px;
+        box-sizing: border-box;
+        background: var(--bg-color);
+    }
+
+    #view-pos-order.pos-mobile-search-mode .pos-order-main {
+        min-height: 0;
+        gap: 8px;
+    }
+
+    #view-pos-order.pos-mobile-search-mode .pos-order-header,
+    #view-pos-order.pos-mobile-search-mode .pos-categories,
+    #view-pos-order.pos-mobile-search-mode .pos-cart-fab,
+    #view-pos-order.pos-mobile-search-mode ~ #pos-cart-fab {
+        display: none;
+    }
+
+    #view-pos-order.pos-mobile-search-mode .pos-search-container {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        margin: 0;
+        flex-shrink: 0;
+    }
+
+    #view-pos-order.pos-mobile-search-mode .pos-search-done {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    #view-pos-order.pos-mobile-search-mode .pos-products-grid {
+        min-height: 0;
+        padding-top: 4px;
+        padding-bottom: 8px;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
     }
 
     /* ---------- Productos: 2 columnas ---------- */
