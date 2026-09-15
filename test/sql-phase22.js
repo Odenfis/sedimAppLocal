@@ -60,6 +60,8 @@ async function main() {
         }
         const get = (mesa = 1) => call('get','/api/pos/pedido',{}, {}, { empresa: 2, mesa });
         const legacy = await get(); assert.equal(legacy.status,200); assert.equal(legacy.cocina.pendientes,1); assert.equal(legacy.items[0].estadoCocina,null);
+        const legacyCommercial = (await pool.request().query("SELECT Precio,Importe FROM Ticket_d WHERE NroTicket='T001-000001'")).recordset[0];
+        assert.equal(legacyCommercial.Precio,20); assert.equal(legacyCommercial.Importe,44.2);
         assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Impresion_trabajos')).recordset[0].n,0);
         assert.equal((await get(4)).items.length,0);
         passed++; console.log('✓ migration backfill preserves kitchen state, no print jobs, rerun is safe');
@@ -85,8 +87,8 @@ async function main() {
         assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Impresion_trabajos')).recordset[0].n,1);
         saved = await get(2); assert.equal(saved.cocina.pendientes,0);
         const grouped = (await pool.request().input('nro',nro).query('SELECT * FROM Ticket_d WHERE NroTicket=@nro')).recordset;
-        assert.equal(grouped.length,1); assert.equal(grouped[0].Cantidad,2); assert.equal(grouped[0].Importe,44.2);
-        passed++; console.log('✓ concurrent duplicate send produces one immutable shipment/job, commercial totals preserved');
+        assert.equal(grouped.length,1); assert.equal(grouped[0].Cantidad,2); assert.equal(grouped[0].Precio,44.2); assert.equal(grouped[0].Importe,44.2);
+        passed++; console.log('✓ duplicate send is idempotent; new commercial rows store Precio = Importe with IGV');
         const lineId = saved.items[0].lineaId;
         const prep = await call('put','/api/cocina/linea',{ empresa:2,nroTicket:nro,lineaId:lineId,estado:2 }); assert.equal(prep.status,200);
         const edits = saved.items.map(l => ({ ...l, precio:l.Precio, nota:l.lineaId===lineId?'Sin azúcar':l.nota }));

@@ -49,6 +49,7 @@ No copie `.env.example` encima de un `.env` existente y nunca suba `.env` a Git.
 - Iniciar y cerrar sesión.
 - Seleccionar cada empresa y turno; abrir una mesa libre.
 - Agregar un producto y confirmar autoguardado desde otro dispositivo.
+- En un pedido de prueba, agregar dos unidades de un producto afecto con precio base S/20.00 y confirmar en SQL que `Ticket_d` registra `Cantidad=2`, `Precio=44.20` e `Importe=44.20` con IGV de 10.5%. No ejecutar actualizaciones sobre tickets históricos.
 - Enviar a Cocina y comprobar que aparece en KDS sin crear ni transmitir impresión.
 - Cambiar el plato a preparación, listo y entregado.
 - Generar y reabrir una preventa.

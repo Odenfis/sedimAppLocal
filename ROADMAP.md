@@ -1196,3 +1196,25 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - La reversión restaura la imagen anterior; las migraciones nuevas son únicamente aditivas.
 - Pendiente operativo: respaldo real de SQL Server, actualización del `.env`, corte sin pedidos activos, smoke test en servidor y validación física Android/iPhone/iPad.
 - Pendientes posteriores: HTTPS local, instalación PWA completa, autenticación moderna, aceptación RPT004 y activación de cierres.
+
+---
+
+## Fase 27: Total con IGV en ambas columnas de Ticket_d (Implementada en código)
+
+### Regla comercial
+
+- Para pedidos nuevos o pedidos activos que SedimApp vuelva a guardar, `Ticket_d.Precio` y `Ticket_d.Importe` contienen el mismo total de la línea, con IGV y cantidad incluidos.
+- Ejemplo: precio base S/20.00, IGV 10.5% y cantidad 2 se registra como `Cantidad=2`, `Precio=44.20` e `Importe=44.20`.
+- `Ticket_c.Total` continúa siendo la suma de `Ticket_d.Importe`; nunca se multiplica nuevamente `Precio` por `Cantidad`.
+
+### Compatibilidad e históricos
+
+- El precio unitario base se conserva en `Pedido_lineas.Datos.precio`, que sigue siendo la fuente para edición, recarga del POS y cálculo de IGV. Esto evita aplicar IGV o cantidad por segunda vez en la interfaz.
+- No existe migración ni actualización masiva de `Ticket_d`: los registros históricos permanecen intactos.
+- Un pedido activo adopta la regla nueva solamente cuando SedimApp lo guarda y reconstruye su detalle comercial.
+- Los reportes y procedimientos externos deben tratar `Precio` como total de línea en las filas nuevas escritas por SedimApp.
+
+### Validación
+
+- La integración SQL conserva una fila histórica con `Precio=20.00` e `Importe=44.20` y exige que una fila nueva de dos unidades quede con `Precio=Importe=44.20`.
+- La respuesta del POS continúa obteniendo el precio base desde `Pedido_lineas`, por lo que guardar y reabrir un pedido no duplica el IGV.
