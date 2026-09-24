@@ -1357,3 +1357,13 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - El archivo y la purga de turnos incluyen la cola de Barra y las rutas inmutables. La vista anterior de la aplicación no debe ejecutar purgas durante un rollback porque desconoce esas dos tablas nuevas.
 - Configuración operativa prevista: `BAR_PRINTER_ENABLED=true`, `BAR_PRINTER_HOST=192.168.1.180`, ESC/POS TCP 9100, timeout 5 s, CP850, papel de 80 mm y corte habilitado.
 - Validación local: sintaxis y pruebas unitarias aprobadas; Playwright cubre reimpresión independiente de ambos destinos. Pendiente contra SQL Server: integración de envío mixto/idempotencia/cierre, prueba física de red y caracteres, y prueba concurrente de diez dispositivos con una o ambas impresoras desconectadas.
+
+---
+
+## Fase 38: Diagnóstico guiado de la RPT004 de Barra (Implementada en código; ejecución física pendiente)
+
+- `diagnosticar-impresora-barra.bat` sustituye los comandos manuales incorrectos: lee únicamente host/puerto de Barra, prueba ICMP como información y exige conectividad TCP 9100 desde Windows y Docker.
+- `npm run diagnose:bar` valida dentro del contenedor las variables no secretas, el protocolo ESC/POS, la migración `008`, ambas tablas auxiliares y los diez trabajos recientes sin mostrar documentos ni datos del pedido.
+- La opción `--print` transmite una hoja técnica sin datos comerciales con tildes, `ñ`, ancho normal y corte. El archivo de Windows solicita confirmación antes de generar papel.
+- El diagnóstico es estrictamente de lectura salvo por la transmisión física voluntaria: no crea ni actualiza tablas, trabajos, rutas o pedidos.
+- Validación local: `npm run check`, 32 pruebas unitarias/configuración/migraciones aprobadas y `git diff --check` sin errores. Pendiente: ejecutar el asistente en el servidor Windows después de obtener la IP real mediante el autotest de la impresora.

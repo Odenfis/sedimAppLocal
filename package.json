@@ -6,11 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check lib/orders.js && node --check lib/shift-closures.js && node --check lib/order-domain.js && node --check lib/print-worker.js && node --check lib/escpos-tcp.js && node --check lib/sql-session-store.js && node --check lib/request-context.js && node --check public/script.js && node --check public/orders-ui.js && node --check public/order-math.js && node --check migrate.js && node --check scripts/recover-table-order.js && node --check test/static-server.js",
+    "check": "node --check server.js && node --check lib/orders.js && node --check lib/shift-closures.js && node --check lib/order-domain.js && node --check lib/print-worker.js && node --check lib/escpos-tcp.js && node --check lib/sql-session-store.js && node --check lib/request-context.js && node --check public/script.js && node --check public/orders-ui.js && node --check public/order-math.js && node --check migrate.js && node --check scripts/recover-table-order.js && node --check scripts/diagnose-bar-printer.js && node --check test/static-server.js",
     "preflight:phase22": "node scripts/preflight-phase22.js",
     "test:ui": "playwright test",
     "test:sql": "node test/sql-phase22.js",
-    "recover:table-order": "node scripts/recover-table-order.js"
+    "recover:table-order": "node scripts/recover-table-order.js",
+    "diagnose:bar": "node scripts/diagnose-bar-printer.js"
   },
   "keywords": [],
   "author": "",

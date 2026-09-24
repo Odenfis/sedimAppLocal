@@ -56,6 +56,7 @@ El respaldo y una ventana sin atención siguen siendo recomendaciones operativas
 
 ## Prueba rápida obligatoria
 
+- Para Barra, ejecute primero `diagnosticar-impresora-barra.bat`. Este archivo comprueba TCP 9100 desde Windows y Docker, configuración, migración y cola, y pide confirmación antes de imprimir una hoja técnica.
 - Iniciar y cerrar sesión.
 - Seleccionar cada empresa y turno; abrir una mesa libre.
 - Agregar un producto y confirmar autoguardado desde otro dispositivo.
