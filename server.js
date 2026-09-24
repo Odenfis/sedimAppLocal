@@ -253,19 +253,36 @@ app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
     } catch (e) { internalError(res, e, 'Listar mozos'); }
 });
 
+function buildPOSCategoriesQuery({ empresa } = {}) {
+    let query = `
+        SELECT DISTINCT L.Descripcion
+        FROM Lineas L
+        INNER JOIN Productos P ON P.Clinea = L.CodLinea
+        WHERE P.Eliminado = 0 AND P.Tipo = 3
+    `;
+    if (empresa) query += " AND P.CodPro LIKE @empresa + '%'";
+    return query;
+}
+
+function buildPOSProductsQuery({ empresa, linea } = {}) {
+    let query = `
+        SELECT P.CodPro, P.Nombre, P.PventaMa, P.Afecto, L.Descripcion as Linea
+        FROM Productos P
+        LEFT JOIN Lineas L ON P.Clinea = L.CodLinea
+        WHERE P.Eliminado = 0 AND P.Tipo = 3
+    `;
+    if (empresa) query += " AND P.CodPro LIKE @empresa + '%'";
+    if (linea) query += ' AND L.Descripcion = @linea';
+    return query + ' ORDER BY P.Nombre ASC';
+}
+
 app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
     const { empresa } = req.query;
     try {
         const pool = await getConnection();
         const request = pool.request();
-        let query = `
-            SELECT DISTINCT L.Descripcion 
-            FROM Lineas L
-            INNER JOIN Productos P ON P.Clinea = L.CodLinea
-            WHERE P.Eliminado = 0
-        `;
+        const query = buildPOSCategoriesQuery({ empresa });
         if (empresa) {
-            query += " AND P.CodPro LIKE @empresa + '%'";
             request.input('empresa', sql.VarChar, empresa);
         }
         const result = await request.query(query);
@@ -290,21 +307,13 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
     try {
         const pool = await getConnection();
         const request = pool.request();
-        let query = `
-            SELECT P.CodPro, P.Nombre, P.PventaMa, P.Afecto, L.Descripcion as Linea
-            FROM Productos P
-            LEFT JOIN Lineas L ON P.Clinea = L.CodLinea
-            WHERE P.Eliminado = 0
-        `;
+        const query = buildPOSProductsQuery({ empresa, linea });
         if (empresa) {
-            query += " AND P.CodPro LIKE @empresa + '%'";
             request.input('empresa', sql.VarChar, empresa);
         }
         if (linea) {
-            query += " AND L.Descripcion = @linea";
             request.input('linea', sql.VarChar, linea);
         }
-        query += " ORDER BY P.Nombre ASC";
         const result = await request.query(query);
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar productos'); }
@@ -352,6 +361,8 @@ if (require.main === module) start().catch(error => {
 module.exports = app;
 module.exports.features = features;
 module.exports.validateProductionConfig = validateProductionConfig;
+module.exports.buildPOSCategoriesQuery = buildPOSCategoriesQuery;
+module.exports.buildPOSProductsQuery = buildPOSProductsQuery;
 
 function desencriptarPassword(hash) {
     let password = '';

@@ -2,7 +2,26 @@ const { test, expect } = require('@playwright/test');
 const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, Afecto: 1, Linea: 'Platos' };
 async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0,
-        conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0 };
+        conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
+        tableLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true };
+    if (options.stubEventSource) {
+        await page.addInitScript(() => {
+            window.__sseTest = { created: 0, live: 0, maxLive: 0 };
+            window.EventSource = class TestEventSource {
+                constructor() {
+                    this.closed = false;
+                    window.__sseTest.created++;
+                    window.__sseTest.live++;
+                    window.__sseTest.maxLive = Math.max(window.__sseTest.maxLive, window.__sseTest.live);
+                }
+                close() {
+                    if (this.closed) return;
+                    this.closed = true;
+                    window.__sseTest.live--;
+                }
+            };
+        });
+    }
     function data() {
         const pending = state.items.some(l => JSON.stringify(l) !== state.sent.get(l.lineaId)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
         const cancellations = [...state.sent.entries()].filter(([id]) => !state.items.some(l => l.lineaId === id)).map(([,line]) => JSON.parse(line));
@@ -17,10 +36,23 @@ async function fixture(page, options = {}) {
     await page.route('**/api/**', async route => {
         const req = route.request(), url = new URL(req.url()), body = req.postDataJSON();
         const fulfill = (json, status = 200) => route.fulfill({ status, json });
-        if (url.pathname === '/api/events') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' });
-        if (url.pathname === '/api/session') return fulfill({ user: { usuario: 'Mozo' }, ...(options.features ? { features: options.features } : {}) });
+        if (url.pathname === '/api/events') { state.eventConnections++; return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' }); }
+        if (url.pathname === '/api/session') {
+            state.sessionLoads++;
+            return state.sessionActive
+                ? fulfill({ user: { usuario: 'Mozo' }, ...(options.features ? { features: options.features } : {}) })
+                : fulfill({ message: 'No autorizado' }, 401);
+        }
         if (url.pathname === '/api/pos/config') return fulfill({ igvv: 10.5 });
-        if (url.pathname === '/api/pos/tables') return fulfill([{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 }]);
+        if (url.pathname === '/api/pos/tables') {
+            state.tableLoads++;
+            const delay = options.tableDelay?.(url.searchParams.get('empresa')) || 0;
+            if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+            const tables = typeof options.tables === 'function'
+                ? options.tables(url.searchParams.get('empresa'))
+                : options.tables;
+            return fulfill(tables || [{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 }]);
+        }
         if (url.pathname === '/api/pos/mozos') return fulfill([{ Codemp: 1, Nombre: 'José' }]);
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
         if (url.pathname === '/api/pos/products') return fulfill([product]);
@@ -65,10 +97,252 @@ async function fixture(page, options = {}) {
     await page.goto('/dashboard.html');
     await page.selectOption('#pos-empresa-select', '02');
     await page.getByRole('button', { name: 'Mañana', exact: true }).click();
-    await page.locator('.pos-table-card').first().click();
-    await expect(page.locator('#pos-products-grid')).toContainText('Arroz');
+    if (options.openTable !== false) {
+        await page.locator('.pos-table-card').first().click();
+        await expect(page.locator('#pos-products-grid')).toContainText('Arroz');
+    }
     return state;
 }
+
+test('mapa filtra por agrupación y limita Desayunos a Cocinería', async ({ page }) => {
+    const tablesFor = empresa => [
+        { Numero: 80, Empresa: empresa, Ambiente: 1, Estado: 1 },
+        { Numero: 81, Empresa: empresa, Ambiente: 2, Estado: 1 },
+        { Numero: 120, Empresa: empresa, Ambiente: 3, Estado: 1 },
+        { Numero: 121, Empresa: empresa, Ambiente: 1, Estado: 1 },
+        { Numero: 201, Empresa: empresa, Ambiente: 1, Estado: 1 },
+        { Numero: 202, Empresa: empresa, Ambiente: 1, Estado: 2 },
+        { Numero: 203, Empresa: empresa, Ambiente: 2, Estado: 3 },
+        { Numero: 204, Empresa: empresa, Ambiente: 2, Estado: 4 },
+        { Numero: 205, Empresa: empresa, Ambiente: 3, Estado: 5 },
+        { Numero: 206, Empresa: empresa, Ambiente: 3, Estado: 6 },
+        { Numero: 210, Empresa: empresa, Ambiente: 2, Estado: 1 },
+        { Numero: 220, Empresa: empresa, Ambiente: 3, Estado: 1 },
+        { Numero: 231, Empresa: empresa, Ambiente: 3, Estado: 1 },
+        { Numero: 236, Empresa: empresa, Ambiente: 2, Estado: 1 },
+        { Numero: 300, Empresa: empresa, Ambiente: 3, Estado: 1 }
+    ];
+    await fixture(page, { tables: empresa => tablesFor(Number(empresa)), openTable: false });
+
+    await expect(page.locator('#pos-ambiente-filters')).toHaveCount(0);
+    await expect(page.locator('#pos-table-group-filters .table-group-btn')).toHaveText([
+        'Todos', 'Atención normal', 'Desayunos', 'Delivery', 'Para llevar',
+        'PedidosYa | Rappi', 'Descarte y obsequios', 'Varios'
+    ]);
+    await expect(page.locator('.pos-table-card')).toHaveCount(tablesFor(2).length);
+    await expect(page.locator('[data-table-number="80"]')).toHaveAttribute('data-table-type', 'normal');
+    await expect(page.locator('[data-table-number="81"]')).toHaveAttribute('data-table-type', 'breakfast');
+    await expect(page.locator('[data-table-number="120"]')).toContainText('Desayunos');
+    await expect(page.locator('[data-table-number="121"]')).toHaveAttribute('data-table-type', 'normal');
+    await expect(page.locator('[data-table-number="201"]')).toContainText('Delivery');
+    await expect(page.locator('[data-table-number="210"]')).toContainText('Para llevar');
+    await expect(page.locator('[data-table-number="220"]')).toContainText('PedidosYa | Rappi');
+    await expect(page.locator('[data-table-number="231"]')).toContainText('Descarte y obsequios');
+    await expect(page.locator('[data-table-number="236"]')).toContainText('Varios');
+    await expect(page.locator('[data-table-number="300"]')).toHaveAttribute('data-table-type', 'misc');
+    await expect(page.locator('[data-table-number="220"] .pos-brand-logo')).toHaveCount(2);
+    await expect.poll(() => page.locator('[data-table-number="220"] .pos-brand-logo img')
+        .evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
+    await expect(page.locator('[data-table-number="220"] .pos-brand-logo.is-fallback')).toHaveCount(0);
+
+    const stateBackgrounds = ['rgb(220, 252, 231)', 'rgb(219, 234, 254)', 'rgb(254, 249, 195)',
+        'rgb(224, 231, 255)', 'rgb(252, 231, 243)', 'rgb(254, 226, 226)'];
+    for (let index = 0; index < 6; index += 1) {
+        const card = page.locator(`[data-table-number="${201 + index}"]`);
+        expect(await card.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(stateBackgrounds[index]);
+    }
+
+    await page.getByRole('button', { name: 'Desayunos', exact: true }).click();
+    await expect(page.locator('.pos-table-card')).toHaveCount(2);
+    expect(await page.locator('.pos-table-card').evaluateAll(cards => cards.map(card => card.dataset.tableNumber))).toEqual(['81', '120']);
+
+    await page.getByRole('button', { name: 'Varios', exact: true }).click();
+    await expect(page.locator('.pos-table-card')).toHaveCount(2);
+    expect(await page.locator('.pos-table-card').evaluateAll(cards => cards.map(card => card.dataset.tableNumber))).toEqual(['236', '300']);
+
+    await page.getByRole('button', { name: 'Desayunos', exact: true }).click();
+    await page.selectOption('#pos-empresa-select', '04');
+    await expect(page.getByRole('button', { name: 'Desayunos', exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-table-group="all"]')).toHaveClass(/active/);
+    await expect(page.locator('.pos-table-card')).toHaveCount(tablesFor(4).length);
+    await expect(page.locator('[data-table-number="81"]')).toHaveAttribute('data-table-type', 'normal');
+    await expect(page.locator('[data-table-number="120"]')).toHaveAttribute('data-table-type', 'normal');
+    await expect(page.locator('[data-table-number="220"]')).toHaveAttribute('data-table-type', 'marketplaces');
+});
+
+test('agrupación compacta libera espacio y conserva la selección en móvil y tablet', async ({ page }) => {
+    const tablesFor = empresa => [80, 81, 120, 121, 201, 210, 220, 231, 236]
+        .map((Numero, index) => ({ Numero, Empresa: empresa, Ambiente: index % 3 + 1, Estado: index % 6 + 1 }));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page, { tables: empresa => tablesFor(Number(empresa)), openTable: false });
+
+    const toggle = page.locator('#pos-table-group-toggle');
+    const filters = page.locator('#pos-table-group-filters');
+    const current = page.locator('#pos-table-group-current');
+
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-controls', 'pos-table-group-filters');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(filters).toBeHidden();
+    await expect(current).toHaveText('Todos');
+    expect((await toggle.boundingBox()).height).toBeGreaterThanOrEqual(44);
+    expect(await page.locator('.pos-table-card').evaluateAll(cards => cards.slice(0, 2)
+        .every(card => card.getBoundingClientRect().bottom <= window.innerHeight))).toBe(true);
+
+    await toggle.focus();
+    await toggle.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(filters).toBeVisible();
+    await page.getByRole('button', { name: 'Desayunos', exact: true }).click();
+    await expect(current).toHaveText('Desayunos');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(filters).toBeHidden();
+    await expect(page.locator('.pos-table-card')).toHaveCount(2);
+
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    await page.evaluate(() => showView('pos-tables'));
+    await expect(current).toHaveText('Desayunos');
+    await expect(filters).toBeHidden();
+
+    await page.selectOption('#pos-empresa-select', '04');
+    await expect(current).toHaveText('Todos');
+    await expect(page.locator('[data-table-group="all"]')).toHaveClass(/active/);
+
+    for (const viewport of [
+        { width: 320, height: 700 }, { width: 440, height: 956 }, { width: 768, height: 1024 },
+        { width: 1024, height: 1366 }, { width: 1194, height: 834 }
+    ]) {
+        await page.setViewportSize(viewport);
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(filters).toBeHidden();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        if (viewport.width === 440) {
+            expect(await page.locator('.pos-table-card').evaluateAll(cards => cards.slice(0, 2)
+                .every(card => card.getBoundingClientRect().bottom <= window.innerHeight))).toBe(true);
+        }
+    }
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(toggle).toBeHidden();
+    await expect(filters).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('mapa de mesas especiales no desborda en móvil, tablet ni escritorio', async ({ page }) => {
+    const tables = [81, 120, 201, 210, 220, 231, 236].map((Numero, index) => ({ Numero, Empresa: 2, Ambiente: index % 3 + 1, Estado: index % 6 + 1 }));
+    await fixture(page, { tables, openTable: false });
+
+    for (const viewport of [
+        { width: 320, height: 700 }, { width: 390, height: 844 }, { width: 440, height: 956 },
+        { width: 768, height: 1024 }, { width: 1024, height: 1366 }, { width: 1194, height: 834 },
+        { width: 1280, height: 800 }
+    ]) {
+        await page.setViewportSize(viewport);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        expect(await page.locator('.content').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(await page.locator('#pos-table-group-filters').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(await page.locator('.pos-table-card').evaluateAll(cards => cards.every(card => {
+            const grid = card.closest('.pos-tables-grid').getBoundingClientRect();
+            const box = card.getBoundingClientRect();
+            return box.left >= grid.left - .5 && box.right <= grid.right + .5;
+        }))).toBe(true);
+    }
+});
+
+test('reactivación reconcilia el mapa una sola vez y mantiene filtros y una sola conexión SSE', async ({ page }) => {
+    let tableState = 1;
+    const state = await fixture(page, {
+        stubEventSource: true,
+        openTable: false,
+        tables: () => [{ Numero: 201, Empresa: 2, Ambiente: 1, Estado: tableState }]
+    });
+    await page.getByRole('button', { name: 'Delivery', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => !appResumeTimer && !appResumePromise)).toBe(true);
+    const baseline = { tables: state.tableLoads, sessions: state.sessionLoads,
+        sse: await page.evaluate(() => window.__sseTest.created) };
+
+    tableState = 2;
+    await page.evaluate(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+        window.dispatchEvent(new Event('online'));
+        window.dispatchEvent(new Event('focus'));
+    });
+
+    await expect(page.locator('[data-table-number="201"]')).toContainText('Ocupada');
+    expect(state.tableLoads).toBe(baseline.tables + 1);
+    expect(state.sessionLoads).toBe(baseline.sessions + 1);
+    expect(await page.evaluate(() => window.__sseTest.created)).toBe(baseline.sse + 1);
+    expect(await page.evaluate(() => ({ live: window.__sseTest.live, maxLive: window.__sseTest.maxLive,
+        retryPending: Boolean(sseRetryTimer) }))).toEqual({ live: 1, maxLive: 1, retryPending: false });
+    await expect(page.locator('#pos-empresa-select')).toHaveValue('02');
+    await expect(page.getByRole('button', { name: 'Mañana', exact: true })).toHaveClass(/active/);
+    await expect(page.locator('#pos-table-group-current')).toHaveText('Delivery');
+});
+
+test('mapa descarta respuestas antiguas al cambiar empresa durante una recarga', async ({ page }) => {
+    await fixture(page, {
+        stubEventSource: true,
+        openTable: false,
+        tableDelay: empresa => Number(empresa) === 4 ? 350 : 0,
+        tables: empresa => [{ Numero: 200 + Number(empresa), Empresa: Number(empresa), Ambiente: 1, Estado: 1 }]
+    });
+
+    await page.selectOption('#pos-empresa-select', '04');
+    await page.selectOption('#pos-empresa-select', '06');
+    await expect(page.locator('[data-table-number="206"]')).toBeVisible();
+    await page.waitForTimeout(450);
+    await expect(page.locator('[data-table-number="206"]')).toBeVisible();
+    await expect(page.locator('[data-table-number="204"]')).toHaveCount(0);
+});
+
+test('reactivación actualiza pedidos limpios y conserva borradores ante una versión remota', async ({ page }) => {
+    const state = await fixture(page, { stubEventSource: true });
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    await expect.poll(() => page.evaluate(() => !appResumeTimer && !appResumePromise && !orderSavePromise)).toBe(true);
+
+    state.items[0].cantidad = 3;
+    state.version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect.poll(() => page.evaluate(() => posCart[0]?.cantidad)).toBe(3);
+
+    await page.evaluate(() => {
+        posCart[0].cantidad = 7;
+        orderDirty = true;
+        orderGeneration++;
+        updateCartUI();
+    });
+    state.items[0].cantidad = 4;
+    state.version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect.poll(() => page.evaluate(() => orderConflict)).toBe(true);
+    expect(await page.evaluate(() => posCart[0].cantidad)).toBe(7);
+    await expect(page.locator('#order-save-message')).toContainText('reposo');
+});
+
+test('reactivación refresca Cocina y redirige si la sesión expiró', async ({ page }) => {
+    const state = await fixture(page, { stubEventSource: true, openTable: false });
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select', '02');
+    await expect.poll(() => page.evaluate(() => !appResumeTimer && !appResumePromise)).toBe(true);
+
+    state.kds.push({
+        NroTicket: 'T001-34', NroMesa: 34, EnvioId: '34343434-3434-4434-8434-343434343434',
+        LineaId: '56565656-5656-4565-8565-565656565656', Codpro: '02001', Cantidad: 1,
+        Descripcion: 'Arroz reactivado', EstadoCocina: 1, FechaTicket: new Date().toISOString(), MinutosEspera: 0
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.locator('#cocina-board')).toContainText('Arroz reactivado');
+
+    await expect.poll(() => page.evaluate(() => !appResumeTimer && !appResumePromise)).toBe(true);
+    state.sessionActive = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page).toHaveURL(/\/login\.html$/);
+});
+
 test('v1 oculta impresión y cierre cuando no están habilitados', async ({ page }) => {
     await fixture(page, { features: { printerEnabled: false, closuresEnabled: false } });
     await expect(page.locator('[data-module="cierres"]')).toBeHidden();
@@ -81,6 +355,8 @@ test('manifest, iconos y Font Awesome se sirven localmente', async ({ page }) =>
     expect(manifest.ok()).toBeTruthy();
     expect((await manifest.json()).display).toBe('standalone');
     expect((await page.request.get('/icons/icon-512.png')).ok()).toBeTruthy();
+    expect((await page.request.get('/icons/order-channels/pedidosya.svg')).ok()).toBeTruthy();
+    expect((await page.request.get('/icons/order-channels/rappi.svg')).ok()).toBeTruthy();
     expect((await page.request.get('/vendor/fontawesome/css/all.min.css')).ok()).toBeTruthy();
 });
 test('login móvil respeta viewport y no desborda', async ({ page }) => {

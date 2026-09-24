@@ -267,8 +267,10 @@ function toggleSidebar() {
     }
 }
 let lastViewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+let lastTableMapCompact = window.innerWidth <= 1200;
 window.addEventListener('resize', () => {
     const viewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+    const tableMapCompact = window.innerWidth <= 1200;
     if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('mobile-overlay').classList.remove('active');
@@ -278,6 +280,12 @@ window.addEventListener('resize', () => {
         resetMobilePOSSearch();
         resetMobilePOSHeader();
     }
+    if ((tableMapCompact && !lastTableMapCompact) || viewportOrientation !== lastViewportOrientation) {
+        closePOSTableGroups();
+    } else {
+        syncPOSTableGroupDisclosure();
+    }
+    lastTableMapCompact = tableMapCompact;
     lastViewportOrientation = viewportOrientation;
 });
 // ... existing code ...
@@ -290,10 +298,115 @@ let posCurrentTable = null;
 let posCart = [];
 let posProducts = [];
 let posAllTables = [];
-let posCurrentFloor = null;
+let posCurrentTableGroup = 'all';
+let posTableGroupsExpanded = false;
 let posCurrentCategory = null;
 let posSearchTerm = '';
 let posIsReadOnly = false;
+
+const POS_NORMAL_TABLE_VISUAL = Object.freeze({
+    key: 'normal',
+    label: 'Atención normal',
+    icon: 'fa-chair'
+});
+const POS_BREAKFAST_TABLE_VISUAL = Object.freeze({
+    key: 'breakfast',
+    label: 'Desayunos',
+    icons: Object.freeze(['fa-mug-hot', 'fa-bread-slice'])
+});
+const POS_SPECIAL_TABLE_VISUALS = Object.freeze([
+    Object.freeze({ key: 'delivery', min: 201, max: 209, label: 'Delivery', icon: 'fa-motorcycle' }),
+    Object.freeze({ key: 'takeaway', min: 210, max: 219, label: 'Para llevar', icon: 'fa-bag-shopping' }),
+    Object.freeze({
+        key: 'marketplaces',
+        min: 220,
+        max: 230,
+        label: 'PedidosYa | Rappi',
+        brands: Object.freeze([
+            Object.freeze({ name: 'PedidosYa', src: '/icons/order-channels/pedidosya.svg', fallback: 'PY' }),
+            Object.freeze({ name: 'Rappi', src: '/icons/order-channels/rappi.svg', fallback: 'R' })
+        ])
+    }),
+    Object.freeze({
+        key: 'discard-gifts',
+        min: 231,
+        max: 235,
+        label: 'Descarte y obsequios',
+        icons: Object.freeze(['fa-trash-can', 'fa-gift'])
+    }),
+    Object.freeze({ key: 'misc', min: 236, max: Infinity, label: 'Varios', icon: 'fa-boxes-stacked' })
+]);
+const POS_TABLE_GROUP_FILTERS = Object.freeze([
+    POS_NORMAL_TABLE_VISUAL,
+    ...POS_SPECIAL_TABLE_VISUALS
+]);
+
+function isCompactTableMapView() {
+    return window.innerWidth <= 1200;
+}
+
+function getPOSTableGroupLabel() {
+    if (posCurrentTableGroup === 'all') return 'Todos';
+    const group = [POS_NORMAL_TABLE_VISUAL, POS_BREAKFAST_TABLE_VISUAL, ...POS_SPECIAL_TABLE_VISUALS]
+        .find(item => item.key === posCurrentTableGroup);
+    return group?.label || 'Todos';
+}
+
+function syncPOSTableGroupDisclosure() {
+    const toggle = document.getElementById('pos-table-group-toggle');
+    const container = document.getElementById('pos-table-group-filters');
+    const current = document.getElementById('pos-table-group-current');
+    if (!toggle || !container || !current) return;
+
+    const compact = isCompactTableMapView();
+    const expanded = compact ? posTableGroupsExpanded : true;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    container.hidden = !expanded;
+    current.innerText = getPOSTableGroupLabel();
+}
+
+function closePOSTableGroups() {
+    posTableGroupsExpanded = false;
+    syncPOSTableGroupDisclosure();
+}
+
+function togglePOSTableGroups() {
+    if (!isCompactTableMapView()) return;
+    posTableGroupsExpanded = !posTableGroupsExpanded;
+    syncPOSTableGroupDisclosure();
+}
+
+function isCocineria(empresa) {
+    return Number(empresa) === 2;
+}
+
+function getPOSTableVisual(numero, empresa) {
+    const tableNumber = Number(numero);
+    if (isCocineria(empresa) && tableNumber >= 81 && tableNumber <= 120) {
+        return POS_BREAKFAST_TABLE_VISUAL;
+    }
+    return POS_SPECIAL_TABLE_VISUALS.find(type => tableNumber >= type.min && tableNumber <= type.max)
+        || POS_NORMAL_TABLE_VISUAL;
+}
+
+function renderPOSTableVisual(visual) {
+    if (visual.brands) {
+        const brands = visual.brands.map(brand => `
+            <span class="pos-brand-logo" title="${brand.name}">
+                <img src="${brand.src}" alt="">
+                <span class="pos-brand-fallback">${brand.fallback}</span>
+            </span>
+        `).join('');
+        return `<div class="pos-table-icon pos-table-icon--brands" aria-hidden="true">${brands}</div>`;
+    }
+
+    const icons = visual.icons || [visual.icon];
+    return `
+        <div class="pos-table-icon${visual.key === 'normal' ? '' : ' pos-table-icon--special'}" aria-hidden="true">
+            ${icons.map(icon => `<i class="fas ${icon}"></i>`).join('')}
+        </div>
+    `;
+}
 
 // Búsqueda móvil: usa el viewport visual real para no quedar detrás del
 // teclado virtual. No depende del navegador ni del sistema operativo.
@@ -484,6 +597,7 @@ syncPOSVisualViewport();
 let posCurrentTurnoLabel = null;
 let posAutoSaveTimer = null;
 let posCartGroupMembers = new Map();
+let posTablesLoadGeneration = 0;
 const POS_AUTOSAVE_DEBOUNCE_MS = 700;
 
 function getTurnoValue(empresa, turnoLabel) {
@@ -505,6 +619,7 @@ function selectTurno(label) {
 }
 
 function onEmpresaOrTurnoChange() {
+    closePOSTableGroups();
     loadPOSTables();
 }
 
@@ -520,9 +635,10 @@ async function loadPOSConfig() {
 
 async function loadPOSTables() {
     console.log("POS: Iniciando loadPOSTables...");
-    await loadPOSConfig();
+    const generation = ++posTablesLoadGeneration;
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
+    const turno = posCurrentTurnoLabel;
     const grid = document.getElementById('pos-tables-grid');
     console.log(`POS: Empresa seleccionada: ${empresa}`);
     
@@ -531,13 +647,13 @@ async function loadPOSTables() {
         return;
     }
 
-    if (!empresa || !posCurrentTurnoLabel) {
-        const msg = !empresa && !posCurrentTurnoLabel
+    if (!empresa || !turno) {
+        const msg = !empresa && !turno
             ? 'Seleccione una empresa y un turno para ver las mesas.'
             : !empresa
                 ? 'Seleccione una empresa para ver las mesas.'
                 : 'Seleccione un turno para ver las mesas.';
-        console.warn("POS: Faltan selecciones", { empresa, turno: posCurrentTurnoLabel });
+        console.warn("POS: Faltan selecciones", { empresa, turno });
         grid.innerHTML = `<div style="text-align:center; width:100%; padding:20px;">${msg}</div>`;
         return;
     }
@@ -545,100 +661,102 @@ async function loadPOSTables() {
     grid.innerHTML = '<div style="text-align:center; width:100%;">Cargando mesas...</div>';
     
     try {
+        await loadPOSConfig();
+        if (generation !== posTablesLoadGeneration) return;
         console.log(`POS: Fetching /api/pos/tables?empresa=${empresa}`);
         const res = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`);
         if (!res.ok) throw new Error(`Error servidor: ${res.status}`);
-        
-        posAllTables = await res.json();
+
+        const tables = await res.json();
+        if (generation !== posTablesLoadGeneration || empresaSelect?.value !== empresa || posCurrentTurnoLabel !== turno) return;
+        posAllTables = tables;
         console.log(`POS: Mesas recibidas: ${posAllTables.length}`);
         
-        renderFloorFilters(posAllTables);
+        renderTableGroupFilters(empresa);
         renderPOSTables(posAllTables);
     } catch (e) {
         console.error("POS: Error en loadPOSTables:", e);
-        grid.innerHTML = `<div style="color:red; text-align:center; width:100%;">Error al cargar mesas: ${e.message}</div>`;
+        if (generation === posTablesLoadGeneration) {
+            grid.innerHTML = `<div style="color:red; text-align:center; width:100%;">Error al cargar mesas: ${e.message}</div>`;
+        }
     }
 }
 
-function renderFloorFilters(tables) {
-    const container = document.getElementById('pos-ambiente-filters');
+function renderTableGroupFilters(empresa) {
+    const container = document.getElementById('pos-table-group-filters');
     if (!container) return;
-    
-    const floors = [...new Set(tables.map(t => t.Ambiente))].filter(f => f !== null && f !== undefined).sort((a, b) => a - b);
-    
-    container.innerHTML = '';
-    
-    // Botón "Todos los pisos"
-    const btnAll = document.createElement('button');
-    btnAll.className = `area-btn ${posCurrentFloor === null ? 'active' : ''}`;
-    btnAll.innerText = 'Todos';
-    btnAll.onclick = () => {
-        posCurrentFloor = null;
-        document.querySelectorAll('.area-btn').forEach(b => b.classList.remove('active'));
-        btnAll.classList.add('active');
-        renderPOSTables(posAllTables);
-    };
-    container.appendChild(btnAll);
 
-    floors.forEach(floor => {
+    container.innerHTML = '';
+    const availableGroups = isCocineria(empresa)
+        ? [POS_NORMAL_TABLE_VISUAL, POS_BREAKFAST_TABLE_VISUAL, ...POS_SPECIAL_TABLE_VISUALS]
+        : POS_TABLE_GROUP_FILTERS;
+    if (posCurrentTableGroup !== 'all' && !availableGroups.some(group => group.key === posCurrentTableGroup)) {
+        posCurrentTableGroup = 'all';
+    }
+    const filters = [{ key: 'all', label: 'Todos' }, ...availableGroups];
+    filters.forEach(filter => {
         const btn = document.createElement('button');
-        btn.className = `area-btn ${posCurrentFloor === floor ? 'active' : ''}`;
-        btn.innerText = `Piso ${floor}`;
+        btn.className = `table-group-btn ${posCurrentTableGroup === filter.key ? 'active' : ''}`;
+        btn.type = 'button';
+        btn.dataset.tableGroup = filter.key;
+        btn.innerText = filter.label;
         btn.onclick = () => {
-            posCurrentFloor = floor;
-            document.querySelectorAll('.area-btn').forEach(b => b.classList.remove('active'));
+            posCurrentTableGroup = filter.key;
+            container.querySelectorAll('.table-group-btn').forEach(button => button.classList.remove('active'));
             btn.classList.add('active');
             renderPOSTables(posAllTables);
+            closePOSTableGroups();
         };
         container.appendChild(btn);
     });
+    syncPOSTableGroupDisclosure();
 }
 
 function renderPOSTables(tables) {
     const grid = document.getElementById('pos-tables-grid');
     grid.innerHTML = '';
-    
-    const filteredTables = posCurrentFloor === null 
-        ? tables 
-        : tables.filter(t => t.Ambiente === posCurrentFloor);
+
+    const filteredTables = tables.filter(table => {
+        const visual = getPOSTableVisual(table.Numero, table.Empresa);
+        return posCurrentTableGroup === 'all' || visual.key === posCurrentTableGroup;
+    });
 
     if (filteredTables.length === 0) {
-        grid.innerHTML = '<div style="text-align:center; width:100%;">No hay mesas en este piso.</div>';
+        grid.innerHTML = '<div class="pos-tables-empty">No hay mesas para los filtros seleccionados.</div>';
         return;
     }
 
     filteredTables.forEach(t => {
         const card = document.createElement('div');
+        const visual = getPOSTableVisual(t.Numero, t.Empresa);
         let stateClass = 'available';
         let stateText = 'Libre';
+        const state = Number(t.Estado);
         
         // Mapeo basado en Tablas n_codtabla = 530
-        if (t.Estado === 2) { stateClass = 'occupied'; stateText = 'Ocupada'; }
-        else if (t.Estado === 3) { stateClass = 'reserved'; stateText = 'Reservada'; }
-        else if (t.Estado === 4) { stateClass = 'merged'; stateText = 'Unida'; }
-        else if (t.Estado === 5) { stateClass = 'preventa'; stateText = 'Preventa'; }
-        else if (t.Estado === 6) { stateClass = 'unavailable'; stateText = 'No disponible'; }
+        if (state === 2) { stateClass = 'occupied'; stateText = 'Ocupada'; }
+        else if (state === 3) { stateClass = 'reserved'; stateText = 'Reservada'; }
+        else if (state === 4) { stateClass = 'merged'; stateText = 'Unida'; }
+        else if (state === 5) { stateClass = 'preventa'; stateText = 'Preventa'; }
+        else if (state === 6) { stateClass = 'unavailable'; stateText = 'No disponible'; }
         else { stateClass = 'available'; stateText = 'Libre'; }
 
-        card.className = `pos-table-card ${stateClass}`;
+        card.className = `pos-table-card ${stateClass}${visual.key === 'normal' ? '' : ' pos-table-card--special'}`;
+        card.dataset.tableNumber = String(t.Numero);
+        card.dataset.tableType = visual.key;
+        card.setAttribute('aria-label', `Mesa ${t.Numero}, ${visual.label}, ${stateText}`);
         card.innerHTML = `
-            <div class="pos-table-icon">
-                <i class="fas fa-chair"></i>
-            </div>
-            <span class="pos-table-number">${t.Numero}</span>
+            ${visual.key === 'normal' ? '' : `<span class="pos-table-type">${visual.label}</span>`}
+            ${renderPOSTableVisual(visual)}
+            <span class="pos-table-number">${visual.key === 'normal' ? '' : '<span class="pos-table-number-prefix">Mesa</span> '}${t.Numero}</span>
             <span class="pos-table-info">${stateText}</span>
         `;
+        card.querySelectorAll('.pos-brand-logo img').forEach(img => {
+            img.addEventListener('error', () => img.closest('.pos-brand-logo')?.classList.add('is-fallback'));
+        });
         card.onclick = () => openPOSOrder(t.Numero, t.Empresa);
         grid.appendChild(card);
     });
-}
-
-function filterTables(area) {
-    document.querySelectorAll('.area-btn').forEach(btn => btn.classList.remove('active'));
-    event.target.classList.add('active');
-    // En una versión real, filtraríamos el array de mesas. 
-    // Por ahora, simulamos el filtro o recargamos si el backend lo soporta.
-    loadPOSTables(); 
 }
 
 async function openPOSOrder(tableNum, tableEmpresa = null) {
@@ -1387,7 +1505,10 @@ showView = function(viewName) {
     const cartTrigger = document.getElementById('pos-cart-fab');
     if (cartTrigger) cartTrigger.hidden = viewName !== 'pos-order';
     if (viewName !== 'pos-order') closeCartSheet();
-    if (viewName === 'pos-tables') loadPOSTables();
+    if (viewName === 'pos-tables') {
+        closePOSTableGroups();
+        loadPOSTables();
+    }
     if (viewName === 'cocina') loadCocinaPedidos();
     if (viewName === 'cierres') loadShiftClosurePreview();
 };
@@ -1483,15 +1604,73 @@ function updateCartFab() {
 //  REAL-TIME: SERVER-SENT EVENTS
 // ==========================================
 let sseConnection = null;
+let sseRetryTimer = null;
+let sessionRedirecting = false;
+let appResumeTimer = null;
+let appResumePromise = null;
+let appResumePending = false;
+let lastAppResumeAt = 0;
+const APP_RESUME_DEBOUNCE_MS = 250;
+const APP_RESUME_COOLDOWN_MS = 1200;
 
-function connectSSE() {
-    if (sseConnection) {
-        sseConnection.close();
+function appCanUseNetwork() {
+    return document.visibilityState !== 'hidden' && navigator.onLine !== false;
+}
+
+function closeSSE() {
+    clearTimeout(sseRetryTimer);
+    sseRetryTimer = null;
+    if (!sseConnection) return;
+    sseConnection.onopen = null;
+    sseConnection.onmessage = null;
+    sseConnection.onerror = null;
+    sseConnection.close();
+    sseConnection = null;
+}
+
+function redirectExpiredSession() {
+    if (sessionRedirecting) return;
+    sessionRedirecting = true;
+    closeSSE();
+    window.location.replace('/login.html');
+}
+
+async function verifyActiveSession() {
+    try {
+        const res = await fetch('/api/session', { cache: 'no-store' });
+        if (res.status === 401) {
+            redirectExpiredSession();
+            return false;
+        }
+        return res.ok;
+    } catch (error) {
+        console.warn('Sesión: no se pudo verificar al reactivar:', error.message);
+        return false;
     }
+}
 
-    sseConnection = new EventSource('/api/events');
+function scheduleSSEReconnect() {
+    if (sseRetryTimer || !appCanUseNetwork() || sessionRedirecting) return;
+    sseRetryTimer = setTimeout(async () => {
+        sseRetryTimer = null;
+        if (!appCanUseNetwork()) return;
+        if (!await verifyActiveSession()) {
+            if (!sessionRedirecting) scheduleSSEReconnect();
+            return;
+        }
+        connectSSE();
+    }, 3000);
+}
 
-    sseConnection.onmessage = (event) => {
+function connectSSE(force = false) {
+    if (!appCanUseNetwork() || sessionRedirecting) return;
+    if (sseConnection && !force) return;
+    closeSSE();
+
+    const connection = new EventSource('/api/events');
+    sseConnection = connection;
+
+    connection.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
             handleSSEEvent(data);
@@ -1500,13 +1679,99 @@ function connectSSE() {
         }
     };
 
-    sseConnection.onerror = () => {
+    connection.onerror = () => {
+        if (sseConnection !== connection) return;
         console.warn('SSE: Conexión perdida. Reconectando en 3s...');
-        sseConnection.close();
-        sseConnection = null;
-        setTimeout(connectSSE, 3000);
+        closeSSE();
+        scheduleSSEReconnect();
     };
 }
+
+function isViewVisible(id) {
+    const view = document.getElementById(id);
+    return Boolean(view && view.style.display !== 'none');
+}
+
+async function reconcileActiveOrder() {
+    if (!posCurrentTable || !posCurrentTableEmpresa) return;
+    const hasProtectedWork = orderDirty || orderSavePromise || orderBusy || document.querySelector('dialog[open]');
+    if (!hasProtectedWork) {
+        await openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+        return;
+    }
+
+    try {
+        const data = await orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`);
+        if (Number(data.version || 0) !== Number(orderVersion || 0)) {
+            orderConflict = true;
+            orderSaveError = 'El pedido cambió mientras el dispositivo estaba en reposo. Revise la versión actual.';
+            renderOrderStatus();
+        }
+    } catch (error) {
+        if (error.status === 401) redirectExpiredSession();
+        else console.warn('No se pudo reconciliar el pedido al reactivar:', error.message);
+    }
+}
+
+async function reconcileActiveView() {
+    if (isViewVisible('view-pos-tables')) {
+        await loadPOSTables();
+        return;
+    }
+    if (isViewVisible('view-pos-order')) {
+        await reconcileActiveOrder();
+        return;
+    }
+    if (isViewVisible('view-cocina')) await loadCocinaPedidos(true);
+}
+
+async function runAppResumeSync() {
+    if (!appCanUseNetwork() || sessionRedirecting) return;
+    if (appResumePromise) {
+        appResumePending = true;
+        return appResumePromise;
+    }
+
+    appResumePromise = (async () => {
+        if (!await verifyActiveSession()) {
+            if (!sessionRedirecting) scheduleAppResumeSync(3000);
+            return;
+        }
+        connectSSE(true);
+        await reconcileActiveView();
+        lastAppResumeAt = Date.now();
+    })().catch(error => console.warn('Reactivación: no se pudo actualizar la vista:', error.message))
+        .finally(() => {
+            appResumePromise = null;
+            if (appResumePending) {
+                appResumePending = false;
+                scheduleAppResumeSync();
+            }
+        });
+    return appResumePromise;
+}
+
+function scheduleAppResumeSync(delayOverride = null) {
+    if (!appCanUseNetwork() || sessionRedirecting) return;
+    clearTimeout(appResumeTimer);
+    const cooldown = Math.max(0, APP_RESUME_COOLDOWN_MS - (Date.now() - lastAppResumeAt));
+    appResumeTimer = setTimeout(() => {
+        appResumeTimer = null;
+        runAppResumeSync();
+    }, delayOverride ?? Math.max(APP_RESUME_DEBOUNCE_MS, cooldown));
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleAppResumeSync();
+    else {
+        clearTimeout(sseRetryTimer);
+        sseRetryTimer = null;
+    }
+});
+window.addEventListener('pageshow', event => { if (event.persisted) scheduleAppResumeSync(); });
+window.addEventListener('online', () => scheduleAppResumeSync());
+window.addEventListener('offline', closeSSE);
+window.addEventListener('focus', () => scheduleAppResumeSync());
 
 function handleSSEEvent(data) {
     console.log('SSE: Evento recibido:', data);

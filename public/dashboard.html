@@ -87,10 +87,6 @@
                             </div>
                         </div>
 
-                        <div id="pos-ambiente-filters" class="pos-floor-filters">
-                            <!-- Botones de pisos cargados dinámicamente -->
-                        </div>
-
                         <div class="pos-legend">
                             <span class="legend-item"><i class="dot available"></i> Libre</span>
                             <span class="legend-item"><i class="dot occupied"></i> Ocupada</span>
@@ -98,6 +94,20 @@
                             <span class="legend-item"><i class="dot merged"></i> Unida</span>
                             <span class="legend-item"><i class="dot preventa"></i> Preventa</span>
                             <span class="legend-item"><i class="dot unavailable"></i> No disponible</span>
+                        </div>
+
+                        <div class="pos-table-group-filter-row">
+                            <span class="pos-table-group-filter-label">Agrupación:</span>
+                            <button id="pos-table-group-toggle" class="pos-table-group-toggle" type="button"
+                                aria-expanded="false" aria-controls="pos-table-group-filters"
+                                onclick="togglePOSTableGroups()">
+                                <span class="pos-table-group-toggle-label">Agrupación:</span>
+                                <span id="pos-table-group-current" class="pos-table-group-current">Todos</span>
+                                <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <div id="pos-table-group-filters" class="pos-table-group-filters" aria-label="Filtrar mesas por agrupación" hidden>
+                                <!-- Filtros de agrupación cargados dinámicamente -->
+                            </div>
                         </div>
                     </div>
 

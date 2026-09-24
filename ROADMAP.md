@@ -1270,3 +1270,47 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Se agregaron **Helada** y **Sin Helar** después de **Hielo aparte** en el selector de instrucciones de Cocina.
 - Ambas opciones conservan el comportamiento multiselección existente y pasan por la misma validación, persistencia, historial e impresión que las demás notas rápidas.
 - Las pruebas de dominio verifican aceptación, orden canónico e impresión; Playwright verifica las doce opciones y el guardado de las dos nuevas.
+
+---
+
+## Fase 31: Catálogo POS limitado a productos Tipo 3 (Implementada en código)
+
+- Al abrir una mesa, el catálogo del POS muestra exclusivamente productos activos con `Productos.Tipo = 3`, conservando el filtro por empresa y línea.
+- Las categorías del POS se obtienen del mismo conjunto de productos Tipo 3, por lo que no aparecen categorías que quedarían vacías en el catálogo.
+- El cambio no afecta el mantenimiento de productos, las recetas ni las líneas de pedidos existentes o históricos.
+
+---
+
+## Fase 32: Organización visual del mapa de mesas (Implementada en código)
+
+- El mapa deja de navegar por pisos y utiliza las agrupaciones como único filtro visual; todas las mesas de la empresa se presentan juntas sin reinterpretar ni modificar su `Ambiente` en la base de datos.
+- En Cocinería, las mesas 81–120 se identifican como **Desayunos** mediante taza y pan. En las demás empresas conservan **Atención normal**, y el filtro Desayunos no se ofrece.
+- Las mesas 201–209 se identifican como **Delivery**, 210–219 como **Para llevar**, 220–230 como **PedidosYa | Rappi**, 231–235 como **Descarte y obsequios** y desde la 236 como **Varios**. Los demás números conservan la presentación de atención normal.
+- Los filtros de agrupación se adaptan como una grilla de dos columnas en celular y restablecen **Todos** si se cambia a una empresa que no admite la agrupación seleccionada.
+- La clasificación es exclusivamente visual, se aplica a las tres empresas y no altera ambientes, estados, pedidos, endpoints ni persistencia.
+- Los colores comerciales de Libre, Ocupada, Reservada, Unida, Preventa y No disponible permanecen intactos. La nueva jerarquía añade nombre, símbolo, número y estado con adaptación para móvil, tablet y escritorio.
+- Los SVG oficiales de PedidosYa y Rappi se sirven localmente desde `public/icons/order-channels`; la alternativa tipográfica accesible permanece únicamente como tolerancia ante fallos de carga.
+- Validación: `npm run check`, 20 pruebas de dominio y 25 pruebas Playwright aprobadas; la cobertura visual incluye límites 80/81/120/121, cambio de empresa y anchos de 320, 390, 440, 768, 1024, 1194 y 1280 px sin desbordamiento horizontal del documento, contenido o filtros.
+
+---
+
+## Fase 33: Agrupación compacta en el mapa de mesas (Implementada en código; validación física pendiente)
+
+- En celular y tablet (`≤1200px`), la agrupación se presenta como una fila compacta con el filtro activo y un control accesible para desplegar sus opciones; en escritorio los botones permanecen visibles como antes.
+- El panel inicia cerrado al entrar o regresar al mapa, al cambiar empresa o turno, al rotar y al cruzar desde escritorio al modo responsive. Elegir una agrupación actualiza el mapa y vuelve a cerrarlo para recuperar inmediatamente el espacio vertical.
+- La selección activa se conserva al abrir un pedido y regresar. Si la nueva empresa no admite la agrupación seleccionada, se restablece **Todos** y se sincroniza el resumen compacto.
+- El contenido cerrado sale del orden de foco mediante `hidden`; el disparador expone `aria-expanded` y `aria-controls`, conserva un objetivo táctil de al menos 44 px y respeta la preferencia de movimiento reducido.
+- No cambian la clasificación, el orden, los estados, las tarjetas, las APIs ni la persistencia. La validación automatizada cubre 320, 390, 440, 768, 1024, 1194 y 1280 px; queda pendiente confirmar la ergonomía en celulares y tablets físicos.
+
+---
+
+## Fase 34: Resincronización al reactivar dispositivos (Implementada en código; validación física pendiente)
+
+- Al volver del reposo, recuperar la conexión, restaurar la página desde caché o enfocar nuevamente la aplicación, el cliente valida la sesión, restablece SSE y consulta el estado vigente de la vista activa. SSE continúa dando inmediatez, mientras la API y la base de datos son la fuente de verdad para recuperar eventos perdidos durante la suspensión.
+- Los eventos `visibilitychange`, `pageshow`, `online` y `focus` pasan por un coordinador con debounce, cooldown y bloqueo de concurrencia. No se agrega polling periódico, por lo que no aumenta el consumo continuo de batería, red o servidor.
+- La conexión SSE mantiene una sola instancia y un solo temporizador de reintento, deja de reintentar cuando la página está oculta o sin red y se reabre inmediatamente después de una reactivación válida. Una sesión expirada redirige una sola vez al login.
+- El mapa vuelve a consultar las mesas conservando empresa, turno y agrupación. Un contador de generación descarta respuestas antiguas si coinciden una reactivación, un evento SSE o un cambio rápido de filtros.
+- Cocina actualiza silenciosamente el tablero o historial activo. Una orden limpia se vuelve a cargar; una orden con borrador, guardado, operación o diálogo activo nunca se sobrescribe y marca conflicto cuando la versión del servidor cambió.
+- No se agregan endpoints, migraciones ni cambios de esquema. Se reutilizan `/api/session`, `/api/events`, `/api/pos/tables`, `/api/pos/pedido` y las consultas existentes de Cocina.
+- Validación automatizada: `npm run check`, 20 pruebas de dominio y 30 pruebas Playwright aprobadas, incluidas reactivación deduplicada, conexión SSE única, mapa actualizado, filtros conservados, descarte de respuestas antiguas, Cocina, pedidos limpios, protección de borradores y sesión expirada.
+- Pendiente física: bloquear y reactivar Android Chrome e iPhone Safari durante varios minutos, en navegador y modo standalone cuando esté disponible, mientras otra PC modifica mesas y pedidos.
