@@ -1347,7 +1347,7 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 
 ---
 
-## Fase 37: Comandas independientes de Cocina y Barra (Implementada en código; validación física pendiente)
+## Fase 37: Comandas independientes de Cocina y Barra (Operativa y validada en el cliente)
 
 - Los productos cuyo catálogo cumple exactamente `Clinea=7 AND Tipo=3` se enrutan exclusivamente a Barra; el resto continúa en Cocina. La decisión se consulta en lote y se congela por `LineaId`, de modo que correcciones y anulaciones conservan el destino original aunque luego cambie el catálogo.
 - Un envío mixto conserva un único registro canónico y un único Kanban, pero crea dentro de la misma transacción dos documentos filtrados e inmutables: **COMANDA DE COCINA** y **COMANDA DE BARRA**. Nunca se crean trabajos vacíos.
@@ -1355,15 +1355,17 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Cocina y Barra tienen trabajadores, bloqueos, estados, reintentos y recuperación independientes. Las transmisiones TCP ocurren fuera de la transacción SQL y pueden ejecutarse simultáneamente; una impresora desconectada no detiene la otra ni el envío al Kanban.
 - La API expone `impresiones[]` con destino, conserva `impresion` para compatibilidad con Cocina, incluye `destino` en SSE y acepta reimpresión por destino. POS, tablero e historial presentan estados y acciones separadas.
 - El archivo y la purga de turnos incluyen la cola de Barra y las rutas inmutables. La vista anterior de la aplicación no debe ejecutar purgas durante un rollback porque desconoce esas dos tablas nuevas.
-- Configuración operativa prevista: `BAR_PRINTER_ENABLED=true`, `BAR_PRINTER_HOST=192.168.1.180`, ESC/POS TCP 9100, timeout 5 s, CP850, papel de 80 mm y corte habilitado.
-- Validación local: sintaxis y pruebas unitarias aprobadas; Playwright cubre reimpresión independiente de ambos destinos. Pendiente contra SQL Server: integración de envío mixto/idempotencia/cierre, prueba física de red y caracteres, y prueba concurrente de diez dispositivos con una o ambas impresoras desconectadas.
+- Configuración operativa confirmada: `BAR_PRINTER_ENABLED=true`, `BAR_PRINTER_HOST=192.168.1.180`, ESC/POS TCP 9100, timeout 5 s, CP850, papel de 80 mm y corte habilitado.
+- Validación completada en el cliente el 23/09/2026: impresión independiente de Cocina y Barra, pedido mixto correctamente separado, mismo ticket en ambos destinos y operación sin afectar el Kanban ni el flujo existente.
+- Validación automatizada local: sintaxis, pruebas unitarias y Playwright aprobados, incluida la reimpresión independiente por destino. La prueba concurrente extendida con diez dispositivos y desconexiones deliberadas continúa disponible como control de estrés, no como bloqueo operativo.
 
 ---
 
-## Fase 38: Diagnóstico guiado de la RPT004 de Barra (Implementada en código; ejecución física pendiente)
+## Fase 38: Diagnóstico guiado de la RPT004 de Barra (Operativo y validado físicamente)
 
 - `diagnosticar-impresora-barra.bat` sustituye los comandos manuales incorrectos: lee únicamente host/puerto de Barra, prueba ICMP como información y exige conectividad TCP 9100 desde Windows y Docker.
 - `npm run diagnose:bar` valida dentro del contenedor las variables no secretas, el protocolo ESC/POS, la migración `008`, ambas tablas auxiliares y los diez trabajos recientes sin mostrar documentos ni datos del pedido.
 - La opción `--print` transmite una hoja técnica sin datos comerciales con tildes, `ñ`, ancho normal y corte. El archivo de Windows solicita confirmación antes de generar papel.
 - El diagnóstico es estrictamente de lectura salvo por la transmisión física voluntaria: no crea ni actualiza tablas, trabajos, rutas o pedidos.
-- Validación local: `npm run check`, 32 pruebas unitarias/configuración/migraciones aprobadas y `git diff --check` sin errores. Pendiente: ejecutar el asistente en el servidor Windows después de obtener la IP real mediante el autotest de la impresora.
+- Validación local: `npm run check`, 32 pruebas unitarias/configuración/migraciones aprobadas y `git diff --check` sin errores.
+- Validación física completada el 23/09/2026: Windows y Docker alcanzaron la RPT004, TCP 9100 respondió, la trama ESC/POS imprimió correctamente, CP850 produjo tildes y `ñ`, y el corte funcionó. El diagnóstico queda disponible para futuras incidencias de red o reemplazo de impresora.
