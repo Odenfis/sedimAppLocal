@@ -3,7 +3,7 @@ const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, A
 async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0,
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
-        tableLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true };
+        tableLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true, kitchenError: false };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -74,6 +74,7 @@ async function fixture(page, options = {}) {
         }
         if (url.pathname.endsWith('/estados-cocina')) return fulfill({ success:true, version:state.version,
             estados:state.items.map(l=>({lineaId:l.lineaId,estadoCocina:state.kitchenStates.get(l.lineaId)||null,pendienteId:null,anulada:false})) });
+        if (url.pathname === '/api/cocina/pedidos' && state.kitchenError) return fulfill({ success:false,message:'Fallo SQL controlado',diagnosticId:'diag-kds-123' },500);
         if (url.pathname === '/api/cocina/pedidos') return fulfill({ success:true,pedidos:state.kds.map(l => ({ nroTicket:l.NroTicket,mesa:l.NroMesa,
             envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
             minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
@@ -341,6 +342,27 @@ test('reactivación refresca Cocina y redirige si la sesión expiró', async ({ 
     state.sessionActive = false;
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(page).toHaveURL(/\/login\.html$/);
+});
+
+test('autoguardado no recarga el mapa oculto', async ({ page }) => {
+    const state = await fixture(page);
+    const baseline = state.tableLoads;
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.tableLoads).toBe(baseline);
+});
+
+test('Cocina conserva datos y muestra referencia al fallar sin alert modal', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.kds.push({ NroTicket:'T001-000010',NroMesa:10,LineaId:'10101010-1010-4010-8010-101010101010',Codpro:'02001',
+        EstadoCocina:1,Cantidad:1,Descripcion:'Plato persistente',Categoria:'Platos',FechaTicket:new Date().toISOString(),MinutosEspera:1 });
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
+    state.kitchenError = true;
+    await page.evaluate(() => loadCocinaPedidos());
+    await expect(page.locator('#load-notice-kitchen')).toContainText('diag-kds-123');
+    await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
 });
 
 test('v1 oculta impresión y cierre cuando no están habilitados', async ({ page }) => {

@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { getConnection, sql } = require('./db');
+const { getConnection, closeConnections, sql } = require('./db');
 function validateMigration(source, file) {
     const stripped = source.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
     if (/\b(?:ALTER|DROP|TRUNCATE|DELETE|UPDATE|MERGE|EXEC|TRIGGER)\b/i.test(stripped)) {
@@ -38,6 +38,6 @@ async function runMigrations() {
         await tx.commit();
     } catch (e) { try { await tx.rollback(); } catch {} throw e; }
 }
-if (require.main === module) runMigrations().then(() => sql.close()).catch(e => { console.error(e.message); process.exitCode = 1; sql.close(); });
+if (require.main === module) runMigrations().then(() => closeConnections()).catch(e => { console.error(e.message); process.exitCode = 1; closeConnections(); });
 module.exports = runMigrations;
 module.exports.validateMigration = validateMigration;

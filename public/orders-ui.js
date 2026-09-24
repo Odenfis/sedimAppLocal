@@ -51,7 +51,11 @@ function orderOperation() {
 async function orderRequest(url, method = 'GET', body) {
     const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
     const data = await res.json().catch(() => ({ message: 'Respuesta no válida del servidor' }));
-    if (!res.ok) { const e = new Error(data.message || 'No se pudo completar la operación'); e.status = res.status; e.diagnosticId = data.diagnosticId; throw e; }
+    if (!res.ok) {
+        const reference = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
+        const e = new Error(`${data.message || 'No se pudo completar la operación'}${reference}`);
+        e.status = res.status; e.diagnosticId = data.diagnosticId; throw e;
+    }
     return data;
 }
 function orderReset() {
@@ -104,7 +108,7 @@ async function orderFlush() {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
-            orderAccept(data); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI(); loadPOSTables();
+            orderAccept(data); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
             orderSaveError = e.message; if (e.status === 409) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
@@ -145,7 +149,7 @@ async function sendOrderKitchen() {
         const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/enviar-cocina`, 'POST',
             { ...orderSendAttempt, empresa: posCurrentTableEmpresa, operacionId: orderOperation() });
         sessionStorage.removeItem(retryKey); orderSendAttempt = null; orderAccept(data); updateCartUI();
-    } catch (e) { orderSaveError = e.message; if (e.status === 409) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } alert(e.message); }
+    } catch (e) { orderSaveError = e.message; if (e.status === 409) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } }
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function orderPay() {
@@ -157,7 +161,7 @@ async function orderPay() {
         await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/pagar`, 'PUT',
             { empresa: posCurrentTableEmpresa, version: orderVersion, operacionId: orderOperation() });
         posIsReadOnly = true; orderBusy = false; await openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
-    } catch (e) { alert(e.message); if (e.status === 409) { orderConflict = true; orderSaveError = e.message; } }
+    } catch (e) { orderSaveError = e.message; if (e.status === 409) orderConflict = true; }
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function orderDelete() {
@@ -175,7 +179,7 @@ async function orderDelete() {
         orderDirty = false;
         alert('Pedido eliminado y mesa liberada.');
         orderBusy = false; orderFinishDeletion();
-    } catch (e) { orderSaveError = e.message; alert(`${e.message}${e.diagnosticId ? `\nReferencia: ${e.diagnosticId}` : ''}`); } finally { orderBusy = false; renderOrderStatus(); }
+    } catch (e) { orderSaveError = e.message; } finally { orderBusy = false; renderOrderStatus(); }
 }
 let noteLineId = null, noteSelection = new Set(), noteReturnFocus;
 function openOrderNotes(index) {

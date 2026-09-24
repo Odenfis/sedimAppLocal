@@ -1314,3 +1314,18 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - No se agregan endpoints, migraciones ni cambios de esquema. Se reutilizan `/api/session`, `/api/events`, `/api/pos/tables`, `/api/pos/pedido` y las consultas existentes de Cocina.
 - Validación automatizada: `npm run check`, 20 pruebas de dominio y 30 pruebas Playwright aprobadas, incluidas reactivación deduplicada, conexión SSE única, mapa actualizado, filtros conservados, descarte de respuestas antiguas, Cocina, pedidos limpios, protección de borradores y sesión expirada.
 - Pendiente física: bloquear y reactivar Android Chrome e iPhone Safari durante varios minutos, en navegador y modo standalone cuando esté disponible, mientras otra PC modifica mesas y pedidos.
+
+---
+
+## Fase 35: Diagnóstico y rendimiento de Mesas/Cocina (Implementada en código; medición productiva pendiente)
+
+- Cada solicitud API recibe `X-Request-Id`; los errores devuelven `diagnosticId` y el servidor registra duración total, tiempo SQL, cantidad de consultas y errores sanitizados. Las solicitudes por encima de 750 ms se identifican como `slow_request`.
+- El mapa y Cocina consolidan recargas concurrentes, cancelan la consulta anterior al cambiar de filtro y agrupan eventos SSE durante 200 ms. Un error conserva la información visible, muestra su referencia y permite reintentar sin `alert` modal.
+- El autoguardado ya no recarga el mapa mientras está oculto y la configuración de IGV se obtiene una sola vez por sesión, fuera del camino crítico del mapa.
+- Los `GET` de pedidos dejaron de abrir transacciones y de solicitar bloqueos exclusivos. Las escrituras conservan bloqueo por recurso, control de versión, idempotencia y transacción.
+- Guardar pedidos valida productos en un lote y actualiza `Pedido_lineas`/`Ticket_d` mediante `OPENJSON`. Enviar a Cocina crea detalles y estados mediante otro lote, evitando consultas repetidas por producto o línea.
+- `007_performance_indexes.sql` agrega índices únicamente a `Pedido_control`, `Cocina_estados` e `Impresion_trabajos`; no altera tablas comerciales.
+- El pool principal queda preparado para diez dispositivos con máximo 20 conexiones. La impresora usa un pool aislado y transmite fuera de la transacción que reclama el trabajo, evitando bloquear solicitudes del POS.
+- La sesión deja de reescribirse en SQL después de cada lectura; conserva el vencimiento no renovable de 24 horas ya utilizado por la cookie.
+- Validación automatizada local: `npm run check`, 22 pruebas de dominio/configuración/migraciones y 32 pruebas Playwright aprobadas. La prueba SQL y las metas p95 deben ejecutarse contra SQL Server en la ventana de mantenimiento antes de promover la versión.
+- Metas productivas: mesas API p95 <300 ms, Cocina API p95 <500 ms, guardado/envío de hasta 20 líneas p95 <1.5 s y cero HTTP 500 o esperas de pool en 30 minutos con diez dispositivos.

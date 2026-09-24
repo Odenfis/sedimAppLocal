@@ -24,3 +24,10 @@ test('capacidades reflejan exclusivamente configuración operativa completa', ()
     withEnv({ PRINTER_ENABLED: 'true', PRINTER_HOST: '192.168.1.50', MAINTENANCE_PIN_HASH: 'hash' }, () =>
         assert.deepEqual(app.features(), { printerEnabled: true, closuresEnabled: true }));
 });
+
+test('configuración de pool rechaza límites inválidos', () => {
+    const base = { DB_USER: 'db', DB_PASS: 'pass', DB_SERVER: 'host', DB_NAME: 'sedim', PRINTER_ENABLED: 'false',
+        SESSION_SECRET: '12345678901234567890123456789012' };
+    withEnv({ ...base, DB_POOL_MIN: '8', DB_POOL_MAX: '4' }, () => assert.throws(app.validateProductionConfig, /DB_POOL_MAX/));
+    withEnv({ ...base, DB_POOL_MIN: '2', DB_POOL_MAX: '20', DB_REQUEST_TIMEOUT_MS: 'rápido' }, () => assert.throws(app.validateProductionConfig, /DB_REQUEST_TIMEOUT_MS/));
+});

@@ -23,7 +23,9 @@ async function main() {
         if (name.toLowerCase() === 'resource') args[args.length - 1] = schema + ':' + args[args.length - 1];
         return originalInput.call(this, name, ...args);
     };
-    const dbPath = require.resolve('../db'); require(dbPath); require.cache[dbPath].exports = { sql, getConnection: async () => pool };
+    const dbPath = require.resolve('../db'); require(dbPath); require.cache[dbPath].exports = {
+        sql, getConnection: async () => pool, getPrinterConnection: async () => pool, closeConnections: async () => {}
+    };
     let passed = 0;
     try {
         await pool.request().query(`
@@ -39,7 +41,7 @@ async function main() {
             CREATE TABLE Migrations(Id INT IDENTITY PRIMARY KEY,MigrationName NVARCHAR(255),AppliedAt DATETIME DEFAULT GETDATE());
             INSERT Migrations(MigrationName) VALUES('001_create_cocina_pedidos.sql');
             INSERT Tablas VALUES(23,1,'T001-000001'),(23,2,'T002-000001'),(23,5,'T005-000001'),(200,2,'Cocinería');
-            INSERT Mesas VALUES(1,2,2),(2,2,1),(3,2,1),(4,2,1),(1,4,1);
+            INSERT Mesas VALUES(1,2,2),(2,2,1),(3,2,1),(4,2,1),(5,2,1),(6,2,1),(1,4,1);
             INSERT Productos VALUES('02001','Arroz con mariscos',20,1,0,1),('04001','Otro producto',30,1,0,1);
             INSERT Lineas VALUES(1,'Platos'); INSERT Empleados VALUES(1,'José',2,3,NULL),(2,'María',4,3,NULL);
             INSERT Valores VALUES('Igvv',10.5);
@@ -88,6 +90,19 @@ async function main() {
         saved = await get(2); assert.equal(saved.cocina.pendientes,0);
         const grouped = (await pool.request().input('nro',nro).query('SELECT * FROM Ticket_d WHERE NroTicket=@nro')).recordset;
         assert.equal(grouped.length,1); assert.equal(grouped[0].Cantidad,2); assert.equal(grouped[0].Precio,44.2); assert.equal(grouped[0].Importe,44.2);
+        for (const [count, mesa] of [[10,5],[30,6]]) {
+            const many = Array.from({ length: count }, (_, index) => ({ ...base, lineaId: randomUUID(), cantidad: 1,
+                notasRapidas: index % 2 ? ['Sin cebolla'] : [], nota: `Línea ${index + 1}` }));
+            const bulkSaved = await save(many, undefined, undefined, mesa);
+            assert.equal(bulkSaved.status,200,JSON.stringify(bulkSaved)); assert.equal(bulkSaved.items.length,count);
+            const bulkSent = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+                {empresa:2,version:bulkSaved.version,clave:randomUUID()},{nro:bulkSaved.nroTicket});
+            assert.equal(bulkSent.status,200,JSON.stringify(bulkSent)); assert.equal(bulkSent.cocina.pendientes,0);
+            const detailCount = (await pool.request().input('nro',bulkSaved.nroTicket).query('SELECT COUNT(*) n FROM Cocina_envio_detalles d JOIN Cocina_envios e ON e.Id=d.EnvioId WHERE e.NroTicket=@nro')).recordset[0].n;
+            assert.equal(detailCount,count);
+            await call('delete','/api/pos/comanda/:nro',{version:bulkSent.version,clave:randomUUID()},{nro:bulkSaved.nroTicket},{empresa:2});
+        }
+        passed++; console.log('✓ batch save and send preserve 10-line and 30-line orders');
         passed++; console.log('✓ duplicate send is idempotent; new commercial rows store Precio = Importe with IGV');
         const lineId = saved.items[0].lineaId;
         const prep = await call('put','/api/cocina/linea',{ empresa:2,nroTicket:nro,lineaId:lineId,estado:2 }); assert.equal(prep.status,200);
@@ -195,7 +210,7 @@ async function main() {
                 return (await pool.request().input('job',reprint.trabajoId).query('SELECT Estado FROM Impresion_trabajos WHERE Id=@job')).recordset[0].Estado==='enviado';
             });
             assert.equal(attempts,3); assert.equal(maxConcurrent,1);
-            await pool.request().input('job',reprint.trabajoId).query("UPDATE Impresion_trabajos SET Estado='procesando' WHERE Id=@job");
+            await pool.request().input('job',reprint.trabajoId).query("UPDATE Impresion_trabajos SET Estado='procesando',Actualizado=DATEADD(SECOND,-60,SYSUTCDATETIME()) WHERE Id=@job");
             await waitFor(async()=> (await pool.request().input('job',reprint.trabajoId).query('SELECT Estado FROM Impresion_trabajos WHERE Id=@job')).recordset[0].Estado==='incierto');
             assert.equal(attempts,3);
         } finally { stopA();stopB(); if(previousEnabled===undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED=previousEnabled; await new Promise(r=>setTimeout(r,100)); }

@@ -1,9 +1,10 @@
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
-const { getConnection, sql } = require('./db');
+const { getConnection, closeConnections, sql } = require('./db');
 const runMigrations = require('./migrate');
 const SqlSessionStore = require('./lib/sql-session-store');
+const requestContext = require('./lib/request-context');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,15 +28,31 @@ function validateProductionConfig() {
     if (forbiddenSecrets.includes(process.env.SESSION_SECRET) || process.env.SESSION_SECRET.length < 32) {
         throw new Error('SESSION_SECRET debe ser único y tener al menos 32 caracteres');
     }
+    const numeric = {
+        DB_POOL_MAX: process.env.DB_POOL_MAX || 20,
+        DB_POOL_MIN: process.env.DB_POOL_MIN || 2,
+        DB_POOL_IDLE_TIMEOUT_MS: process.env.DB_POOL_IDLE_TIMEOUT_MS || 30000,
+        DB_CONNECTION_TIMEOUT_MS: process.env.DB_CONNECTION_TIMEOUT_MS || 5000,
+        DB_REQUEST_TIMEOUT_MS: process.env.DB_REQUEST_TIMEOUT_MS || 10000,
+        SLOW_REQUEST_MS: process.env.SLOW_REQUEST_MS || 750
+    };
+    for (const [name, value] of Object.entries(numeric)) {
+        if (!Number.isInteger(Number(value)) || Number(value) < 0) throw new Error(`${name} debe ser un entero no negativo`);
+    }
+    if (Number(numeric.DB_POOL_MIN) > Number(numeric.DB_POOL_MAX) || Number(numeric.DB_POOL_MAX) < 1) {
+        throw new Error('DB_POOL_MAX debe ser positivo y mayor o igual a DB_POOL_MIN');
+    }
     if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
 }
 function internalError(res, error, context) {
-    console.error(`${context}:`, error);
-    res.status(500).json({ message: 'No se pudo completar la operación.' });
+    const diagnosticId = requestContext.diagnosticId(res);
+    console.error(JSON.stringify({ type: 'api_error', diagnosticId, context, error: requestContext.safeError(error) }));
+    res.status(500).json({ success: false, message: 'No se pudo completar la operación.', diagnosticId });
 }
 
 app.disable('x-powered-by');
 if (enabled(process.env.TRUST_PROXY)) app.set('trust proxy', 1);
+app.use(requestContext.start);
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -120,7 +137,7 @@ app.get('/api/users', async (req, res) => {
             request.input('q', sql.NVarChar, q);
         }
         query += " ORDER BY Usuario";
-        const result = await request.query(query);
+        const result = await requestContext.measureSql(() => request.query(query));
         res.json(result.recordset);
     } catch (error) {
         internalError(res, error, 'Listar usuarios');
@@ -180,7 +197,7 @@ app.get('/api/pos/tables', isAuthenticated, async (req, res) => {
             request.input('empresa', sql.Int, parseInt(empresa));
         }
         query += " ORDER BY Numero";
-        const result = await request.query(query);
+        const result = await requestContext.measureSql(() => request.query(query));
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar mesas'); }
 });
@@ -196,7 +213,7 @@ app.put('/api/pos/tables/:numero/estado', isAuthenticated, async (req, res) => {
         request.input('empresa', sql.Int, parseInt(empresa));
 
         const query = "UPDATE Mesas SET Estado = @estado WHERE Numero = @numero AND Empresa = @empresa";
-        const result = await request.query(query);
+        const result = await requestContext.measureSql(() => request.query(query));
 
         if (result.rowsAffected[0] > 0) {
             broadcastSSE({ type: 'mesa_updated', numero: parseInt(numero), empresa: parseInt(empresa) });
@@ -285,7 +302,7 @@ app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
         if (empresa) {
             request.input('empresa', sql.VarChar, empresa);
         }
-        const result = await request.query(query);
+        const result = await requestContext.measureSql(() => request.query(query));
         res.json(result.recordset.map(r => r.Descripcion));
     } catch (e) { internalError(res, e, 'Listar categorías'); }
 });
@@ -293,7 +310,7 @@ app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
 app.get('/api/pos/config', isAuthenticated, async (req, res) => {
     try {
         const pool = await getConnection();
-        const result = await pool.request().query(`SELECT c_valor, n_valor FROM Valores WHERE c_valor IN ('Igv', 'Igvv')`);
+        const result = await requestContext.measureSql(() => pool.request().query(`SELECT c_valor, n_valor FROM Valores WHERE c_valor IN ('Igv', 'Igvv')`));
         const config = {};
         result.recordset.forEach(r => {
             config[r.c_valor.trim().toLowerCase()] = r.n_valor;
@@ -314,7 +331,7 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
         if (linea) {
             request.input('linea', sql.VarChar, linea);
         }
-        const result = await request.query(query);
+        const result = await requestContext.measureSql(() => request.query(query));
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar productos'); }
 });
@@ -338,7 +355,7 @@ async function start() {
                 if (stopping) return; stopping = true;
                 console.log(`${signal}: cerrando SedimApp...`);
                 stopPrint(); stopRetention(); sessionStore.stop();
-                server.close(() => sql.close().finally(() => process.exit(0)));
+                server.close(() => closeConnections().finally(() => process.exit(0)));
                 setTimeout(() => process.exit(1), 10000).unref();
             };
             process.once('SIGTERM', () => shutdown('SIGTERM'));

@@ -38,6 +38,12 @@ DB_USER=valor_privado
 DB_PASS=valor_privado
 DB_SERVER=host.docker.internal
 DB_NAME=valor_privado
+DB_POOL_MAX=20
+DB_POOL_MIN=2
+DB_POOL_IDLE_TIMEOUT_MS=30000
+DB_CONNECTION_TIMEOUT_MS=5000
+DB_REQUEST_TIMEOUT_MS=10000
+SLOW_REQUEST_MS=750
 
 COOKIE_SECURE=false
 TRUST_PROXY=false
@@ -64,6 +70,14 @@ Si `MAINTENANCE_PIN_HASH` permanece vacío, Cierre de Turno seguirá oculto. No 
    docker compose ps
    docker compose logs --tail 50 app
    ```
+
+   Si la interfaz muestra una **Referencia**, búsquela sin copiar datos del pedido:
+
+   ```bat
+   docker compose logs --since 30m app | findstr REFERENCIA_MOSTRADA
+   ```
+
+   Los registros JSON muestran duración total, tiempo SQL y cantidad de consultas. Las entradas `slow_request` superaron el umbral configurado por `SLOW_REQUEST_MS`.
 
 Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `actualizar.bat`: Compose los reconstruirá. Solo se utiliza `git clone` cuando se ha eliminado por completo la carpeta del proyecto; en ese caso se debe recuperar el `.env` privado antes de iniciar SedimApp.
 

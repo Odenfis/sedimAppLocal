@@ -3,7 +3,7 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { getConnection, sql } = require('../db');
+const { getConnection, closeConnections, sql } = require('../db');
 const { recoverCancellation } = require('../lib/orders');
 
 function arg(name, fallback) {
@@ -42,4 +42,4 @@ async function main() {
     const result = await recoverCancellation({ nroTicket:nro, empresa, version:ticket.Version, clave:randomUUID(), usuario:arg('usuario','RECUPERACION_LOCAL') });
     console.log(JSON.stringify({ aplicado:true, ...result }, null, 2));
 }
-main().then(() => sql.close()).catch(e => { console.error(e.message); process.exitCode=1; sql.close(); });
+main().then(() => closeConnections()).catch(e => { console.error(e.message); process.exitCode=1; closeConnections(); });

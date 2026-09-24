@@ -598,6 +598,12 @@ let posCurrentTurnoLabel = null;
 let posAutoSaveTimer = null;
 let posCartGroupMembers = new Map();
 let posTablesLoadGeneration = 0;
+let posTablesLoadPromise = null;
+let posTablesRefreshPending = false;
+let posTablesAbortController = null;
+let posTablesActiveKey = '';
+let posConfigPromise = null;
+let posConfigLoaded = false;
 const POS_AUTOSAVE_DEBOUNCE_MS = 700;
 
 function getTurnoValue(empresa, turnoLabel) {
@@ -624,16 +630,37 @@ function onEmpresaOrTurnoChange() {
 }
 
 async function loadPOSConfig() {
-    try {
-        const res = await fetch('/api/pos/config');
-        const config = await res.json();
-        if (config.igvv !== undefined) GLOBAL_IGVV_PCT = config.igvv;
-    } catch (e) {
-        console.error('Error cargando configuración POS:', e);
+    if (posConfigLoaded) return;
+    if (posConfigPromise) return posConfigPromise;
+    posConfigPromise = (async () => {
+        try {
+            const res = await fetch('/api/pos/config');
+            const config = await res.json();
+            if (!res.ok) throw new Error(config.message || 'No se pudo cargar la configuración POS');
+            if (config.igvv !== undefined) GLOBAL_IGVV_PCT = config.igvv;
+            posConfigLoaded = true;
+        } catch (e) { console.error('Error cargando configuración POS:', e); }
+        finally { posConfigPromise = null; }
+    })();
+    return posConfigPromise;
+}
+
+function setLoadNotice(key, host, message, retry) {
+    const id = `load-notice-${key}`;
+    let notice = document.getElementById(id);
+    if (!message) { notice?.remove(); return; }
+    if (!notice) {
+        notice = document.createElement('div'); notice.id = id; notice.className = 'load-notice';
+        notice.setAttribute('role', 'status'); host.before(notice);
+    }
+    notice.replaceChildren(document.createTextNode(message));
+    if (retry) {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Reintentar'; button.onclick = retry;
+        notice.appendChild(button);
     }
 }
 
-async function loadPOSTables() {
+async function loadPOSTablesOnce() {
     console.log("POS: Iniciando loadPOSTables...");
     const generation = ++posTablesLoadGeneration;
     const empresaSelect = document.getElementById('pos-empresa-select');
@@ -658,28 +685,54 @@ async function loadPOSTables() {
         return;
     }
 
-    grid.innerHTML = '<div style="text-align:center; width:100%;">Cargando mesas...</div>';
+    if (!posAllTables.length) grid.innerHTML = '<div style="text-align:center; width:100%;">Cargando mesas...</div>';
     
     try {
-        await loadPOSConfig();
-        if (generation !== posTablesLoadGeneration) return;
+        loadPOSConfig();
+        const controller = new AbortController();
+        posTablesAbortController = controller;
         console.log(`POS: Fetching /api/pos/tables?empresa=${empresa}`);
-        const res = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`);
-        if (!res.ok) throw new Error(`Error servidor: ${res.status}`);
-
-        const tables = await res.json();
+        const res = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`, { signal: controller.signal });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) { const error = new Error(body.message || `Error servidor: ${res.status}`); error.diagnosticId = body.diagnosticId; throw error; }
+        const tables = body;
         if (generation !== posTablesLoadGeneration || empresaSelect?.value !== empresa || posCurrentTurnoLabel !== turno) return;
         posAllTables = tables;
+        setLoadNotice('tables', grid, '');
         console.log(`POS: Mesas recibidas: ${posAllTables.length}`);
         
         renderTableGroupFilters(empresa);
         renderPOSTables(posAllTables);
     } catch (e) {
+        if (e.name === 'AbortError') return;
         console.error("POS: Error en loadPOSTables:", e);
         if (generation === posTablesLoadGeneration) {
-            grid.innerHTML = `<div style="color:red; text-align:center; width:100%;">Error al cargar mesas: ${e.message}</div>`;
+            const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
+            setLoadNotice('tables', grid, `No se pudieron actualizar las mesas. ${e.message}${ref}`, () => loadPOSTables());
+            if (!posAllTables.length) grid.innerHTML = '<div class="pos-tables-empty">No hay datos de mesas disponibles.</div>';
         }
+    } finally {
+        if (posTablesAbortController?.signal.aborted || generation === posTablesLoadGeneration) posTablesAbortController = null;
     }
+}
+
+function loadPOSTables() {
+    const empresa = document.getElementById('pos-empresa-select')?.value || '';
+    const key = `${empresa}:${posCurrentTurnoLabel || ''}`;
+    posTablesRefreshPending = true;
+    if (posTablesLoadPromise) {
+        if (key !== posTablesActiveKey) posTablesAbortController?.abort();
+        return posTablesLoadPromise;
+    }
+    posTablesActiveKey = key;
+    posTablesLoadPromise = (async () => {
+        while (posTablesRefreshPending) {
+            posTablesRefreshPending = false;
+            await loadPOSTablesOnce();
+            posTablesActiveKey = `${document.getElementById('pos-empresa-select')?.value || ''}:${posCurrentTurnoLabel || ''}`;
+        }
+    })().finally(() => { posTablesLoadPromise = null; });
+    return posTablesLoadPromise;
 }
 
 function renderTableGroupFilters(empresa) {
@@ -1610,8 +1663,20 @@ let appResumeTimer = null;
 let appResumePromise = null;
 let appResumePending = false;
 let lastAppResumeAt = 0;
+let tableSSERefreshTimer = null;
+let kitchenSSERefreshTimer = null;
 const APP_RESUME_DEBOUNCE_MS = 250;
 const APP_RESUME_COOLDOWN_MS = 1200;
+
+function scheduleTableSSERefresh() {
+    clearTimeout(tableSSERefreshTimer);
+    tableSSERefreshTimer = setTimeout(() => { tableSSERefreshTimer = null; loadPOSTables(); }, 200);
+}
+
+function scheduleKitchenSSERefresh() {
+    clearTimeout(kitchenSSERefreshTimer);
+    kitchenSSERefreshTimer = setTimeout(() => { kitchenSSERefreshTimer = null; loadCocinaPedidos(true); }, 200);
+}
 
 function appCanUseNetwork() {
     return document.visibilityState !== 'hidden' && navigator.onLine !== false;
@@ -1785,7 +1850,7 @@ function handleSSEEvent(data) {
 
         if (isTableView && empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
             console.log('SSE: Actualizando mapa de mesas...');
-            loadPOSTables();
+            scheduleTableSSERefresh();
         }
 
         if (posCurrentTable && parseInt(data.numero) === parseInt(posCurrentTable) &&
@@ -1822,7 +1887,7 @@ function handleSSEEvent(data) {
         const cocinaView = document.getElementById('view-cocina');
         if (cocinaView && cocinaView.style.display !== 'none') {
             console.log('SSE: Actualizando tablero de cocina...');
-            loadCocinaPedidos(true);
+            scheduleKitchenSSERefresh();
         }
     }
 }
@@ -1857,6 +1922,10 @@ let cocinaUltimoTotal = null;
 let cocinaFetchTime = null;
 let cocinaData = [];
 let cocinaAudioCtx = null;
+let cocinaLoadPromise = null;
+let cocinaRefreshPending = false;
+let cocinaAbortController = null;
+let cocinaActiveKey = '';
 
 function unlockCocinaAudio() {
     try {
@@ -1931,24 +2000,29 @@ function isCocinaViewVisible() {
     return v && v.style.display !== 'none';
 }
 
-async function loadCocinaPedidos(silencioso = false) {
+async function loadCocinaPedidosOnce() {
     const empresaSelect = document.getElementById('cocina-empresa-select');
     const board = document.getElementById('cocina-board');
     if (!empresaSelect || !board) return;
     if (typeof cocinaVista !== 'undefined' && cocinaVista === 'historial') return loadCocinaHistorial(1);
     if (!empresaSelect.value) {
         cocinaData = [];
+        setLoadNotice('kitchen', board, '');
         renderCocinaBoard();
         return;
     }
 
     try {
-        const res = await fetch(`/api/cocina/pedidos?empresa=${empresaSelect.value}`);
-        const data = await res.json();
+        const company = empresaSelect.value;
+        const controller = new AbortController();
+        cocinaAbortController = controller;
+        const res = await fetch(`/api/cocina/pedidos?empresa=${company}`, { signal: controller.signal });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-            const message = res.status === 401 ? 'Sesión expirada. Vuelva a iniciar sesión.' : res.status === 400 ? 'Seleccione una empresa válida.' : res.status === 404 ? 'No hay configuración de cocina para esta empresa.' : 'No se pudo cargar la cocina. Revise el registro del servidor.';
-            throw new Error(message);
+            const fallback = res.status === 401 ? 'Sesión expirada. Vuelva a iniciar sesión.' : res.status === 400 ? 'Seleccione una empresa válida.' : res.status === 404 ? 'No hay configuración de cocina para esta empresa.' : 'No se pudo cargar la cocina.';
+            const error = new Error(data.message || fallback); error.diagnosticId = data.diagnosticId; throw error;
         }
+        if (empresaSelect.value !== company) return;
         // Normaliza el contrato agrupado de la API al modelo interno del tablero.
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
             NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
@@ -1966,11 +2040,36 @@ async function loadCocinaPedidos(silencioso = false) {
         }
         cocinaUltimoTotal = totalTickets;
 
+        setLoadNotice('kitchen', board, '');
         renderCocinaBoard();
     } catch (e) {
+        if (e.name === 'AbortError') return;
         console.error(e);
-        if (!silencioso) alert(e.message);
+        if (isCocinaViewVisible()) {
+            const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
+            setLoadNotice('kitchen', board, `No se pudo actualizar Cocina. ${e.message}${ref}`, () => loadCocinaPedidos());
+        }
+    } finally {
+        cocinaAbortController = null;
     }
+}
+
+function loadCocinaPedidos() {
+    const key = `${document.getElementById('cocina-empresa-select')?.value || ''}:${typeof cocinaVista === 'undefined' ? 'tablero' : cocinaVista}`;
+    cocinaRefreshPending = true;
+    if (cocinaLoadPromise) {
+        if (key !== cocinaActiveKey) cocinaAbortController?.abort();
+        return cocinaLoadPromise;
+    }
+    cocinaActiveKey = key;
+    cocinaLoadPromise = (async () => {
+        while (cocinaRefreshPending) {
+            cocinaRefreshPending = false;
+            await loadCocinaPedidosOnce();
+            cocinaActiveKey = `${document.getElementById('cocina-empresa-select')?.value || ''}:${typeof cocinaVista === 'undefined' ? 'tablero' : cocinaVista}`;
+        }
+    })().finally(() => { cocinaLoadPromise = null; });
+    return cocinaLoadPromise;
 }
 
 function agruparCocinaPorTicket() {

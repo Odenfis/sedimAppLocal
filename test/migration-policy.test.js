@@ -16,3 +16,9 @@ test('la política rechaza modificaciones y escrituras a tablas protegidas', () 
     assert.throws(() => validateMigration('INSERT Ticket_d VALUES (1)', 'bad.sql'));
     assert.throws(() => validateMigration('CREATE INDEX ix ON Ticket_d(NroTicket)', 'bad.sql'));
 });
+
+test('la migración de rendimiento indexa solo tablas auxiliares', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '007_performance_indexes.sql'), 'utf8');
+    for (const table of ['Pedido_control', 'Cocina_estados', 'Impresion_trabajos']) assert.match(source, new RegExp(`ON dbo\\.${table}\\(`));
+    for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos']) assert.doesNotMatch(source, new RegExp(`ON dbo\\.${table}\\(`));
+});
