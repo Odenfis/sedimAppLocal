@@ -22,3 +22,12 @@ test('la migración de rendimiento indexa solo tablas auxiliares', () => {
     for (const table of ['Pedido_control', 'Cocina_estados', 'Impresion_trabajos']) assert.match(source, new RegExp(`ON dbo\\.${table}\\(`));
     for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos']) assert.doesNotMatch(source, new RegExp(`ON dbo\\.${table}\\(`));
 });
+
+test('la migración de Barra es aditiva y no altera tablas comerciales', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '008_bar_printing.sql'), 'utf8');
+    assert.match(source, /CREATE TABLE dbo\.Impresion_linea_rutas/);
+    assert.match(source, /CREATE TABLE dbo\.Impresion_barra_trabajos/);
+    for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos', 'Tablas', 'Impresion_trabajos']) {
+        assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
+    }
+});

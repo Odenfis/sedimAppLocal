@@ -1,7 +1,7 @@
 /* Fase 22: shared order state. Loaded before script.js; handlers run after both scripts. */
 let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
-let orderSaveError = '', orderConfirmation = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPendingCancellations = [];
+let orderSaveError = '', orderConfirmation = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
 function newOrderId() {
@@ -60,12 +60,13 @@ async function orderRequest(url, method = 'GET', body) {
 }
 function orderReset() {
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderSendAttempt = null; orderPendingCancellations = [];
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data) {
     if (!data.pedido) return;
     orderVersion = data.version || 0; orderSummary = data.cocina || orderSummary; orderPrinting = data.impresion || null;
+    orderPrintings = Array.isArray(data.impresiones) ? data.impresiones : (orderPrinting ? [{ ...orderPrinting, destino: 'cocina' }] : []);
     orderPendingCancellations = data.cocina?.anulaciones || [];
     if (data.nroTicket) posCurrentNroTicket = data.nroTicket;
     for (const l of posCart) {
@@ -76,7 +77,7 @@ function orderAccept(data) {
 }
 function orderFinishDeletion() {
     clearTimeout(posAutoSaveTimer);
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null;
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     posCurrentNroTicket = null; posCart = []; posIsReadOnly = false;
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
@@ -126,7 +127,11 @@ function renderOrderStatus() {
     document.getElementById('order-review-conflict').hidden = !orderConflict;
     const print = document.getElementById('order-print-status');
     const labels = { en_cola: 'En cola de impresión', procesando: 'Transmitiendo a impresora', enviado: 'Enviado a impresora', error: 'Error de impresión', incierto: 'Impresión incierta: revise el papel antes de reimprimir' };
-    print.textContent = APP_FEATURES.printerEnabled && orderPrinting ? `${labels[orderPrinting.Estado] || orderPrinting.Estado}${orderPrinting.Error ? ': ' + orderPrinting.Error : ''}` : '';
+    print.textContent = orderPrintings.map(item => {
+        const name = item.destino === 'barra' ? 'Barra' : 'Cocina';
+        const state = item.estado || item.Estado, error = item.error || item.Error;
+        return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
+    }).join(' · ');
     document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || orderBusy || orderConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
     const pay = document.querySelector('.btn-pay-now');
     if (pay) pay.disabled = posIsReadOnly || orderBusy || orderConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
@@ -222,14 +227,17 @@ async function showOrderHistory() {
         for (const e of data.envios) {
             const section = document.createElement('section'), h = document.createElement('h3'), pre = document.createElement('pre');
             h.textContent = `Envío ${e.Numero}${e.Historico ? ' · Histórico' : ''}`; pre.textContent = e.Documento; section.append(h, pre);
-            for (const j of e.trabajos) { const p = document.createElement('p'); p.textContent = `${j.Estado} · Intentos: ${j.Intentos}${j.Error ? ' · ' + j.Error : ''}`; section.append(p); }
-            if (APP_FEATURES.printerEnabled) {
-                const btn = document.createElement('button'); btn.textContent = 'Reimprimir'; btn.disabled = e.trabajos.some(j => ['en_cola', 'procesando'].includes(j.Estado));
+            for (const j of e.trabajos) { const p = document.createElement('p'); p.textContent = `${j.Destino === 'barra' ? 'Barra' : 'Cocina'}: ${j.Estado} · Intentos: ${j.Intentos}${j.Error ? ' · ' + j.Error : ''}`; section.append(p); }
+            for (const destination of ['cocina','barra']) {
+                const destinationEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+                const jobs = e.trabajos.filter(j => (j.Destino || 'cocina') === destination);
+                if (!destinationEnabled || !jobs.length) continue;
+                const btn = document.createElement('button'); btn.textContent = `Reimprimir ${destination === 'barra' ? 'Barra' : 'Cocina'}`; btn.disabled = jobs.some(j => ['en_cola', 'procesando'].includes(j.Estado));
                 let attempt = null;
                 btn.onclick = async () => {
                     if (!confirm('Revise si el ticket ya salió. Esta acción imprimirá una copia marcada REIMPRESIÓN.')) return;
                     btn.disabled = true;
-                    try { attempt ||= newOrderId(); await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/envios/${e.Id}/reimprimir`, 'POST', { empresa: posCurrentTableEmpresa, clave: attempt }); await showOrderHistory(); }
+                    try { attempt ||= newOrderId(); await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/envios/${e.Id}/reimprimir`, 'POST', { empresa: posCurrentTableEmpresa, clave: attempt, destino: destination }); await showOrderHistory(); }
                     catch (err) { alert(err.message); btn.disabled = false; }
                 };
                 section.append(btn);

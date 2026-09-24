@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, Afecto: 1, Linea: 'Platos' };
 async function fixture(page, options = {}) {
-    const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0,
+    const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0 };
@@ -86,9 +86,10 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/cocina/pedidos') return fulfill({ success:true,pedidos:state.kds.map(l => ({ nroTicket:l.NroTicket,mesa:l.NroMesa,
             envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
             minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
+            impresiones:l.Impresiones || [{...(l.Impresion || {estado:'enviado'}),destino:'cocina'}],
             lineas:[{ lineaId:l.LineaId,codPro:l.Codpro,cantidad:l.Cantidad,nombre:l.Descripcion,notasRapidas:l.notasRapidas,nota:l.nota,estado:l.EstadoCocina,Categoria:l.Categoria,correccionPendiente:l.pendiente }] })) });
         if (url.pathname.endsWith('/reconocer')) { const l=state.kds.find(l=>url.pathname.includes(l.LineaId)); l.nota=l.pendiente.nueva.nota; l.pendiente=null; return fulfill({success:true}); }
-        if (url.pathname.endsWith('/reimprimir')) { state.reprints++; return fulfill({success:true,trabajoId:'33333333-3333-4333-8333-333333333333'}); }
+        if (url.pathname.endsWith('/reimprimir')) { state.reprints++; state.reprintDestinations.push(body.destino || 'cocina'); return fulfill({success:true,trabajoId:'33333333-3333-4333-8333-333333333333'}); }
         if (url.pathname.endsWith('/todo-listo')) { state.kitchenStates.forEach((_,id)=>state.kitchenStates.set(id,3)); return fulfill({success:true}); }
         if (url.pathname.endsWith('/entregado')) { state.kitchenStates.forEach((_,id)=>state.kitchenStates.set(id,4)); return fulfill({success:true}); }
         if (url.pathname === '/api/admin/cierres/preview') return fulfill({ success:true,totalTickets:1,elegible:true,registrosSinTurno:0,
@@ -548,9 +549,23 @@ test('ticket largo de Cocina desplaza el contenido y encola una sola reimpresió
     await expect(page.locator('#cocina-ticket-documento')).toContainText('Producto 100');
     const dialogBox = await page.locator('#cocina-ticket-dialog').boundingBox();
     expect(dialogBox.height).toBeLessThanOrEqual(800 * .91);
-    await page.locator('#cocina-ticket-print').dblclick();
-    await expect(page.locator('#cocina-ticket-print-status')).toHaveText('Reimpresión en cola.');
+    await page.locator('#cocina-ticket-print-cocina').dblclick();
+    await expect(page.locator('#cocina-ticket-print-status')).toHaveText('Reimpresión de Cocina en cola.');
     expect(state.reprints).toBe(1);
+    expect(state.reprintDestinations).toEqual(['cocina']);
+});
+
+test('ticket mixto muestra y encola Cocina y Barra de forma independiente', async ({ page }) => {
+    const state = await fixture(page, { features: { printerEnabled:true, barPrinterEnabled:true, closuresEnabled:true } });
+    state.kds=[{NroTicket:'T001-000001',NroMesa:1,LineaId:'11111111-1111-4111-8111-111111111111',Codpro:'02001',EstadoCocina:1,
+        Cantidad:1,Descripcion:'Arroz',notasRapidas:[],nota:'',Categoria:'Platos',FechaTicket:new Date().toISOString(),MinutosEspera:1,
+        Documento:'COMANDA COMPLETA',Impresion:{estado:'enviado'},Impresiones:[{estado:'enviado',destino:'cocina'},{estado:'enviado',destino:'barra'}]}];
+    await page.locator('.sidebar li[data-module="cocina"]').click();
+    await page.selectOption('#cocina-empresa-select','02');
+    await page.getByRole('button',{name:'Ver ticket',exact:true}).click();
+    await page.locator('#cocina-ticket-print-barra').click();
+    await expect(page.locator('#cocina-ticket-print-status')).toHaveText('Reimpresión de Barra en cola.');
+    expect(state.reprintDestinations).toEqual(['barra']);
 });
 test('espera el autoguardado en curso antes de enviar', async ({ page }) => {
     const state = await fixture(page); state.delaySave = 350;

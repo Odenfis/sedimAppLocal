@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -34,7 +34,7 @@ async function main() {
             CREATE TABLE Ticket_d(NroTicket CHAR(20) NOT NULL,Codpro CHAR(10) NOT NULL,Descripcion CHAR(70),Cantidad DECIMAL(9,2) NOT NULL,Precio MONEY NOT NULL,Descuento MONEY,Importe MONEY NOT NULL);
             CREATE TABLE Mesas(Numero INT,Empresa INT,Estado INT);
             CREATE TABLE Tablas(n_codtabla INT,n_numero INT,c_describe VARCHAR(100));
-            CREATE TABLE Productos(CodPro CHAR(10),Nombre VARCHAR(70),PventaMa MONEY,Afecto INT,Eliminado BIT,Clinea INT);
+            CREATE TABLE Productos(CodPro CHAR(10),Nombre VARCHAR(70),PventaMa MONEY,Afecto INT,Eliminado BIT,Clinea INT,Tipo INT);
             CREATE TABLE Lineas(CodLinea INT,Descripcion VARCHAR(50));
             CREATE TABLE Empleados(Codemp INT,Nombre VARCHAR(50),Empresa INT,Tipo INT,FecCese DATETIME);
             CREATE TABLE Valores(c_valor VARCHAR(20),n_valor DECIMAL(9,2));
@@ -42,8 +42,8 @@ async function main() {
             INSERT Migrations(MigrationName) VALUES('001_create_cocina_pedidos.sql');
             INSERT Tablas VALUES(23,1,'T001-000001'),(23,2,'T002-000001'),(23,5,'T005-000001'),(200,2,'Cocinería');
             INSERT Mesas VALUES(1,2,2),(2,2,1),(3,2,1),(4,2,1),(5,2,1),(6,2,1),(1,4,1);
-            INSERT Productos VALUES('02001','Arroz con mariscos',20,1,0,1),('04001','Otro producto',30,1,0,1);
-            INSERT Lineas VALUES(1,'Platos'); INSERT Empleados VALUES(1,'José',2,3,NULL),(2,'María',4,3,NULL);
+            INSERT Productos VALUES('02001','Arroz con mariscos',20,1,0,1,3),('02007','Pisco sour',18,1,0,7,3),('04001','Otro producto',30,1,0,1,3);
+            INSERT Lineas VALUES(1,'Platos'),(7,'Barra'); INSERT Empleados VALUES(1,'José',2,3,NULL),(2,'María',4,3,NULL);
             INSERT Valores VALUES('Igvv',10.5);
             INSERT Ticket_c VALUES('T001-000001',1,1,44.2,1,GETDATE(),1,'Legacy'),('T001-000000',4,1,0,1,GETDATE(),1,'Legacy');
             INSERT Ticket_d VALUES('T001-000001','02001','Arroz con mariscos',2,20,0,44.2);
@@ -104,6 +104,45 @@ async function main() {
         }
         passed++; console.log('✓ batch save and send preserve 10-line and 30-line orders');
         passed++; console.log('✓ duplicate send is idempotent; new commercial rows store Precio = Importe with IGV');
+        const previousBarEnabled = process.env.BAR_PRINTER_ENABLED, previousBarHost = process.env.BAR_PRINTER_HOST;
+        try {
+            process.env.BAR_PRINTER_ENABLED = 'true'; process.env.BAR_PRINTER_HOST = '192.168.1.180';
+            const kitchenLine = { ...base, lineaId: randomUUID(), notasRapidas:[], nota:'Cocina' };
+            const barLine = { ...base, lineaId: randomUUID(), codPro:'02007', nombre:'Pisco sour', notasRapidas:['Helada'], nota:'Barra' };
+            const mixed = await save([kitchenLine,barLine],undefined,undefined,3);
+            const mixedSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+                {empresa:2,version:mixed.version,clave:randomUUID()},{nro:mixed.nroTicket});
+            assert.equal(mixedSend.status,200,JSON.stringify(mixedSend));
+            const kitchenJob = (await pool.request().input('envio',mixedSend.envioId).query('SELECT Documento FROM Impresion_trabajos WHERE EnvioId=@envio')).recordset[0];
+            const barJob = (await pool.request().input('envio',mixedSend.envioId).query('SELECT Documento FROM Impresion_barra_trabajos WHERE EnvioId=@envio')).recordset[0];
+            assert.match(kitchenJob.Documento,/COMANDA DE COCINA/); assert.match(kitchenJob.Documento,/Arroz con mariscos/); assert.doesNotMatch(kitchenJob.Documento,/Pisco sour/);
+            assert.match(barJob.Documento,/COMANDA DE BARRA/); assert.match(barJob.Documento,/Pisco sour/); assert.doesNotMatch(barJob.Documento,/Arroz con mariscos/);
+            assert.equal((await pool.request().input('nro',mixed.nroTicket).query("SELECT COUNT(*) n FROM Impresion_linea_rutas r JOIN Pedido_lineas l ON l.LineaId=r.LineaId WHERE l.NroTicket=@nro AND r.Destino='barra'")).recordset[0].n,1);
+            await pool.request().query("UPDATE Productos SET Clinea=1 WHERE CodPro='02007'");
+            const correctedMixed = await save(mixedSend.items.map(line => ({ ...line, nota: line.codPro === '02007' ? 'Barra corregida' : line.nota })),mixedSend.version,mixed.nroTicket,3);
+            const correctedMixedSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+                {empresa:2,version:correctedMixed.version,clave:randomUUID()},{nro:mixed.nroTicket});
+            assert.equal(correctedMixedSend.status,200,JSON.stringify(correctedMixedSend));
+            assert.equal((await pool.request().input('envio',correctedMixedSend.envioId).query('SELECT COUNT(*) n FROM Impresion_trabajos WHERE EnvioId=@envio')).recordset[0].n,0);
+            const frozenBarJob = (await pool.request().input('envio',correctedMixedSend.envioId).query('SELECT Documento FROM Impresion_barra_trabajos WHERE EnvioId=@envio')).recordset[0];
+            assert.match(frozenBarJob.Documento,/Barra corregida/);
+            await pool.request().query("UPDATE Productos SET Clinea=7 WHERE CodPro='02007'");
+            const barReprint = await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',
+                {empresa:2,clave:randomUUID(),destino:'barra'},{nro:mixed.nroTicket,envio:mixedSend.envioId});
+            assert.equal(barReprint.status,409); // el trabajo automático de Barra aún está pendiente
+            await pool.request().input('envio',mixedSend.envioId).query("UPDATE Impresion_barra_trabajos SET Estado='enviado' WHERE EnvioId=@envio");
+            const reprintKey = randomUUID();
+            const queuedBar = await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',
+                {empresa:2,clave:reprintKey,destino:'barra'},{nro:mixed.nroTicket,envio:mixedSend.envioId});
+            const duplicateBar = await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',
+                {empresa:2,clave:reprintKey,destino:'barra'},{nro:mixed.nroTicket,envio:mixedSend.envioId});
+            assert.equal(queuedBar.status,200); assert.equal(queuedBar.trabajoId,duplicateBar.trabajoId);
+            await call('delete','/api/pos/comanda/:nro',{version:correctedMixedSend.version,clave:randomUUID()},{nro:mixed.nroTicket},{empresa:2});
+        } finally {
+            if(previousBarEnabled===undefined) delete process.env.BAR_PRINTER_ENABLED; else process.env.BAR_PRINTER_ENABLED=previousBarEnabled;
+            if(previousBarHost===undefined) delete process.env.BAR_PRINTER_HOST; else process.env.BAR_PRINTER_HOST=previousBarHost;
+        }
+        passed++; console.log('✓ mixed send splits immutable Cocina/Barra documents and reprints Barra independently');
         const lineId = saved.items[0].lineaId;
         const prep = await call('put','/api/cocina/linea',{ empresa:2,nroTicket:nro,lineaId:lineId,estado:2 }); assert.equal(prep.status,200);
         const edits = saved.items.map(l => ({ ...l, precio:l.Precio, nota:l.lineaId===lineId?'Sin azúcar':l.nota }));
@@ -236,6 +275,7 @@ async function main() {
         const closeKey = randomUUID();
         let closed = await call('post','/api/admin/cierres',{empresa:2,turno:2,fechaNegocio:businessDay,pin:'2468',confirmacion:'CERRAR TURNO',clave:closeKey});
         assert.equal(closed.status,200,JSON.stringify(closed)); assert.equal(closed.estado,'cerrado'); assert.equal(closed.conteos.Pedido_control,1);
+        assert.equal(closed.conteos.Impresion_linea_rutas,1); assert.equal(closed.conteos.Impresion_barra_trabajos,0);
         assert.equal((await pool.request().input('id',closed.id).query('SELECT COUNT(*) n FROM Cierre_turno_archivos WHERE CierreId=@id')).recordset[0].n,1);
         const reopenedShift = await call('post','/api/admin/cierres/:id/reabrir',{pin:'2468',confirmacion:'REABRIR TURNO',clave:randomUUID()},{id:closed.id});
         assert.equal(reopenedShift.status,200); assert.equal(reopenedShift.estado,'reabierto');
@@ -253,12 +293,14 @@ async function main() {
         const remaining = (await pool.request().input('nro',shiftNro).query(`SELECT
             (SELECT COUNT(*) FROM Pedido_control WHERE NroTicket=@nro) Control,
             (SELECT COUNT(*) FROM Pedido_lineas WHERE NroTicket=@nro) LineasAux,
+            (SELECT COUNT(*) FROM Impresion_linea_rutas r JOIN Pedido_lineas l ON l.LineaId=r.LineaId WHERE l.NroTicket=@nro) Rutas,
             (SELECT COUNT(*) FROM Cocina_envios WHERE NroTicket=@nro) Envios,
+            (SELECT COUNT(*) FROM Impresion_barra_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro) Barra,
             (SELECT COUNT(*) FROM Cocina_estados WHERE NroTicket=@nro) Estados,
             (SELECT COUNT(*) FROM Ticket_c WHERE NroTicket=@nro) Comercial,
             (SELECT COUNT(*) FROM Ticket_d WHERE NroTicket=@nro) DetalleComercial,
             (SELECT COUNT(*) FROM Cocina_pedidos) Legacy`)).recordset[0];
-        assert.deepEqual(remaining,{Control:0,LineasAux:0,Envios:0,Estados:0,Comercial:1,DetalleComercial:1,Legacy:1});
+        assert.deepEqual(remaining,{Control:0,LineasAux:0,Rutas:0,Envios:0,Barra:0,Estados:0,Comercial:1,DetalleComercial:1,Legacy:1});
         const repeatedPurge = await call('post','/api/admin/cierres/:id/purgar',{pin:'2468',confirmacion:'PURGAR DATOS',clave:purgeKey},{id:closed.id});
         assert.equal(repeatedPurge.status,200); assert.equal(repeatedPurge.idempotente,true);
         if(previousPin===undefined) delete process.env.MAINTENANCE_PIN_HASH; else process.env.MAINTENANCE_PIN_HASH=previousPin;
@@ -267,7 +309,7 @@ async function main() {
     } finally {
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Pedido_lineas','Pedido_control','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Pedido_lineas','Pedido_control','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();

@@ -13,14 +13,16 @@ let currentSedeId = null;
 let prodPage = 1;
 let GLOBAL_IGV_PCT = 18;
 let GLOBAL_IGVV_PCT = 10;
-let APP_FEATURES = { printerEnabled: true, closuresEnabled: true };
+let APP_FEATURES = { printerEnabled: true, barPrinterEnabled: false, closuresEnabled: true };
 
 function applyFeatureFlags(features = {}) {
     APP_FEATURES = { ...APP_FEATURES, ...features };
     const closuresMenu = document.querySelector('[data-module="cierres"]');
     if (closuresMenu) closuresMenu.classList.toggle('feature-disabled', !APP_FEATURES.closuresEnabled);
-    const printButton = document.getElementById('cocina-ticket-print');
-    if (printButton) printButton.classList.toggle('feature-disabled', !APP_FEATURES.printerEnabled);
+    for (const destination of ['cocina','barra']) {
+        const printButton = document.getElementById(`cocina-ticket-print-${destination}`);
+        if (printButton) printButton.classList.toggle('feature-disabled', destination === 'cocina' ? !APP_FEATURES.printerEnabled : !APP_FEATURES.barPrinterEnabled);
+    }
     document.body.classList.toggle('printing-disabled', !APP_FEATURES.printerEnabled);
 }
 
@@ -1965,10 +1967,15 @@ function handleSSEEvent(data) {
         orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`).then(orderAccept).catch(() => {});
     }
     if (data.type === 'impresion_updated' && typeof cocinaTicketActual !== 'undefined' && cocinaTicketActual?.EnvioId === data.envioId) {
-        cocinaTicketActual.Impresion = { estado: data.estado };
+        const destination = data.destino || 'cocina';
+        cocinaTicketActual.Impresiones ||= cocinaTicketActual.Impresion ? [{ ...cocinaTicketActual.Impresion, destino: 'cocina' }] : [];
+        const current = cocinaTicketActual.Impresiones.find(item => (item.destino || 'cocina') === destination);
+        if (current) current.estado = data.estado;
+        else cocinaTicketActual.Impresiones.push({ estado: data.estado, destino: destination });
+        if (destination === 'cocina') cocinaTicketActual.Impresion = { estado: data.estado, destino: 'cocina' };
         const status = document.getElementById('cocina-ticket-print-status');
-        if (status) status.textContent = estadoImpresionCocina(cocinaTicketActual.Impresion);
-        const button = document.getElementById('cocina-ticket-print');
+        if (status) status.textContent = cocinaTicketActual.Impresiones.map(item => estadoImpresionCocina(item, item.destino)).join(' · ');
+        const button = document.getElementById(`cocina-ticket-print-${destination}`);
         if (button) button.disabled = ['en_cola','procesando'].includes(data.estado);
     }
     if (data.type === 'cocina_updated') {
@@ -2123,7 +2130,7 @@ async function loadCocinaPedidosOnce() {
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
             NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
             FechaTicket: p.fechaEnvio, MinutosEspera: p.minutosEspera, Documento: p.documento,
-            Impresion: p.impresion,
+            Impresion: p.impresion, Impresiones: p.impresiones || (p.impresion ? [{ ...p.impresion, destino: 'cocina' }] : []),
             EstadoCocina: l.estado, LineaId: l.lineaId, Codpro: l.codPro, Cantidad: l.cantidad,
             Descripcion: l.nombre, notasRapidas: l.notasRapidas || [], nota: l.nota || '',
             Categoria: l.Categoria, datosIncompletos: Boolean(l.datosIncompletos), pendiente: l.correccionPendiente || null
@@ -2179,7 +2186,7 @@ function agruparCocinaPorTicket() {
                 NroMesa: r.NroMesa,
                 FechaTicket: r.FechaTicket,
                 MinutosEspera: r.MinutosEspera || 0,
-                EnvioId: r.EnvioId, NumeroEnvio: r.NumeroEnvio, Mozo: r.Mozo, Documento: r.Documento, Impresion: r.Impresion,
+                EnvioId: r.EnvioId, NumeroEnvio: r.NumeroEnvio, Mozo: r.Mozo, Documento: r.Documento, Impresion: r.Impresion, Impresiones: r.Impresiones,
                 lineas: []
             });
         }
@@ -2309,31 +2316,39 @@ function construirTarjetaCocina(t) {
 }
 
 let cocinaTicketActual = null;
-let cocinaPrintAttempt = null;
-function estadoImpresionCocina(impresion) {
-    if (!APP_FEATURES.printerEnabled) return 'Impresión física deshabilitada.';
-    if (!impresion) return 'Documento listo para imprimir.';
+let cocinaPrintAttempt = {};
+function estadoImpresionCocina(impresion, destination = 'cocina') {
+    const name = destination === 'barra' ? 'Barra' : 'Cocina';
+    const featureEnabled = destination === 'barra' ? APP_FEATURES.barPrinterEnabled : APP_FEATURES.printerEnabled;
+    if (!featureEnabled) return `${name}: impresión deshabilitada.`;
+    if (!impresion) return `${name}: sin comanda para este envío.`;
     const labels = { en_cola:'En cola de impresión', procesando:'Transmitiendo a impresora', enviado:'Enviado a impresora', error:'Error de impresión', incierto:'Impresión incierta: revise el papel antes de reimprimir' };
     const estado = impresion.estado || impresion.Estado;
     const error = impresion.error || impresion.Error;
-    return `${labels[estado] || estado}${error ? `: ${error}` : ''}`;
+    return `${name}: ${labels[estado] || estado}${error ? `: ${error}` : ''}`;
 }
 function abrirTicketCocina(t) {
     const dialog = document.getElementById('cocina-ticket-dialog');
     const pre = document.getElementById('cocina-ticket-documento');
     if (!dialog || !pre) return;
     cocinaTicketActual = t;
-    cocinaPrintAttempt = null;
-    const printButton = document.getElementById('cocina-ticket-print');
-    const estado = t.Impresion?.estado || t.Impresion?.Estado;
-    if (printButton) {
-        printButton.classList.toggle('feature-disabled', !APP_FEATURES.printerEnabled);
-        printButton.disabled = !APP_FEATURES.printerEnabled || !t.EnvioId || ['en_cola','procesando'].includes(estado);
+    cocinaPrintAttempt = {};
+    t.Impresiones ||= t.Impresion ? [{ ...t.Impresion, destino: 'cocina' }] : [];
+    for (const destination of ['cocina','barra']) {
+        const printButton = document.getElementById(`cocina-ticket-print-${destination}`);
+        const printing = t.Impresiones.find(item => (item.destino || item.Destino || 'cocina') === destination);
+        const estado = printing?.estado || printing?.Estado;
+        const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+        if (printButton) {
+            printButton.hidden = !printing;
+            printButton.classList.toggle('feature-disabled', !featureEnabled);
+            printButton.disabled = !featureEnabled || !t.EnvioId || ['en_cola','procesando'].includes(estado);
+        }
     }
     if (t.Documento) {
         pre.textContent = t.Documento;
         const status = document.getElementById('cocina-ticket-print-status');
-        if (status) status.textContent = estadoImpresionCocina(t.Impresion);
+        if (status) status.textContent = t.Impresiones.map(item => estadoImpresionCocina(item, item.destino || item.Destino)).join(' · ');
         dialog.showModal(); return;
     }
     const fecha = t.FechaTicket ? new Date(t.FechaTicket).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false }) : '';
@@ -2352,17 +2367,18 @@ function abrirTicketCocina(t) {
     dialog.showModal();
 }
 
-async function imprimirTicketCocina() {
-    const t = cocinaTicketActual, button = document.getElementById('cocina-ticket-print');
+async function imprimirTicketCocina(destination = 'cocina') {
+    const t = cocinaTicketActual, button = document.getElementById(`cocina-ticket-print-${destination}`);
     const status = document.getElementById('cocina-ticket-print-status');
-    if (!APP_FEATURES.printerEnabled || !t?.EnvioId || !t?.NroTicket || button?.disabled) return;
+    const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+    if (!featureEnabled || !t?.EnvioId || !t?.NroTicket || button?.disabled) return;
     button.disabled = true;
     if (status) status.textContent = 'Solicitando impresión…';
     try {
-        cocinaPrintAttempt ||= newOrderId();
+        cocinaPrintAttempt[destination] ||= newOrderId();
         await orderRequest(`/api/pos/pedido/${encodeURIComponent(t.NroTicket)}/envios/${encodeURIComponent(t.EnvioId)}/reimprimir`, 'POST',
-            { empresa: kitchenCompany(), clave: cocinaPrintAttempt });
-        if (status) status.textContent = 'Reimpresión en cola.';
+            { empresa: kitchenCompany(), clave: cocinaPrintAttempt[destination], destino: destination });
+        if (status) status.textContent = `Reimpresión de ${destination === 'barra' ? 'Barra' : 'Cocina'} en cola.`;
     } catch (e) {
         if (status) status.textContent = e.message;
         button.disabled = false;
@@ -2409,16 +2425,22 @@ async function loadCocinaHistorial(page = 1) {
             const audit = document.createElement('p'); audit.textContent = `${envio.Movimientos} movimiento(s) · ${envio.Reconocidos} reconocimiento(s)`;
             const actions = document.createElement('div'); actions.className = 'cocina-history-actions';
             const view = document.createElement('button'); view.type = 'button'; view.textContent = 'Ver ticket';
-            const latestJob = envio.trabajos[envio.trabajos.length - 1] || null;
+            const latestKitchenJob = [...envio.trabajos].reverse().find(j => (j.Destino || 'cocina') === 'cocina') || null;
             view.onclick = () => abrirTicketCocina({ Documento: envio.Documento, NroTicket: envio.nroTicket,
-                EnvioId: envio.Id, Impresion: latestJob }); actions.appendChild(view);
-            if (APP_FEATURES.printerEnabled) {
-                const reprint = document.createElement('button'); reprint.type = 'button'; reprint.textContent = 'Reimprimir';
-                reprint.disabled = envio.trabajos.some(j => ['en_cola','procesando'].includes(j.Estado));
+                EnvioId: envio.Id, Impresion: latestKitchenJob, Impresiones: ['cocina','barra'].map(destination => {
+                    const item = [...envio.trabajos].reverse().find(j => (j.Destino || 'cocina') === destination);
+                    return item ? { ...item, destino: destination } : null;
+                }).filter(Boolean) }); actions.appendChild(view);
+            for (const destination of ['cocina','barra']) {
+                const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+                const jobs = envio.trabajos.filter(j => (j.Destino || 'cocina') === destination);
+                if (!featureEnabled || !jobs.length) continue;
+                const reprint = document.createElement('button'); reprint.type = 'button'; reprint.textContent = `Reimprimir ${destination === 'barra' ? 'Barra' : 'Cocina'}`;
+                reprint.disabled = jobs.some(j => ['en_cola','procesando'].includes(j.Estado));
                 reprint.onclick = async () => {
                     if (!confirm('Revise si el ticket ya salió. Se imprimirá una copia marcada REIMPRESIÓN.')) return;
                     reprint.disabled = true;
-                    try { await orderRequest(`/api/pos/pedido/${encodeURIComponent(envio.nroTicket)}/envios/${envio.Id}/reimprimir`, 'POST', { empresa: Number(empresa), clave: newOrderId() }); await loadCocinaHistorial(page); }
+                    try { await orderRequest(`/api/pos/pedido/${encodeURIComponent(envio.nroTicket)}/envios/${envio.Id}/reimprimir`, 'POST', { empresa: Number(empresa), clave: newOrderId(), destino: destination }); await loadCocinaHistorial(page); }
                     catch (e) { alert(e.message); reprint.disabled = false; }
                 };
                 actions.appendChild(reprint);

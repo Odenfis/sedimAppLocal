@@ -6,7 +6,7 @@ Esta es la guía estable para instalar las próximas mejoras en el servidor Wind
 
 - Avise al personal que SedimApp se reiniciará brevemente y procure hacerlo sin pedidos en edición o envíos pendientes.
 - Confirme que SQL Server y Docker Desktop estén iniciados.
-- No modifique, elimine ni reemplace `.env`. Ese archivo contiene la configuración privada del cliente y Git no lo descarga.
+- No elimine ni reemplace `.env`. Ese archivo contiene la configuración privada del cliente y Git no lo descarga; modifíquelo únicamente cuando una fase indique variables nuevas, como `BAR_PRINTER_*` en la Fase 37.
 - No elimine manualmente contenedores o imágenes: el actualizador se encarga de reconstruir lo necesario.
 
 ## Procedimiento normal
@@ -55,6 +55,14 @@ PRINTER_PORT=9100
 PRINTER_TIMEOUT_MS=5000
 PRINTER_CODEPAGE=cp850
 PRINTER_CUT=true
+
+BAR_PRINTER_ENABLED=true
+BAR_PRINTER_HOST=192.168.1.180
+BAR_PRINTER_PROTOCOL=escpos_tcp
+BAR_PRINTER_PORT=9100
+BAR_PRINTER_TIMEOUT_MS=5000
+BAR_PRINTER_CODEPAGE=cp850
+BAR_PRINTER_CUT=true
 ```
 
 Si `MAINTENANCE_PIN_HASH` permanece vacío, Cierre de Turno seguirá oculto. No cambie esa variable hasta implementar y validar dicha función.
@@ -96,3 +104,12 @@ Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `act
 - Ejecutar `npm run check`, `npm test`, `npm run test:ui` y `npm run test:sql` contra la base de validación.
 - Validar en Chrome Android físico que tocar el buscador no cambia la cantidad del carrito y que tocar deliberadamente una tarjeta agrega exactamente una unidad.
 - Esta fase no contiene migraciones ni cambios de esquema. Cualquier índice adicional deberá aprobarse como una migración nueva y limitada a tablas auxiliares.
+
+## Fase 37 — verificación de Cocina y Barra
+
+- La actualización aplica `008_bar_printing.sql`, que crea solamente `Impresion_linea_rutas` e `Impresion_barra_trabajos`. No altera `Productos`, `Mesas`, `Ticket_c`, `Ticket_d`, `Tablas` ni la cola de Cocina existente.
+- Antes de reiniciar, agregue las variables `BAR_PRINTER_*` anteriores al `.env` privado y confirme desde el contenedor acceso TCP a `192.168.1.180:9100`.
+- Envíe un pedido solo Cocina, uno solo Barra (`Clinea=7` y `Tipo=3`) y uno mixto. En el mixto deben salir dos papeles con el mismo ticket: cada producto únicamente en su destino.
+- Confirme caracteres españoles, papel de 80 mm, corte y reimpresión independiente desde el historial.
+- Simule una impresora desconectada y confirme que la otra continúa imprimiendo y que el envío sigue visible en el Kanban.
+- No ejecute la purga de un cierre con una imagen anterior de la aplicación. Para rollback conserve los datos auxiliares y restaure primero la versión nueva antes de purgar.

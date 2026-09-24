@@ -1344,3 +1344,16 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - No se agregó ni modificó ninguna migración y no se alteró el esquema de tablas comerciales, del sistema ni auxiliares.
 - La referencia productiva `6912435a-d4e2-482d-ba7a-9bbede71995b` no está disponible en el entorno local: Docker no tiene servicios activos. Debe correlacionarse en el servidor productivo antes del despliegue junto con la referencia emitida por Mesas.
 - Pendiente productiva: revisar los logs correlacionados, ejecutar la integración SQL y la prueba de 30 minutos con diez dispositivos, validar Chrome Android físico y documentar la causa SQL exacta antes de promover la versión.
+
+---
+
+## Fase 37: Comandas independientes de Cocina y Barra (Implementada en código; validación física pendiente)
+
+- Los productos cuyo catálogo cumple exactamente `Clinea=7 AND Tipo=3` se enrutan exclusivamente a Barra; el resto continúa en Cocina. La decisión se consulta en lote y se congela por `LineaId`, de modo que correcciones y anulaciones conservan el destino original aunque luego cambie el catálogo.
+- Un envío mixto conserva un único registro canónico y un único Kanban, pero crea dentro de la misma transacción dos documentos filtrados e inmutables: **COMANDA DE COCINA** y **COMANDA DE BARRA**. Nunca se crean trabajos vacíos.
+- `008_bar_printing.sql` crea únicamente las tablas auxiliares `Impresion_linea_rutas` e `Impresion_barra_trabajos`; no altera `Productos`, `Mesas`, `Ticket_c`, `Ticket_d`, `Tablas`, `Impresion_trabajos` ni otras tablas comerciales.
+- Cocina y Barra tienen trabajadores, bloqueos, estados, reintentos y recuperación independientes. Las transmisiones TCP ocurren fuera de la transacción SQL y pueden ejecutarse simultáneamente; una impresora desconectada no detiene la otra ni el envío al Kanban.
+- La API expone `impresiones[]` con destino, conserva `impresion` para compatibilidad con Cocina, incluye `destino` en SSE y acepta reimpresión por destino. POS, tablero e historial presentan estados y acciones separadas.
+- El archivo y la purga de turnos incluyen la cola de Barra y las rutas inmutables. La vista anterior de la aplicación no debe ejecutar purgas durante un rollback porque desconoce esas dos tablas nuevas.
+- Configuración operativa prevista: `BAR_PRINTER_ENABLED=true`, `BAR_PRINTER_HOST=192.168.1.180`, ESC/POS TCP 9100, timeout 5 s, CP850, papel de 80 mm y corte habilitado.
+- Validación local: sintaxis y pruebas unitarias aprobadas; Playwright cubre reimpresión independiente de ambos destinos. Pendiente contra SQL Server: integración de envío mixto/idempotencia/cierre, prueba física de red y caracteres, y prueba concurrente de diez dispositivos con una o ambas impresoras desconectadas.

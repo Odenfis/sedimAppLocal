@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { QUICK_NOTES, normalizeItems, snapshot, changes, validateEdits, printText } = require('../lib/order-domain');
-const { classifyFailure } = require('../lib/print-worker');
+const { classifyFailure, printerSettings } = require('../lib/print-worker');
 const { buildEscPosFrame, createEscPosTcpTransport } = require('../lib/escpos-tcp');
 const { orderKitchenStatus, orderKitchenHeadline } = require('../public/orders-ui');
 const item = extra => ({ lineaId: randomUUID(), codPro: '02001', nombre: 'Arroz con mariscos', cantidad: 1, precio: 20, afecto: 1, ...extra });
@@ -62,11 +62,30 @@ test('ticket muestra corrección y notas sin precios ni bytes de control; ancho 
     assert.match(doc, /REIMPRESIÓN/); assert.match(doc, /ANTES:/); assert.match(doc, /AHORA:/); assert.match(doc, /Término/);
     assert.doesNotMatch(doc, /Precio|IGV|\x1b/); assert.ok(doc.split('\n').every(l => l.length <= 42));
 });
+test('el generador produce una COMANDA DE BARRA con el mismo encabezado y contenido filtrado', () => {
+    const line = normalizeItems([item({ nombre: 'Pisco sour' })])[0];
+    const doc = printText({ empresa: 2, numero: 3, nroTicket: 'T001-000001', mesa: 4, mozo: 'José', fecha: '10/09/2026 12:30' },
+        [{ tipo: 'ADICIÓN', nueva: snapshot(line) }], false, 'COMANDA DE BARRA');
+    assert.match(doc, /COMANDA DE BARRA/);
+    assert.match(doc, /Ticket T001-000001/);
+    assert.match(doc, /Pisco sour/);
+    assert.doesNotMatch(doc, /COMANDA DE COCINA/);
+});
 test('solo reintenta fallos explícitamente anteriores a transmisión, máximo 3', () => {
     assert.equal(classifyFailure({ beforeTransmission: true }, 1), 'en_cola');
     assert.equal(classifyFailure({ beforeTransmission: true }, 3), 'error');
     assert.equal(classifyFailure(new Error('connection reset'), 1), 'incierto');
     assert.equal(classifyFailure({ beforeTransmission: false }, 2), 'incierto');
+});
+test('cada trabajador toma exclusivamente la configuración de su destino', () => {
+    const before = Object.fromEntries(['PRINTER_HOST','BAR_PRINTER_HOST','BAR_PRINTER_PORT'].map(key => [key,process.env[key]]));
+    try {
+        process.env.PRINTER_HOST = '192.168.1.50'; process.env.BAR_PRINTER_HOST = '192.168.1.180'; process.env.BAR_PRINTER_PORT = '9100';
+        assert.equal(printerSettings('cocina').host,'192.168.1.50');
+        assert.equal(printerSettings('barra').host,'192.168.1.180'); assert.equal(printerSettings('barra').port,9100);
+    } finally {
+        for (const [key,value] of Object.entries(before)) value === undefined ? delete process.env[key] : process.env[key] = value;
+    }
 });
 
 test('RPT004 recibe trama ESC/POS CP850 con avance y corte configurables', async () => {

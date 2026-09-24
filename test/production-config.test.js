@@ -19,10 +19,17 @@ test('configuración de producción rechaza secretos débiles y acepta variables
 });
 
 test('capacidades reflejan exclusivamente configuración operativa completa', () => {
-    withEnv({ PRINTER_ENABLED: 'false', PRINTER_HOST: '', MAINTENANCE_PIN_HASH: '' }, () =>
-        assert.deepEqual(app.features(), { printerEnabled: false, closuresEnabled: false }));
-    withEnv({ PRINTER_ENABLED: 'true', PRINTER_HOST: '192.168.1.50', MAINTENANCE_PIN_HASH: 'hash' }, () =>
-        assert.deepEqual(app.features(), { printerEnabled: true, closuresEnabled: true }));
+    withEnv({ PRINTER_ENABLED: 'false', PRINTER_HOST: '', BAR_PRINTER_ENABLED: 'false', BAR_PRINTER_HOST: '', MAINTENANCE_PIN_HASH: '' }, () =>
+        assert.deepEqual(app.features(), { printerEnabled: false, barPrinterEnabled: false, closuresEnabled: false }));
+    withEnv({ PRINTER_ENABLED: 'true', PRINTER_HOST: '192.168.1.50', BAR_PRINTER_ENABLED: 'true', BAR_PRINTER_HOST: '192.168.1.180', MAINTENANCE_PIN_HASH: 'hash' }, () =>
+        assert.deepEqual(app.features(), { printerEnabled: true, barPrinterEnabled: true, closuresEnabled: true }));
+});
+
+test('Barra exige host cuando está habilitada', () => {
+    const base = { DB_USER: 'db', DB_PASS: 'pass', DB_SERVER: 'host', DB_NAME: 'sedim', PRINTER_ENABLED: 'false',
+        SESSION_SECRET: '12345678901234567890123456789012' };
+    withEnv({ ...base, BAR_PRINTER_ENABLED: 'true', BAR_PRINTER_HOST: '' }, () =>
+        assert.throws(app.validateProductionConfig, /BAR_PRINTER_HOST/));
 });
 
 test('configuración de pool rechaza límites inválidos', () => {

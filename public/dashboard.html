@@ -299,7 +299,7 @@
                 <div class="order-dialog-heading"><h2>Ticket de Cocina</h2><button onclick="document.getElementById('cocina-ticket-dialog').close()" aria-label="Cerrar">×</button></div>
                 <div class="cocina-ticket-body"><pre id="cocina-ticket-documento" class="cocina-ticket-preview"></pre></div>
                 <p id="cocina-ticket-print-status" role="status"></p>
-                <div class="order-dialog-actions cocina-ticket-actions"><button id="cocina-ticket-print" onclick="imprimirTicketCocina()"><i class="fas fa-print"></i> Imprimir</button><button onclick="document.getElementById('cocina-ticket-dialog').close()">Cerrar</button></div>
+                <div class="order-dialog-actions cocina-ticket-actions"><button id="cocina-ticket-print-cocina" onclick="imprimirTicketCocina('cocina')"><i class="fas fa-print"></i> Cocina</button><button id="cocina-ticket-print-barra" onclick="imprimirTicketCocina('barra')"><i class="fas fa-print"></i> Barra</button><button onclick="document.getElementById('cocina-ticket-dialog').close()">Cerrar</button></div>
             </dialog>
 
             <section id="view-cierres" class="view-section" style="display:none;">

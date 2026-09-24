@@ -18,6 +18,7 @@ function enabled(value) { return String(value).toLowerCase() === 'true'; }
 function features() {
     return {
         printerEnabled: enabled(process.env.PRINTER_ENABLED) && Boolean(process.env.PRINTER_HOST),
+        barPrinterEnabled: enabled(process.env.BAR_PRINTER_ENABLED) && Boolean(process.env.BAR_PRINTER_HOST),
         closuresEnabled: Boolean(process.env.MAINTENANCE_PIN_HASH)
     };
 }
@@ -34,7 +35,9 @@ function validateProductionConfig() {
         DB_POOL_IDLE_TIMEOUT_MS: process.env.DB_POOL_IDLE_TIMEOUT_MS || 30000,
         DB_CONNECTION_TIMEOUT_MS: process.env.DB_CONNECTION_TIMEOUT_MS || 5000,
         DB_REQUEST_TIMEOUT_MS: process.env.DB_REQUEST_TIMEOUT_MS || 10000,
-        SLOW_REQUEST_MS: process.env.SLOW_REQUEST_MS || 750
+        SLOW_REQUEST_MS: process.env.SLOW_REQUEST_MS || 750,
+        BAR_PRINTER_PORT: process.env.BAR_PRINTER_PORT || 9100,
+        BAR_PRINTER_TIMEOUT_MS: process.env.BAR_PRINTER_TIMEOUT_MS || 5000
     };
     for (const [name, value] of Object.entries(numeric)) {
         if (!Number.isInteger(Number(value)) || Number(value) < 0) throw new Error(`${name} debe ser un entero no negativo`);
@@ -43,6 +46,7 @@ function validateProductionConfig() {
         throw new Error('DB_POOL_MAX debe ser positivo y mayor o igual a DB_POOL_MIN');
     }
     if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
+    if (enabled(process.env.BAR_PRINTER_ENABLED) && !process.env.BAR_PRINTER_HOST) throw new Error('BAR_PRINTER_HOST es obligatorio cuando BAR_PRINTER_ENABLED=true');
 }
 function internalError(res, error, context) {
     const { diagnosticId, classification, body } = requestContext.errorPayload(res, error);
@@ -351,9 +355,12 @@ async function start() {
     for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
         try {
             await runMigrations();
-            const protocol = String(process.env.PRINTER_PROTOCOL || '').toLowerCase();
-            const transport = protocol === 'escpos_tcp' ? require('./lib/escpos-tcp').createEscPosTcpTransport() : null;
-            const stopPrint = require('./lib/print-worker').startPrintWorker({ transport, notify: broadcastSSE });
+            const createTransport = protocol => String(protocol || '').toLowerCase() === 'escpos_tcp'
+                ? require('./lib/escpos-tcp').createEscPosTcpTransport() : null;
+            const { startPrintWorker } = require('./lib/print-worker');
+            const stopKitchenPrint = startPrintWorker({ destination: 'cocina', transport: createTransport(process.env.PRINTER_PROTOCOL), notify: broadcastSSE });
+            const stopBarPrint = startPrintWorker({ destination: 'barra', transport: createTransport(process.env.BAR_PRINTER_PROTOCOL), notify: broadcastSSE });
+            const stopPrint = () => { stopKitchenPrint(); stopBarPrint(); };
             const stopRetention = features().closuresEnabled ? require('./lib/shift-closures').startRetentionWorker() : () => {};
             const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
             let stopping = false;
