@@ -1329,3 +1329,18 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - La sesión deja de reescribirse en SQL después de cada lectura; conserva el vencimiento no renovable de 24 horas ya utilizado por la cookie.
 - Validación automatizada local: `npm run check`, 22 pruebas de dominio/configuración/migraciones y 32 pruebas Playwright aprobadas. La prueba SQL y las metas p95 deben ejecutarse contra SQL Server en la ventana de mantenimiento antes de promover la versión.
 - Metas productivas: mesas API p95 <300 ms, Cocina API p95 <500 ms, guardado/envío de hasta 20 líneas p95 <1.5 s y cero HTTP 500 o esperas de pool en 30 minutos con diez dispositivos.
+
+---
+
+## Fase 36: Estabilización de búsqueda móvil y aislamiento de vistas (Implementada en código; validación productiva pendiente)
+
+- La búsqueda de Chrome Android espera a que termine el gesto que enfoca el campo antes de reorganizar la pantalla. Una tarjeta solo agrega un producto si el gesto comenzó en esa misma tarjeta; los clics transferidos durante el cambio de viewport se descartan.
+- Las lecturas de Mesas y Cocina reintentan una sola vez errores transitorios indicados por el servidor. Los timeouts SQL responden `504`, la indisponibilidad de conexión/pool y los deadlocks `503`, y los fallos inesperados `500`; todos conservan `diagnosticId` y declaran si son reintentables.
+- Los avisos se buscan y crean exclusivamente dentro de su vista. Al navegar se aborta la lectura anterior, se invalida su generación y una respuesta tardía no puede alterar la vista nueva.
+- Cocina conserva el último tablero válido. Una fila auxiliar con JSON inválido se registra de forma sanitizada y se presenta con datos seguros de conciliación sin derribar todo el Kanban; un fallo posterior a un evento de envío informa que el envío está registrado y la actualización sigue pendiente.
+- El POS confirma cada envío exitoso con el identificador corto de `envioId`, sin reintentar automáticamente escrituras.
+- Playwright separa el proyecto Chrome de escritorio de un proyecto Android/Pixel con soporte táctil. La cobertura incluye el toque inicial del buscador, agregado deliberado, avisos aislados y reintento transitorio único.
+- Validación automatizada local: `npm run check`, 26 pruebas de dominio/configuración y 36 pruebas Playwright aprobadas.
+- No se agregó ni modificó ninguna migración y no se alteró el esquema de tablas comerciales, del sistema ni auxiliares.
+- La referencia productiva `6912435a-d4e2-482d-ba7a-9bbede71995b` no está disponible en el entorno local: Docker no tiene servicios activos. Debe correlacionarse en el servidor productivo antes del despliegue junto con la referencia emitida por Mesas.
+- Pendiente productiva: revisar los logs correlacionados, ejecutar la integración SQL y la prueba de 30 minutos con diez dispositivos, validar Chrome Android físico y documentar la causa SQL exacta antes de promover la versión.

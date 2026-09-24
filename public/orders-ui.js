@@ -1,7 +1,7 @@
 /* Fase 22: shared order state. Loaded before script.js; handlers run after both scripts. */
 let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
-let orderSaveError = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPendingCancellations = [];
+let orderSaveError = '', orderConfirmation = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPendingCancellations = [];
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
 function newOrderId() {
@@ -54,13 +54,13 @@ async function orderRequest(url, method = 'GET', body) {
     if (!res.ok) {
         const reference = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
         const e = new Error(`${data.message || 'No se pudo completar la operación'}${reference}`);
-        e.status = res.status; e.diagnosticId = data.diagnosticId; throw e;
+        e.status = res.status; e.diagnosticId = data.diagnosticId; e.retryable = data.retryable === true; throw e;
     }
     return data;
 }
 function orderReset() {
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderPrinting = null; orderSendAttempt = null; orderPendingCancellations = [];
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data) {
@@ -76,7 +76,7 @@ function orderAccept(data) {
 }
 function orderFinishDeletion() {
     clearTimeout(posAutoSaveTimer);
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderPrinting = null;
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null;
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     posCurrentNroTicket = null; posCart = []; posIsReadOnly = false;
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
@@ -94,7 +94,7 @@ function orderPayload() {
 }
 function orderSchedule() {
     if (posIsReadOnly || orderBusy) return;
-    orderDirty = true; orderGeneration++; orderSaveError = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
+    orderDirty = true; orderGeneration++; orderSaveError = ''; orderConfirmation = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
     posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => { }), POS_AUTOSAVE_DEBOUNCE_MS);
 }
 async function orderFlush() {
@@ -120,7 +120,8 @@ function renderOrderStatus() {
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
     const msg = document.getElementById('order-save-message');
-    msg.textContent = orderSaveError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : '');
+    msg.textContent = orderSaveError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
+    msg.classList.toggle('is-confirmation', !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
     document.getElementById('order-retry-save').hidden = !orderSaveError || orderConflict;
     document.getElementById('order-review-conflict').hidden = !orderConflict;
     const print = document.getElementById('order-print-status');
@@ -148,7 +149,9 @@ async function sendOrderKitchen() {
         sessionStorage.setItem(retryKey, JSON.stringify(orderSendAttempt));
         const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/enviar-cocina`, 'POST',
             { ...orderSendAttempt, empresa: posCurrentTableEmpresa, operacionId: orderOperation() });
-        sessionStorage.removeItem(retryKey); orderSendAttempt = null; orderAccept(data); updateCartUI();
+        sessionStorage.removeItem(retryKey); orderSendAttempt = null; orderAccept(data);
+        orderConfirmation = `Envío registrado en Cocina${data.envioId ? ` · ${data.envioId.slice(0, 8)}` : ''}.`;
+        updateCartUI();
     } catch (e) { orderSaveError = e.message; if (e.status === 409) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } }
     finally { orderBusy = false; renderOrderStatus(); }
 }

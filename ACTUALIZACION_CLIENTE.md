@@ -88,3 +88,11 @@ Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `act
 - Configure Docker Desktop para iniciar con Windows; el contenedor usa `restart: always` una vez que Docker está disponible.
 - Mantenga IP fija o reserva DHCP tanto para el servidor como para la impresora.
 - No publique el puerto de SedimApp hacia Internet; debe permanecer accesible solamente desde la LAN del restaurante.
+## Fase 36 — verificación previa al despliegue
+
+- Buscar `6912435a-d4e2-482d-ba7a-9bbede71995b` en la salida del servicio y capturar los registros `api_error`, `slow_request` y `slow_sql` relacionados.
+- Repetir la verificación con el `diagnosticId` mostrado por Mesas en el mismo intervalo y comparar ruta, clasificación, duración SQL y estado del pool.
+- Confirmar para el ticket afectado que `Pedido_control`, `Pedido_lineas`, `Cocina_envios`, `Cocina_envio_detalles` y `Cocina_estados` representan el mismo envío antes de aplicar cualquier cambio de datos.
+- Ejecutar `npm run check`, `npm test`, `npm run test:ui` y `npm run test:sql` contra la base de validación.
+- Validar en Chrome Android físico que tocar el buscador no cambia la cantidad del carrito y que tocar deliberadamente una tarjeta agrega exactamente una unidad.
+- Esta fase no contiene migraciones ni cambios de esquema. Cualquier índice adicional deberá aprobarse como una migración nueva y limitada a tablas auxiliares.

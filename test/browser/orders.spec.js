@@ -3,7 +3,8 @@ const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, A
 async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0,
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
-        tableLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true, kitchenError: false };
+        tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
+        tableError: false, kitchenError: false, kitchenTransientFailures: 0 };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -46,6 +47,7 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/pos/config') return fulfill({ igvv: 10.5 });
         if (url.pathname === '/api/pos/tables') {
             state.tableLoads++;
+            if (state.tableError) return fulfill({ success:false,message:'Fallo SQL de mesas',diagnosticId:'diag-tables-456',retryable:false },500);
             const delay = options.tableDelay?.(url.searchParams.get('empresa')) || 0;
             if (delay) await new Promise(resolve => setTimeout(resolve, delay));
             const tables = typeof options.tables === 'function'
@@ -70,11 +72,17 @@ async function fixture(page, options = {}) {
         if (url.pathname.endsWith('/enviar-cocina')) {
             state.requestOrder.push('send'); state.sends++; state.version++;
             state.sent = new Map(state.items.map(l => [l.lineaId, JSON.stringify(l)]));
-            state.items.forEach(l => { if (!state.kitchenStates.has(l.lineaId)) state.kitchenStates.set(l.lineaId,1); }); return fulfill(data());
+            state.items.forEach(l => { if (!state.kitchenStates.has(l.lineaId)) state.kitchenStates.set(l.lineaId,1); });
+            return fulfill({ ...data(), envioId: '22222222-2222-4222-8222-222222222222' });
         }
         if (url.pathname.endsWith('/estados-cocina')) return fulfill({ success:true, version:state.version,
             estados:state.items.map(l=>({lineaId:l.lineaId,estadoCocina:state.kitchenStates.get(l.lineaId)||null,pendienteId:null,anulada:false})) });
-        if (url.pathname === '/api/cocina/pedidos' && state.kitchenError) return fulfill({ success:false,message:'Fallo SQL controlado',diagnosticId:'diag-kds-123' },500);
+        if (url.pathname === '/api/cocina/pedidos') state.kitchenLoads++;
+        if (url.pathname === '/api/cocina/pedidos' && state.kitchenTransientFailures > 0) {
+            state.kitchenTransientFailures--;
+            return fulfill({ success:false,message:'Base temporalmente no disponible',diagnosticId:'diag-retry-503',retryable:true },503);
+        }
+        if (url.pathname === '/api/cocina/pedidos' && state.kitchenError) return fulfill({ success:false,message:'Fallo SQL controlado',diagnosticId:'diag-kds-123',retryable:false },500);
         if (url.pathname === '/api/cocina/pedidos') return fulfill({ success:true,pedidos:state.kds.map(l => ({ nroTicket:l.NroTicket,mesa:l.NroMesa,
             envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
             minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
@@ -365,6 +373,34 @@ test('Cocina conserva datos y muestra referencia al fallar sin alert modal', asy
     await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
 });
 
+test('avisos de Mesas y Cocina permanecen dentro de su propia vista', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.tableError = true;
+    await page.evaluate(() => loadPOSTables());
+    await expect(page.locator('#load-notice-tables')).toContainText('diag-tables-456');
+    await expect(page.locator('#view-pos-tables #load-notice-tables')).toHaveCount(1);
+
+    state.kitchenError = true;
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select', '02');
+    await expect(page.locator('#load-notice-kitchen')).toContainText('diag-kds-123');
+    await expect(page.locator('#view-cocina #load-notice-kitchen')).toHaveCount(1);
+    await expect(page.locator('#load-notice-tables')).toBeHidden();
+
+    await page.evaluate(() => showView('pos-tables'));
+    await expect(page.locator('#load-notice-kitchen')).toBeHidden();
+});
+
+test('Cocina reintenta una sola vez una lectura transitoria', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.kitchenTransientFailures = 1;
+    const before = state.kitchenLoads;
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select', '02');
+    await expect.poll(() => state.kitchenLoads - before).toBe(2);
+    await expect(page.locator('#load-notice-kitchen')).toHaveCount(0);
+});
+
 test('v1 oculta impresión y cierre cuando no están habilitados', async ({ page }) => {
     await fixture(page, { features: { printerEnabled: false, closuresEnabled: false } });
     await expect(page.locator('[data-module="cierres"]')).toBeHidden();
@@ -417,6 +453,7 @@ test('notas por línea, split, cancelar, guardar y envío explícito sin doble c
     await expect(page.locator('.btn-pay-now')).toBeDisabled();
     await page.locator('#btn-enviar-cocina').dblclick();
     await expect(page.locator('#order-kitchen-status')).toHaveText('Enviado a cocina');
+    await expect(page.locator('#order-save-message')).toHaveText('Envío registrado en Cocina · 22222222.');
     expect(state.sends).toBe(1);
     await expect(page.locator('#btn-enviar-cocina')).toBeDisabled();
     await expect(page.locator('.btn-pay-now')).toBeEnabled();
@@ -644,6 +681,36 @@ test('búsqueda móvil compacta aprovecha el viewport y conserva consulta y foco
     await search.press('Enter');
     await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
     await expect(page.locator('.pos-order-header')).toBeVisible();
+});
+
+test('@android abrir la búsqueda no transfiere el toque a un producto', async ({ page }) => {
+    await fixture(page);
+    const search = page.locator('#pos-product-search');
+    const card = page.locator('.pos-product-card').first();
+    const orderView = page.locator('#view-pos-order');
+
+    await search.dispatchEvent('pointerdown', { pointerId: 41, pointerType: 'touch', isPrimary: true, bubbles: true });
+    await search.evaluate(element => element.focus());
+    await expect(orderView).not.toHaveClass(/pos-mobile-search-mode/);
+    await card.dispatchEvent('pointerup', { pointerId: 41, pointerType: 'touch', isPrimary: true, bubbles: true });
+    await card.dispatchEvent('click', { detail: 1, pointerId: 41, pointerType: 'touch', bubbles: true });
+    await expect(orderView).toHaveClass(/pos-mobile-search-mode/);
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('0');
+
+    await page.waitForTimeout(180);
+    await card.tap();
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('1');
+    await expect(search).toBeFocused();
+});
+
+test('tarjeta de producto conserva activación por teclado', async ({ page }) => {
+    await fixture(page);
+    const card = page.locator('.pos-product-card').first();
+    await card.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('1');
+    await page.keyboard.press('Space');
+    await expect(page.locator('#pos-cart-fab-count')).toHaveText('2');
 });
 
 test('agregar producto confirma tarjeta, aviso y contador sin acumular mensajes', async ({ page }) => {

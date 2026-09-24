@@ -414,6 +414,9 @@ const mobilePOSSearchMedia = window.matchMedia('(max-width: 480px)');
 let posSearchKeyboardSeen = false;
 let posSearchViewportBaseline = window.innerHeight;
 let posSearchBlurTimer = null;
+let posSearchPointerId = null;
+let posSearchActivationFrame = null;
+let posSearchSuppressProductClickUntil = 0;
 let posAddFeedbackTimer = null;
 let posCartFeedbackTimer = null;
 const posCardFeedbackTimers = new Map();
@@ -538,8 +541,22 @@ function startPOSProductSearch() {
     syncPOSVisualViewport();
 }
 
+function finishPOSSearchPointerGesture(event) {
+    if (posSearchPointerId == null || event.pointerId !== posSearchPointerId) return;
+    posSearchPointerId = null;
+    posSearchSuppressProductClickUntil = performance.now() + 150;
+    cancelAnimationFrame(posSearchActivationFrame);
+    posSearchActivationFrame = requestAnimationFrame(() => {
+        posSearchActivationFrame = null;
+        if (document.activeElement === posProductSearchInput) startPOSProductSearch();
+    });
+}
+
 function finishPOSProductSearch() {
     clearTimeout(posSearchBlurTimer);
+    cancelAnimationFrame(posSearchActivationFrame);
+    posSearchActivationFrame = null;
+    posSearchPointerId = null;
     const input = document.getElementById('pos-product-search');
     if (document.activeElement === input) input.blur();
     document.getElementById('view-pos-order')?.classList.remove('pos-mobile-search-mode');
@@ -569,8 +586,14 @@ function retainMobilePOSSearchFocus() {
 
 const posProductSearchInput = document.getElementById('pos-product-search');
 if (posProductSearchInput) {
-    posProductSearchInput.addEventListener('focus', startPOSProductSearch);
-    posProductSearchInput.addEventListener('pointerdown', startPOSProductSearch);
+    posProductSearchInput.addEventListener('focus', () => {
+        if (posSearchPointerId == null) startPOSProductSearch();
+    });
+    posProductSearchInput.addEventListener('pointerdown', event => {
+        if (!mobilePOSSearchMedia.matches || posIsReadOnly) return;
+        posSearchPointerId = event.pointerId;
+        posSearchSuppressProductClickUntil = performance.now() + 500;
+    });
     posProductSearchInput.addEventListener('blur', () => {
         clearTimeout(posSearchBlurTimer);
         posSearchBlurTimer = setTimeout(() => {
@@ -583,6 +606,8 @@ if (posProductSearchInput) {
         finishPOSProductSearch();
     });
 }
+window.addEventListener('pointerup', finishPOSSearchPointerGesture, true);
+window.addEventListener('pointercancel', finishPOSSearchPointerGesture, true);
 if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncPOSVisualViewport);
     window.visualViewport.addEventListener('scroll', syncPOSVisualViewport);
@@ -647,7 +672,9 @@ async function loadPOSConfig() {
 
 function setLoadNotice(key, host, message, retry) {
     const id = `load-notice-${key}`;
-    let notice = document.getElementById(id);
+    const view = host?.closest('.view-section');
+    if (!view) return;
+    let notice = view.querySelector(`#${id}`);
     if (!message) { notice?.remove(); return; }
     if (!notice) {
         notice = document.createElement('div'); notice.id = id; notice.className = 'load-notice';
@@ -660,6 +687,48 @@ function setLoadNotice(key, host, message, retry) {
     }
 }
 
+function waitForRetry(ms, signal) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new DOMException('Solicitud cancelada', 'AbortError'));
+        }, { once: true });
+    });
+}
+
+async function fetchViewJson(url, signal) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const res = await fetch(url, { signal, cache: 'no-store' });
+            const body = await res.json().catch(() => ({}));
+            if (res.ok) return body;
+            const fallback = res.status === 401 ? 'Sesión expirada. Vuelva a iniciar sesión.'
+                : res.status === 400 ? 'La solicitud contiene datos inválidos.'
+                    : res.status === 404 ? 'No se encontró la configuración solicitada.'
+                        : res.status === 503 ? 'El servidor de datos no está disponible temporalmente.'
+                            : res.status === 504 ? 'La consulta excedió el tiempo de espera.'
+                                : `Error servidor: ${res.status}`;
+            const error = new Error(body.message || fallback);
+            error.status = res.status;
+            error.diagnosticId = body.diagnosticId;
+            error.retryable = body.retryable === true;
+            if (attempt === 0 && error.retryable) {
+                await waitForRetry(200 + Math.floor(Math.random() * 250), signal);
+                continue;
+            }
+            throw error;
+        } catch (error) {
+            if (error.name === 'AbortError') throw error;
+            if (attempt === 0 && error.status == null) {
+                await waitForRetry(200 + Math.floor(Math.random() * 250), signal);
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
 async function loadPOSTablesOnce() {
     console.log("POS: Iniciando loadPOSTables...");
     const generation = ++posTablesLoadGeneration;
@@ -667,6 +736,7 @@ async function loadPOSTablesOnce() {
     const empresa = empresaSelect ? empresaSelect.value : null;
     const turno = posCurrentTurnoLabel;
     const grid = document.getElementById('pos-tables-grid');
+    let controller = null;
     console.log(`POS: Empresa seleccionada: ${empresa}`);
     
     if (!grid) {
@@ -689,13 +759,10 @@ async function loadPOSTablesOnce() {
     
     try {
         loadPOSConfig();
-        const controller = new AbortController();
+        controller = new AbortController();
         posTablesAbortController = controller;
         console.log(`POS: Fetching /api/pos/tables?empresa=${empresa}`);
-        const res = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`, { signal: controller.signal });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) { const error = new Error(body.message || `Error servidor: ${res.status}`); error.diagnosticId = body.diagnosticId; throw error; }
-        const tables = body;
+        const tables = await fetchViewJson(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`, controller.signal);
         if (generation !== posTablesLoadGeneration || empresaSelect?.value !== empresa || posCurrentTurnoLabel !== turno) return;
         posAllTables = tables;
         setLoadNotice('tables', grid, '');
@@ -712,7 +779,7 @@ async function loadPOSTablesOnce() {
             if (!posAllTables.length) grid.innerHTML = '<div class="pos-tables-empty">No hay datos de mesas disponibles.</div>';
         }
     } finally {
-        if (posTablesAbortController?.signal.aborted || generation === posTablesLoadGeneration) posTablesAbortController = null;
+        if (controller && posTablesAbortController === controller) posTablesAbortController = null;
     }
 }
 
@@ -1244,6 +1311,9 @@ function renderPOSProducts(products) {
         products.forEach((p, index) => {
             const card = document.createElement('div');
             card.className = 'pos-product-card';
+            card.tabIndex = 0;
+            card.setAttribute('role', 'button');
+            card.setAttribute('aria-label', `Agregar ${String(p.Nombre || 'producto').trim()} al pedido`);
             
             const lineColors = {
                 'Entradas': '#ffeb3b',
@@ -1271,7 +1341,21 @@ function renderPOSProducts(products) {
                     ${esAfecto ? '<div class="pos-product-igv">(inc. IGV)</div>' : ''}
                 </div>
             `;
-            card.onclick = () => addToCart(p, card);
+            let pointerStartedOnCard = false;
+            card.addEventListener('pointerdown', () => { pointerStartedOnCard = true; });
+            card.addEventListener('pointercancel', () => { pointerStartedOnCard = false; });
+            card.addEventListener('click', event => {
+                const keyboardActivation = event.detail === 0;
+                const gestureAllowed = keyboardActivation || pointerStartedOnCard;
+                pointerStartedOnCard = false;
+                if (!gestureAllowed || performance.now() < posSearchSuppressProductClickUntil) return;
+                addToCart(p, card);
+            });
+            card.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                card.click();
+            });
             grid.appendChild(card);
         });
     } catch (err) {
@@ -1554,6 +1638,12 @@ showView = function(viewName) {
     if (viewName !== 'pos-order' && (orderDirty || orderSavePromise)) {
         orderFlush().then(() => showView(viewName)).catch(e => alert(e.message)); return;
     }
+    if (viewName !== 'pos-tables') {
+        posTablesRefreshPending = false;
+        posTablesAbortController?.abort();
+        posTablesLoadGeneration++;
+    }
+    if (viewName !== 'cocina') cancelCocinaLoad();
     originalShowView(viewName);
     const cartTrigger = document.getElementById('pos-cart-fab');
     if (cartTrigger) cartTrigger.hidden = viewName !== 'pos-order';
@@ -1887,6 +1977,7 @@ function handleSSEEvent(data) {
         const cocinaView = document.getElementById('view-cocina');
         if (cocinaView && cocinaView.style.display !== 'none') {
             console.log('SSE: Actualizando tablero de cocina...');
+            cocinaUpdateExpected = true;
             scheduleKitchenSSERefresh();
         }
     }
@@ -1926,6 +2017,14 @@ let cocinaLoadPromise = null;
 let cocinaRefreshPending = false;
 let cocinaAbortController = null;
 let cocinaActiveKey = '';
+let cocinaLoadGeneration = 0;
+let cocinaUpdateExpected = false;
+
+function cancelCocinaLoad() {
+    cocinaRefreshPending = false;
+    cocinaLoadGeneration++;
+    cocinaAbortController?.abort();
+}
 
 function unlockCocinaAudio() {
     try {
@@ -2003,6 +2102,8 @@ function isCocinaViewVisible() {
 async function loadCocinaPedidosOnce() {
     const empresaSelect = document.getElementById('cocina-empresa-select');
     const board = document.getElementById('cocina-board');
+    const generation = ++cocinaLoadGeneration;
+    let controller = null;
     if (!empresaSelect || !board) return;
     if (typeof cocinaVista !== 'undefined' && cocinaVista === 'historial') return loadCocinaHistorial(1);
     if (!empresaSelect.value) {
@@ -2014,15 +2115,10 @@ async function loadCocinaPedidosOnce() {
 
     try {
         const company = empresaSelect.value;
-        const controller = new AbortController();
+        controller = new AbortController();
         cocinaAbortController = controller;
-        const res = await fetch(`/api/cocina/pedidos?empresa=${company}`, { signal: controller.signal });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            const fallback = res.status === 401 ? 'Sesión expirada. Vuelva a iniciar sesión.' : res.status === 400 ? 'Seleccione una empresa válida.' : res.status === 404 ? 'No hay configuración de cocina para esta empresa.' : 'No se pudo cargar la cocina.';
-            const error = new Error(data.message || fallback); error.diagnosticId = data.diagnosticId; throw error;
-        }
-        if (empresaSelect.value !== company) return;
+        const data = await fetchViewJson(`/api/cocina/pedidos?empresa=${company}`, controller.signal);
+        if (generation !== cocinaLoadGeneration || empresaSelect.value !== company || !isCocinaViewVisible()) return;
         // Normaliza el contrato agrupado de la API al modelo interno del tablero.
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
             NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
@@ -2030,7 +2126,7 @@ async function loadCocinaPedidosOnce() {
             Impresion: p.impresion,
             EstadoCocina: l.estado, LineaId: l.lineaId, Codpro: l.codPro, Cantidad: l.cantidad,
             Descripcion: l.nombre, notasRapidas: l.notasRapidas || [], nota: l.nota || '',
-            Categoria: l.Categoria, pendiente: l.correccionPendiente || null
+            Categoria: l.Categoria, datosIncompletos: Boolean(l.datosIncompletos), pendiente: l.correccionPendiente || null
         })));
         cocinaFetchTime = Date.now();
 
@@ -2039,18 +2135,20 @@ async function loadCocinaPedidosOnce() {
             playCocinaBeep();
         }
         cocinaUltimoTotal = totalTickets;
+        cocinaUpdateExpected = false;
 
         setLoadNotice('kitchen', board, '');
         renderCocinaBoard();
     } catch (e) {
         if (e.name === 'AbortError') return;
         console.error(e);
-        if (isCocinaViewVisible()) {
+        if (generation === cocinaLoadGeneration && isCocinaViewVisible()) {
             const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
-            setLoadNotice('kitchen', board, `No se pudo actualizar Cocina. ${e.message}${ref}`, () => loadCocinaPedidos());
+            const prefix = cocinaUpdateExpected ? 'Envío registrado, actualización pendiente. ' : 'No se pudo actualizar Cocina. ';
+            setLoadNotice('kitchen', board, `${prefix}${e.message}${ref}`, () => loadCocinaPedidos());
         }
     } finally {
-        cocinaAbortController = null;
+        if (controller && cocinaAbortController === controller) cocinaAbortController = null;
     }
 }
 
@@ -2175,10 +2273,17 @@ function construirTarjetaCocina(t) {
         if (l.pendiente) {
             const notice = document.createElement('div'); notice.className = 'kitchen-correction';
             const m = l.pendiente;
-            const text = document.createElement('p'); text.textContent = `${m.tipo} · ANTES: ${m.anterior?.cantidad || 0} × ${m.anterior?.nombre || ''} ${orderNotes(m.anterior || {})} → AHORA: ${m.nueva ? `${m.nueva.cantidad} × ${m.nueva.nombre} ${orderNotes(m.nueva)}` : 'ANULADO'}`;
-            const ack = document.createElement('button'); ack.textContent = 'Reconocer cambio';
-            ack.onclick = e => { e.stopPropagation(); acknowledgeKitchenLine(t.NroTicket, l.LineaId); };
-            notice.append(text, ack); item.append(notice);
+            const text = document.createElement('p');
+            text.textContent = m.datosIncompletos
+                ? 'Corrección pendiente con datos auxiliares no legibles. Informe el ticket para conciliación.'
+                : `${m.tipo} · ANTES: ${m.anterior?.cantidad || 0} × ${m.anterior?.nombre || ''} ${orderNotes(m.anterior || {})} → AHORA: ${m.nueva ? `${m.nueva.cantidad} × ${m.nueva.nombre} ${orderNotes(m.nueva)}` : 'ANULADO'}`;
+            notice.append(text);
+            if (!m.datosIncompletos) {
+                const ack = document.createElement('button'); ack.textContent = 'Reconocer cambio';
+                ack.onclick = e => { e.stopPropagation(); acknowledgeKitchenLine(t.NroTicket, l.LineaId); };
+                notice.append(ack);
+            }
+            item.append(notice);
         }
         items.appendChild(item);
     });

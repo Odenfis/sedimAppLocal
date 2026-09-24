@@ -45,9 +45,10 @@ function validateProductionConfig() {
     if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
 }
 function internalError(res, error, context) {
-    const diagnosticId = requestContext.diagnosticId(res);
-    console.error(JSON.stringify({ type: 'api_error', diagnosticId, context, error: requestContext.safeError(error) }));
-    res.status(500).json({ success: false, message: 'No se pudo completar la operación.', diagnosticId });
+    const { diagnosticId, classification, body } = requestContext.errorPayload(res, error);
+    console.error(JSON.stringify({ type: 'api_error', diagnosticId, context, classification: classification.kind,
+        error: requestContext.safeError(error) }));
+    res.status(classification.status).json(body);
 }
 
 app.disable('x-powered-by');
@@ -338,6 +339,11 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
 
 require('./lib/orders').install(app, isAuthenticated, broadcastSSE);
 require('./lib/shift-closures').install(app, isAuthenticated, broadcastSSE);
+
+app.use((error, req, res, next) => {
+    if (!req.path.startsWith('/api/') || res.headersSent) return next(error);
+    internalError(res, error, 'Middleware API');
+});
 
 async function start() {
     validateProductionConfig();

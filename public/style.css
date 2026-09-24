@@ -2611,6 +2611,7 @@ form label {
 .order-line-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
 #order-save-message, #order-print-status { overflow-wrap: anywhere; }
 #order-save-message { color: #b45309; }
+#order-save-message.is-confirmation { color: #15803d; }
 .order-dialog { width: min(650px, 92vw); max-height: 90dvh; box-sizing: border-box; overflow-y: auto; border: 1px solid #777; border-radius: 20px; padding: 28px; background: var(--card-bg, #fff); color: var(--text-color, #252525); }
 .order-dialog::backdrop { background: #0009; }
 .order-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
