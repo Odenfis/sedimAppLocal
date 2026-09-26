@@ -105,7 +105,7 @@ async function main(args = process.argv.slice(2)) {
                 '1 x PRODUCTO DE PRUEBA', 'NOTA: Español á é í ó ú ñ Ñ ¿ ¡', '-'.repeat(42),
                 'TCP ESC/POS: CORRECTO'].join('\n') + '\n';
             await createEscPosTcpTransport().send(document, config);
-            console.log('[IMPRESIÓN] Trama transmitida. Confirme negritas, nota alta, caracteres, papel y corte.');
+            console.log('[IMPRESIÓN] Trama transmitida. Confirme Mesa separada y alta, producto alto, nota espaciada, caracteres, papel y corte.');
         } catch (error) {
             console.error(`[IMPRESIÓN] Falló la transmisión: ${error.code || error.message}`);
             return 1;

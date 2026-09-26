@@ -106,6 +106,7 @@ test('RPT004 recibe trama ESC/POS CP850 con avance y corte configurables', async
 test('RPT004 aplica estilos seguros a título, ticket, mozo, productos y notas', () => {
     const boldOn = Buffer.from([0x1b, 0x45, 0x01]), boldOff = Buffer.from([0x1b, 0x45, 0x00]);
     const doubleHeight = Buffer.from([0x1d, 0x21, 0x01]), normalSize = Buffer.from([0x1d, 0x21, 0x00]);
+    const spacedCharacters = Buffer.from([0x1b, 0x20, 0x01]), normalSpacing = Buffer.from([0x1b, 0x20, 0x00]);
     const document = ['Empresa 2', 'COMANDA DE COCINA', 'Ticket T001-000001 / Envío 2', 'Mesa 4 / Mozo JOSE',
         '25/09/2026 20:15', '-'.repeat(42), 'CORRECCIÓN', 'ANTES:', '1 x Producto con nombre muy largo',
         'y continuacion', 'NOTA: Sin sal y con preparacion', 'especial', 'AHORA:', '2 x Producto corregido', '-'.repeat(42)].join('\n') + '\n';
@@ -114,21 +115,26 @@ test('RPT004 aplica estilos seguros a título, ticket, mozo, productos y notas',
 
     assert.ok(frame.includes(sequence(boldOn, 'COMANDA DE COCINA', boldOff)));
     assert.ok(frame.includes(sequence(boldOn, 'Ticket T001-000001', boldOff, ' / ')));
-    assert.ok(frame.includes(sequence('Mesa 4 / ', boldOn, 'Mozo JOSE', boldOff)));
-    assert.ok(frame.includes(sequence(boldOn, '1 x Producto con nombre muy largo', boldOff)));
-    assert.ok(frame.includes(sequence(boldOn, 'y continuacion', boldOff)));
-    assert.ok(frame.includes(sequence(doubleHeight, 'NOTA: Sin sal y con preparacion', normalSize)));
-    assert.ok(frame.includes(sequence(doubleHeight, 'especial', normalSize)));
-    assert.ok(frame.includes(sequence(boldOn, '2 x Producto corregido', boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, doubleHeight, 'Mesa 4', normalSize, boldOff, '\n', boldOn, 'Mozo JOSE', boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, doubleHeight, '1 x Producto con nombre muy largo', normalSize, boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, doubleHeight, 'y continuacion', normalSize, boldOff)));
+    assert.ok(frame.includes(sequence(doubleHeight, spacedCharacters, 'NOTA: Sin sal y con preparacion', normalSpacing, normalSize)));
+    assert.ok(frame.includes(sequence(doubleHeight, spacedCharacters, 'especial', normalSpacing, normalSize)));
+    assert.ok(frame.includes(sequence(boldOn, doubleHeight, '2 x Producto corregido', normalSize, boldOff)));
     assert.ok(!frame.includes(sequence(boldOn, 'CORRECCI')));
-    assert.deepEqual(frame.subarray(-12), sequence(boldOff, normalSize, '\n\n\n', Buffer.from([0x1d, 0x56, 0x00])));
+    assert.ok(!frame.includes(sequence(doubleHeight, 'CORRECCI')));
+    assert.ok(!frame.includes(sequence(spacedCharacters, 'CORRECCI')));
+    assert.ok(!frame.includes(sequence(doubleHeight, '25/09/2026')));
+    assert.deepEqual(frame.subarray(-15), sequence(boldOff, normalSize, normalSpacing, '\n\n\n', Buffer.from([0x1d, 0x56, 0x00])));
 });
 
 test('RPT004 estiliza Barra y deja documentos desconocidos en formato normal', () => {
     const boldOn = Buffer.from([0x1b, 0x45, 0x01]), boldOff = Buffer.from([0x1b, 0x45, 0x00]);
-    const frame = buildEscPosFrame('*** REIMPRESIÓN ***\nCOMANDA DE BARRA\nTicket ANTIGUO\nMozo HISTORICO\nDOCUMENTO ANTIGUO\n', { codepage: 'cp850' });
+    const doubleHeight = Buffer.from([0x1d, 0x21, 0x01]), normalSize = Buffer.from([0x1d, 0x21, 0x00]);
+    const frame = buildEscPosFrame('*** REIMPRESIÓN ***\nCOMANDA DE BARRA\nTicket ANTIGUO\nMesa 8\nMozo HISTORICO\nDOCUMENTO ANTIGUO\n', { codepage: 'cp850' });
     assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('COMANDA DE BARRA'), boldOff])));
     assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('Ticket ANTIGUO'), boldOff])));
+    assert.ok(frame.includes(Buffer.concat([boldOn, doubleHeight, Buffer.from('Mesa 8'), normalSize, boldOff])));
     assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('Mozo HISTORICO'), boldOff])));
     assert.ok(!frame.includes(Buffer.concat([boldOn, Buffer.from('DOCUMENTO ANTIGUO'), boldOff])));
 });
