@@ -103,6 +103,36 @@ test('RPT004 recibe trama ESC/POS CP850 con avance y corte configurables', async
     await assert.rejects(createEscPosTcpTransport().send('x', {}), error => error.beforeTransmission === true && /PRINTER_HOST/.test(error.message));
 });
 
+test('RPT004 aplica estilos seguros a título, ticket, mozo, productos y notas', () => {
+    const boldOn = Buffer.from([0x1b, 0x45, 0x01]), boldOff = Buffer.from([0x1b, 0x45, 0x00]);
+    const doubleHeight = Buffer.from([0x1d, 0x21, 0x01]), normalSize = Buffer.from([0x1d, 0x21, 0x00]);
+    const document = ['Empresa 2', 'COMANDA DE COCINA', 'Ticket T001-000001 / Envío 2', 'Mesa 4 / Mozo JOSE',
+        '25/09/2026 20:15', '-'.repeat(42), 'CORRECCIÓN', 'ANTES:', '1 x Producto con nombre muy largo',
+        'y continuacion', 'NOTA: Sin sal y con preparacion', 'especial', 'AHORA:', '2 x Producto corregido', '-'.repeat(42)].join('\n') + '\n';
+    const frame = buildEscPosFrame(document, { codepage: 'cp850', cut: true });
+    const sequence = (...values) => Buffer.concat(values.map(value => Buffer.isBuffer(value) ? value : Buffer.from(value, 'ascii')));
+
+    assert.ok(frame.includes(sequence(boldOn, 'COMANDA DE COCINA', boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, 'Ticket T001-000001', boldOff, ' / ')));
+    assert.ok(frame.includes(sequence('Mesa 4 / ', boldOn, 'Mozo JOSE', boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, '1 x Producto con nombre muy largo', boldOff)));
+    assert.ok(frame.includes(sequence(boldOn, 'y continuacion', boldOff)));
+    assert.ok(frame.includes(sequence(doubleHeight, 'NOTA: Sin sal y con preparacion', normalSize)));
+    assert.ok(frame.includes(sequence(doubleHeight, 'especial', normalSize)));
+    assert.ok(frame.includes(sequence(boldOn, '2 x Producto corregido', boldOff)));
+    assert.ok(!frame.includes(sequence(boldOn, 'CORRECCI')));
+    assert.deepEqual(frame.subarray(-12), sequence(boldOff, normalSize, '\n\n\n', Buffer.from([0x1d, 0x56, 0x00])));
+});
+
+test('RPT004 estiliza Barra y deja documentos desconocidos en formato normal', () => {
+    const boldOn = Buffer.from([0x1b, 0x45, 0x01]), boldOff = Buffer.from([0x1b, 0x45, 0x00]);
+    const frame = buildEscPosFrame('*** REIMPRESIÓN ***\nCOMANDA DE BARRA\nTicket ANTIGUO\nMozo HISTORICO\nDOCUMENTO ANTIGUO\n', { codepage: 'cp850' });
+    assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('COMANDA DE BARRA'), boldOff])));
+    assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('Ticket ANTIGUO'), boldOff])));
+    assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('Mozo HISTORICO'), boldOff])));
+    assert.ok(!frame.includes(Buffer.concat([boldOn, Buffer.from('DOCUMENTO ANTIGUO'), boldOff])));
+});
+
 test('separar cantidades fraccionarias conserva el total comercial y nunca asigna importes negativos', () => {
     const { amounts } = require('../public/order-math');
     const a = { codPro:'02001',precio:3.33,afecto:0,cantidad:.02 };

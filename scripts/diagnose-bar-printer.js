@@ -100,10 +100,12 @@ async function main(args = process.argv.slice(2)) {
 
     if (args.includes('--print')) {
         try {
-            const document = ['PRUEBA TÉCNICA DE BARRA', 'SedimApp / RPT004', new Date().toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false }),
-                'Español: á é í ó ú ñ Ñ ¿ ¡', 'TCP ESC/POS: CORRECTO'].join('\n');
+            const document = ['SEDIMAPP / RPT004', 'COMANDA DE BARRA', 'Ticket PRUEBA-0001 / Envío 1', 'Mesa 00 / Mozo PRUEBA',
+                new Date().toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false }), '-'.repeat(42), 'ADICIÓN',
+                '1 x PRODUCTO DE PRUEBA', 'NOTA: Español á é í ó ú ñ Ñ ¿ ¡', '-'.repeat(42),
+                'TCP ESC/POS: CORRECTO'].join('\n') + '\n';
             await createEscPosTcpTransport().send(document, config);
-            console.log('[IMPRESIÓN] Trama transmitida. Confirme físicamente papel, caracteres y corte.');
+            console.log('[IMPRESIÓN] Trama transmitida. Confirme negritas, nota alta, caracteres, papel y corte.');
         } catch (error) {
             console.error(`[IMPRESIÓN] Falló la transmisión: ${error.code || error.message}`);
             return 1;
