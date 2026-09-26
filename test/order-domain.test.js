@@ -100,6 +100,7 @@ test('RPT004 recibe trama ESC/POS CP850 con avance y corte configurables', async
     assert.deepEqual([...frame.subarray(-3)], [0x1d, 0x56, 0x00]);
     const withoutCut = buildEscPosFrame('uno', { codepage: 'cp850', cut: false });
     assert.notDeepEqual([...withoutCut.subarray(-3)], [0x1d, 0x56, 0x00]);
+    assert.deepEqual(withoutCut.subarray(-5), Buffer.from('\n\n\n\n\n', 'ascii'));
     await assert.rejects(createEscPosTcpTransport().send('x', {}), error => error.beforeTransmission === true && /PRINTER_HOST/.test(error.message));
 });
 
@@ -125,7 +126,7 @@ test('RPT004 aplica estilos seguros a título, ticket, mozo, productos y notas',
     assert.ok(!frame.includes(sequence(doubleHeight, 'CORRECCI')));
     assert.ok(!frame.includes(sequence(spacedCharacters, 'CORRECCI')));
     assert.ok(!frame.includes(sequence(doubleHeight, '25/09/2026')));
-    assert.deepEqual(frame.subarray(-15), sequence(boldOff, normalSize, normalSpacing, '\n\n\n', Buffer.from([0x1d, 0x56, 0x00])));
+    assert.deepEqual(frame.subarray(-17), sequence(boldOff, normalSize, normalSpacing, '\n\n\n\n\n', Buffer.from([0x1d, 0x56, 0x00])));
 });
 
 test('RPT004 estiliza Barra y deja documentos desconocidos en formato normal', () => {
