@@ -1466,3 +1466,15 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Regresar cancela respuestas pendientes, limpia el contexto y funciona directamente en preventas. Un guardado normal termina antes de salir; un conflicto con borrador solicita confirmación antes de descartar únicamente los cambios locales; una escritura activa muestra una explicación en lugar de ignorar el botón.
 - La navegación invalida respuestas tardías para que una consulta iniciada en una mesa no pueda modificar otra vista después de regresar.
 - Se mantienen la caché y reintentos de la Fase 45, las comandas separadas de la Fase 44 y todos los contratos comerciales existentes. No se aumentan timeouts, no se usa `NOLOCK` y no cambia el aislamiento SQL.
+
+---
+
+## Fase 47: Compatibilidad de intercalaciones SQL en Cocina (Implementada en código; validación en cliente pendiente)
+
+- El error SQL `468` quedó identificado como una diferencia entre la intercalación `Modern_Spanish_CI_AS` de la base comercial y `SQL_Latin1_General_CP1_CI_AS` de `tempdb`; SQL Server nativo en Windows no es por sí mismo la causa.
+- Las claves textuales de `#ActiveLines` y `#ActiveTickets` usan `COLLATE DATABASE_DEFAULT`, evitando conversiones sobre las tablas comerciales y sin fijar una intercalación regional en el código.
+- El diagnóstico de Cocina informa versión, compatibilidad e intercalaciones de instancia, base y `tempdb`, además de validar esquema y ejecutar una lectura real del Kanban sin mostrar contenido comercial.
+- `actualizar.bat` solo declara la actualización correcta después de que la lectura funcional de Cocina termina satisfactoriamente; ante un fallo muestra el diagnóstico y los logs sin modificar datos ni revertir la instalación automáticamente.
+- El error `468` se registra como `sql_collation_conflict`, responde `500` sin reintento automático y conserva el contrato público y la referencia de diagnóstico.
+- Se añadió la etiqueta web estándar para eliminar la advertencia de capacidad móvil; no estaba relacionada con el fallo de Cocina.
+- No se alteran la base, `tempdb`, tablas comerciales, migraciones, documentos, impresión, caché ni estados operativos.

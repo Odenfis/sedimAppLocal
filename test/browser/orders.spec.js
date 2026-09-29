@@ -517,6 +517,7 @@ test('v1 oculta impresión y cierre cuando no están habilitados', async ({ page
 test('manifest, iconos y Font Awesome se sirven localmente', async ({ page }) => {
     await fixture(page);
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+    await expect(page.locator('meta[name="mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
     const manifest = await page.request.get('/manifest.webmanifest');
     expect(manifest.ok()).toBeTruthy();
     expect((await manifest.json()).display).toBe('standalone');
@@ -530,6 +531,7 @@ test('login móvil respeta viewport y no desborda', async ({ page }) => {
     await page.route('**/api/users', route => route.fulfill({ status: 200, json: [] }));
     await page.goto('/login.html');
     await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content', /viewport-fit=cover/);
+    await expect(page.locator('meta[name="mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/icons/apple-touch-icon.png');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });

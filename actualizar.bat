@@ -21,22 +21,30 @@ docker compose version >nul 2>nul
 if errorlevel 1 set "COMPOSE=docker-compose"
 set "UPDATE_LOG=%TEMP%\sedimapp-actualizacion.log"
 
-echo [1/3] Descargando la ultima version...
+echo [1/4] Descargando la ultima version...
 git pull --ff-only
 if errorlevel 1 goto :error_pull
 
-echo [2/3] Instalando y reiniciando la aplicacion...
+echo [2/4] Instalando y reiniciando la aplicacion...
 %COMPOSE% up -d --build --remove-orphans app >"!UPDATE_LOG!" 2>&1
 if errorlevel 1 goto :error_compose
 
-echo [3/3] Comprobando que SedimApp responda...
+echo [3/4] Comprobando que SedimApp responda...
 set "HEALTH="
 for /l %%i in (1,1,24) do (
     for /f %%h in ('docker inspect --format "{{.State.Health.Status}}" sedim-app 2^>nul') do set "HEALTH=%%h"
-    if "!HEALTH!"=="healthy" goto :success
+    if "!HEALTH!"=="healthy" goto :verify_kitchen
     timeout /t 5 /nobreak >nul
 )
 goto :error_health
+
+:verify_kitchen
+echo [4/4] Comprobando la lectura real de Cocina...
+set "KITCHEN_LOG=%TEMP%\sedimapp-cocina.log"
+%COMPOSE% exec -T app npm run diagnose:kitchen -- --empresa=2 >"!KITCHEN_LOG!" 2>&1
+if errorlevel 1 goto :error_kitchen
+type "!KITCHEN_LOG!"
+goto :success
 
 :success
 set "APP_PORT=3000"
@@ -81,6 +89,15 @@ echo Ultimos mensajes del contenedor:
 %COMPOSE% logs --tail 80 app
 echo.
 echo Revise nuevamente con: %COMPOSE% logs --tail 100 app
+goto :failed
+
+:error_kitchen
+echo [ERROR] SedimApp inicio, pero Cocina no supero la comprobacion funcional.
+echo Diagnostico de Cocina:
+type "!KITCHEN_LOG!"
+echo.
+echo Ultimos mensajes del contenedor:
+%COMPOSE% logs --tail 80 app
 
 :failed
 echo.

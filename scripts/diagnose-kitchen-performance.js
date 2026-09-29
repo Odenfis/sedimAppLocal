@@ -14,7 +14,13 @@ function selectedCompany(args = process.argv.slice(2)) {
 }
 
 async function inspect(pool) {
-    const database = (await pool.request().query(`SELECT is_read_committed_snapshot_on,snapshot_isolation_state_desc
+    const database = (await pool.request().query(`SELECT
+            CONVERT(NVARCHAR(128),SERVERPROPERTY('ProductVersion')) ProductVersion,
+            CONVERT(NVARCHAR(128),SERVERPROPERTY('Edition')) Edition,
+            CONVERT(NVARCHAR(128),SERVERPROPERTY('Collation')) ServerCollation,
+            CONVERT(NVARCHAR(128),DATABASEPROPERTYEX(DB_NAME(),'Collation')) DatabaseCollation,
+            CONVERT(NVARCHAR(128),DATABASEPROPERTYEX('tempdb','Collation')) TempdbCollation,
+            compatibility_level,is_read_committed_snapshot_on,snapshot_isolation_state_desc
         FROM sys.databases WHERE name=DB_NAME()`)).recordset[0];
     const schema = await inspectOperationalSchema(pool);
     const volumes = (await pool.request().query(`SELECT
@@ -39,6 +45,8 @@ async function main(args = process.argv.slice(2)) {
     const pool = await getConnection();
     try {
         const report = await inspect(pool);
+        console.log(`[SQL] Motor: versión=${report.database.ProductVersion}; edición=${report.database.Edition}; compatibilidad=${report.database.compatibility_level}.`);
+        console.log(`[SQL] Intercalaciones: instancia=${report.database.ServerCollation}; base=${report.database.DatabaseCollation}; tempdb=${report.database.TempdbCollation}.`);
         console.log(`[SQL] Aislamiento: snapshot=${report.database.snapshot_isolation_state_desc}; RCSI=${Boolean(report.database.is_read_committed_snapshot_on)}.`);
         console.log(`[SQL] Esquema auxiliar: ${report.schema.ready ? 'completo, incluidas 009/010' : `faltan ${report.schema.missing.join(', ')}`}.`);
         console.log(`[SQL] Volúmenes: control=${report.volumes.PedidosControl}, estados=${report.volumes.EstadosCocina}, activos=${report.volumes.LineasActivas}, correcciones=${report.volumes.CorreccionesPendientes}, envíos=${report.volumes.Envios}, trabajos=${report.volumes.TrabajosCompartidos}.`);

@@ -58,6 +58,19 @@ async function main() {
         assert.equal((await pool.request().query("SELECT COUNT(*) n FROM Migrations WHERE MigrationName='010_repair_beverage_destinations.sql'")).recordset[0].n,1);
         assert.ok((await pool.request().query("SELECT OBJECT_ID('Impresion_linea_destinos','U') id")).recordset[0].id);
         assert.ok((await pool.request().query("SELECT OBJECT_ID('Impresion_trabajo_destinos','U') id")).recordset[0].id);
+        const collationRegression = await pool.request().query(`
+            CREATE TABLE #Modern(Value VARCHAR(20) COLLATE Modern_Spanish_CI_AS NOT NULL);
+            CREATE TABLE #Latin(Value VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL);
+            INSERT #Modern VALUES('T001-000001'); INSERT #Latin VALUES('T001-000001');
+            DECLARE @ConflictNumber INT=0;
+            BEGIN TRY EXEC sys.sp_executesql N'SELECT COUNT(*) FROM #Modern m JOIN #Latin l ON l.Value=m.Value';
+            END TRY BEGIN CATCH SET @ConflictNumber=ERROR_NUMBER(); END CATCH;
+            SELECT @ConflictNumber ConflictNumber;
+            SELECT COUNT(*) Matches FROM #Modern m JOIN #Latin l
+                ON l.Value COLLATE DATABASE_DEFAULT=m.Value COLLATE DATABASE_DEFAULT;`);
+        assert.equal(collationRegression.recordsets[0][0].ConflictNumber,468);
+        assert.equal(collationRegression.recordsets[1][0].Matches,1);
+        passed++; console.log('✓ collation mismatch 468 is reproducible and DATABASE_DEFAULT resolves equality');
         const router = {};
         const app = Object.fromEntries(['get','post','put','delete'].map(method => [method, (url, auth, handler) => { router[method + ' ' + url] = handler; }]));
         require('../lib/orders').install(app, () => {}, () => {});

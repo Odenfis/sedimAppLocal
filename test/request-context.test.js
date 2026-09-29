@@ -20,6 +20,12 @@ test('un error inesperado no se reintenta automáticamente', () => {
         { status: 500, retryable: false, kind: 'unexpected' });
 });
 
+test('un conflicto de intercalación SQL se identifica sin reintento automático', () => {
+    assert.deepEqual(classifyError({ code: 'EREQUEST', number: 468,
+        message: 'Cannot resolve the collation conflict in the equal to operation.' }),
+    { status: 500, retryable: false, kind: 'sql_collation_conflict' });
+});
+
 test('la respuesta clasificada conserva referencia y mensaje operativo', () => {
     const result = errorPayload({ locals: { diagnosticId: 'diag-123' } }, { code: 'ETIMEOUT' });
     assert.equal(result.classification.status, 504);
