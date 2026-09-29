@@ -956,7 +956,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 }));
                 orderAccept(data);
                 updateCartUI();
-                posIsReadOnly = data.pedido.Estado === 2;
+                posIsReadOnly = data.pedido.Estado === 2 || data.conciliacionComercial?.status === 'conflict';
                 document.getElementById('btn-guardar-mesa').classList.add('active-state');
                 updatePOSViewMode();
             } else {
@@ -1007,12 +1007,14 @@ function updatePOSViewMode() {
         syncMobilePOSHeaderReadOnly(true);
         if (payBtn) {
             payBtn.disabled = true;
-            payBtn.innerHTML = '<i class="fas fa-check-circle"></i> <span>PREVENTA REALIZADA</span>';
+            payBtn.innerHTML = orderCommercialConflict
+                ? '<i class="fas fa-triangle-exclamation"></i> <span>PEDIDO EN CONFLICTO</span>'
+                : '<i class="fas fa-check-circle"></i> <span>PREVENTA REALIZADA</span>';
             payBtn.style.background = '#9ca3af';
             payBtn.style.cursor = 'not-allowed';
             payBtn.style.boxShadow = 'none';
         }
-        if (borrarBtn) borrarBtn.disabled = true;
+        if (borrarBtn) borrarBtn.disabled = !orderCommercialConflict;
         if (guardarBtn) guardarBtn.disabled = true;
         if (reservarBtn) reservarBtn.disabled = true;
         if (liberarBtn) liberarBtn.disabled = true;
@@ -1023,10 +1025,10 @@ function updatePOSViewMode() {
         if (productsGrid) productsGrid.style.display = 'none';
         if (sidebarHeader) {
             const clearBtn = sidebarHeader.querySelector('.btn-clear');
-            if (clearBtn) clearBtn.disabled = true;
+            if (clearBtn) clearBtn.disabled = !orderCommercialConflict;
         }
-        if (badge) badge.style.display = 'inline-flex';
-        if (reabrirBtn) reabrirBtn.style.display = 'inline-flex';
+        if (badge) badge.style.display = orderCommercialConflict ? 'none' : 'inline-flex';
+        if (reabrirBtn) reabrirBtn.style.display = orderCommercialConflict ? 'none' : 'inline-flex';
     } else {
         syncMobilePOSHeaderReadOnly(false);
         if (payBtn) {
@@ -1613,19 +1615,16 @@ function changeQty(index, delta) {
 
 function removeFromCart(index) {
     if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
+    if (posCart.length === 1 && posCurrentNroTicket) { deleteCurrentOrder({ ask: false }); return; }
     posCart.splice(index, 1);
     updateCartUI();
     scheduleAutoSave();
 }
 
 function clearCurrentOrder() {
-    if (posIsReadOnly || orderBusy) return;
+    if ((posIsReadOnly && !orderCommercialConflict) || orderBusy) return;
     if (posCart.some(l => l.pendienteId)) return alert('Cocina debe reconocer los cambios pendientes primero.');
-    if (confirm("¿Limpiar todo el pedido?")) {
-        posCart = [];
-        updateCartUI();
-        scheduleAutoSave();
-    }
+    return orderClear();
 }
 
 async function processPOSPayment() { return orderPay(); }
@@ -1935,7 +1934,14 @@ async function reconcileActiveOrder() {
         const data = await orderRequest(`/api/pos/pedido?mesa=${table}&empresa=${empresa}`);
         if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') ||
             Number(posCurrentTable) !== Number(table) || Number(posCurrentTableEmpresa) !== Number(empresa)) return;
-        if (Number(data.version || 0) !== Number(orderVersion || 0)) {
+        if (data.conciliacionComercial?.status === 'conflict') {
+            orderCommercialConflict = true;
+            orderConflict = true;
+            posIsReadOnly = true;
+            orderSaveError = 'El detalle comercial fue modificado mientras el dispositivo estaba en reposo. El borrador se conserva para revisión.';
+            updatePOSViewMode();
+            renderOrderStatus();
+        } else if (Number(data.version || 0) !== Number(orderVersion || 0)) {
             orderConflict = true;
             orderSaveError = 'El pedido cambió mientras el dispositivo estaba en reposo. Revise la versión actual.';
             renderOrderStatus();
@@ -2035,12 +2041,12 @@ function handleSSEEvent(data) {
                     return;
                 }
                 console.log('SSE: Mesa asignada cambió, recargando pedido...');
-                openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+                if (!orderLoadError && !posOrderAbortController) openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
             }
         }
     }
 
-    if (data.type === 'impresion_updated' && posCurrentNroTicket && !orderDirty && !orderBusy) {
+    if (data.type === 'impresion_updated' && posCurrentNroTicket && !orderDirty && !orderBusy && !orderLoadError) {
         const generation = posOrderLoadGeneration;
         const table = posCurrentTable;
         const empresa = posCurrentTableEmpresa;
@@ -2607,8 +2613,7 @@ async function ciclarCocinaLinea(nroTicket, lineaId, estadoActual) {
 
 async function todoListoCocina(nroTicket) {
     try {
-        const res = await fetch(`/api/cocina/ticket/${nroTicket}/todo-listo`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ empresa: kitchenCompany() }) });
-        if (!res.ok) throw new Error(await res.text());
+        await orderRequest(`/api/cocina/ticket/${encodeURIComponent(nroTicket)}/todo-listo`, 'PUT', { empresa: kitchenCompany() });
         await loadCocinaPedidos(true);
     } catch (e) {
         console.error(e);
@@ -2618,8 +2623,7 @@ async function todoListoCocina(nroTicket) {
 
 async function entregarCocina(nroTicket) {
     try {
-        const res = await fetch(`/api/cocina/ticket/${nroTicket}/entregado`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ empresa: kitchenCompany() }) });
-        if (!res.ok) throw new Error(await res.text());
+        await orderRequest(`/api/cocina/ticket/${encodeURIComponent(nroTicket)}/entregado`, 'PUT', { empresa: kitchenCompany() });
         cocinaData = cocinaData.filter(r => r.NroTicket !== nroTicket);
         cocinaUltimoTotal = new Set(cocinaData.map(r => r.NroTicket)).size;
         renderCocinaBoard();

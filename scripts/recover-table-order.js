@@ -16,7 +16,8 @@ async function main() {
     if (!Number.isInteger(empresa) || !Number.isInteger(mesa)) throw new Error('Empresa o mesa inválida');
     const pool = await getConnection();
     const ticketRows = await select(pool.request().input('empresa',sql.Int,empresa).input('mesa',sql.Int,mesa), `SELECT TOP 1 t.*,pc.Empresa,pc.Version,pc.UltimoEnvio,pc.SnapshotComercial
-        FROM Ticket_c t JOIN Pedido_control pc ON pc.NroTicket=t.NroTicket
+        FROM Ticket_c t JOIN Pedido_control pc
+            ON pc.NroTicket COLLATE DATABASE_DEFAULT=t.NroTicket COLLATE DATABASE_DEFAULT
         WHERE t.NroMesa=@mesa AND pc.Empresa=@empresa AND t.Estado IN(1,2) ORDER BY t.Fecha DESC`);
     if (!ticketRows.length) { console.log('No existe un pedido activo para esa mesa y empresa.'); return; }
     const ticket = ticketRows[0], nro = String(ticket.NroTicket).trim();

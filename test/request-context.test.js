@@ -23,12 +23,12 @@ test('un error inesperado no se reintenta automáticamente', () => {
 test('un conflicto de intercalación SQL se identifica sin reintento automático', () => {
     assert.deepEqual(classifyError({ code: 'EREQUEST', number: 468,
         message: 'Cannot resolve the collation conflict in the equal to operation.' }),
-    { status: 500, retryable: false, kind: 'sql_collation_conflict' });
+    { status: 500, retryable: false, kind: 'sql_collation_conflict', errorCode: 'SQL_COLLATION_CONFLICT' });
 });
 
 test('la respuesta clasificada conserva referencia y mensaje operativo', () => {
     const result = errorPayload({ locals: { diagnosticId: 'diag-123' } }, { code: 'ETIMEOUT' });
     assert.equal(result.classification.status, 504);
-    assert.deepEqual(result.body, { success: false, message: 'La consulta excedió el tiempo de espera.',
+    assert.deepEqual(result.body, { success: false, message: 'La consulta excedió el tiempo de espera.', errorCode: 'SQL_TIMEOUT',
         diagnosticId: 'diag-123', retryable: true });
 });

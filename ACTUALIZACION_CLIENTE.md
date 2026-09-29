@@ -117,3 +117,12 @@ Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `act
 - Confirme caracteres españoles, papel de 80 mm, corte y reimpresión independiente desde el historial.
 - Simule una impresora desconectada y confirme que la otra continúa imprimiendo y que el envío sigue visible en el Kanban.
 - No ejecute la purga de un cierre con una imagen anterior de la aplicación. Para rollback conserve los datos auxiliares y restaure primero la versión nueva antes de purgar.
+
+## Fase 48 — pedidos bloqueados y conciliación
+
+- Busque primero cualquier referencia mostrada por la interfaz con `docker compose logs --since 30m app | findstr REFERENCIA`. No copie ni modifique filas manualmente desde SSMS.
+- Para diagnosticar una mesa sin escribir datos use `docker compose exec app npm run diagnose:order -- --empresa 2 --mesa NUMERO`. El comando crea un respaldo local excluido de Git y muestra únicamente estado, versión, conteos y hashes.
+- Cocina puede completar Preparación, Listo y Entregado después de Preventa aunque el POS local haya procesado `Ticket_c`/`Ticket_d`. Una corrección pendiente o un plato aún no listo continúa bloqueando Entregado por diseño.
+- Limpiar o Borrar Comanda conserva el carrito si SQL rechaza la operación. Cuando confirma el borrado, el ticket comercial se elimina atómicamente, la auditoría de Cocina permanece y la mesa vuelve a Libre.
+- Si un pedido anterior a Preventa debe seguir editándose y el diagnóstico indica `COMMERCIAL_CONFLICT`, soporte puede restaurar la versión web únicamente después de revisar el respaldo: `docker compose exec app npm run diagnose:order -- --empresa 2 --ticket T001-NNNNNN --apply`. `--apply` no acepta una mesa ni actúa sobre varios pedidos.
+- Después de actualizar, valide en este orden: guardar un pedido, enviar a Cocina, generar Preventa, simular el procesamiento del POS local, marcar Todo listo y Entregado, y finalmente limpiar otro pedido confirmando que regresa al mapa con la mesa Libre.

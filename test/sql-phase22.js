@@ -256,14 +256,15 @@ async function main() {
         passed++; console.log('✓ hard deletion removes commercial ticket, frees table immediately and retains audit without state 4');
         const emptyLine = { ...base, lineaId:randomUUID(), notasRapidas:[], nota:'' };
         const emptyCandidate = await save([emptyLine],undefined,undefined,3);
+        await pool.request().input('nro',emptyCandidate.nroTicket).query('UPDATE Ticket_d SET Cantidad=Cantidad+1 WHERE NroTicket=@nro');
         const emptied = await save([],emptyCandidate.version,emptyCandidate.nroTicket,3);
-        assert.equal(emptied.status,200); assert.equal(emptied.pedidoEliminado,true);
+        assert.equal(emptied.status,200); assert.equal(emptied.pedidoEliminado,true); assert.equal(emptied.conciliacionDivergente,true);
         const emptyCounts = (await pool.request().input('nro',emptyCandidate.nroTicket).query(`SELECT
             (SELECT COUNT(*) FROM Ticket_d WHERE NroTicket=@nro) Detalles,
             (SELECT COUNT(*) FROM Ticket_c WHERE NroTicket=@nro) Cabeceras,
             (SELECT Estado FROM Mesas WHERE Numero=3 AND Empresa=2) MesaEstado`)).recordset[0];
         assert.deepEqual(emptyCounts,{Detalles:0,Cabeceras:0,MesaEstado:1});
-        passed++; console.log('✓ POST pedido with an empty existing detail performs the same hard deletion');
+        passed++; console.log('✓ POST pedido with an empty existing detail deletes safely despite a commercial divergence');
         const previousPrinterEnabled = process.env.PRINTER_ENABLED;
         try {
             process.env.PRINTER_ENABLED = 'false';
@@ -283,8 +284,12 @@ async function main() {
         }
         passed++; console.log('✓ KDS funciona sin crear cola y la reimpresión queda deshabilitada en v1');
         await pool.request().query("UPDATE Ticket_d SET Cantidad=3 WHERE NroTicket='T001-000001'");
-        assert.equal((await get()).status,409);
-        passed++; console.log('✓ external commercial edits are detected before overwriting');
+        const conflictedLegacy = await get();
+        assert.equal(conflictedLegacy.status,200); assert.equal(conflictedLegacy.conciliacionComercial.status,'conflict');
+        const blockedLegacyWrite = await save(conflictedLegacy.items.map(item => ({ ...item, codPro:item.Codpro, nombre:item.Descripcion,
+            cantidad:item.Cantidad, precio:item.Precio })),conflictedLegacy.version,'T001-000001',1);
+        assert.equal(blockedLegacyWrite.status,409); assert.equal(blockedLegacyWrite.errorCode,'COMMERCIAL_CONFLICT');
+        passed++; console.log('✓ external commercial edits load read-only and remain protected from web writes');
         // Real queue transactions with an injected transport: never opens a printer socket.
         await pool.request().query("UPDATE Impresion_trabajos SET Estado='error'");
         const retryKey = randomUUID();
@@ -324,10 +329,17 @@ async function main() {
         const shiftSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:shiftOrder.version,clave:randomUUID()},{nro:shiftNro});
         assert.equal(shiftSend.status,200,JSON.stringify(shiftSend));
         await pool.request().input('nro',shiftNro).query("UPDATE j SET Estado='enviado' FROM Impresion_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro");
+        const shiftPayment = await call('put','/api/pos/pedido/:nro/pagar',{empresa:2,version:shiftSend.version},{nro:shiftNro});
+        assert.equal(shiftPayment.status,200);
+        await pool.request().input('nro',shiftNro).query('UPDATE Ticket_d SET Descripcion=RTRIM(Descripcion)+\' POS\' WHERE NroTicket=@nro');
+        const handedOff = await get(2); assert.equal(handedOff.status,200); assert.equal(handedOff.conciliacionComercial.status,'conflict');
+        const blockedReopen = await call('put','/api/pos/pedido/:nro/reabrir',{empresa:2,version:handedOff.version},{nro:shiftNro});
+        assert.equal(blockedReopen.status,409); assert.equal(blockedReopen.errorCode,'COMMERCIAL_CONFLICT');
         assert.equal((await call('put','/api/cocina/ticket/:nro/todo-listo',{empresa:2},{nro:shiftNro})).status,200);
         assert.equal((await call('put','/api/cocina/ticket/:nro/entregado',{empresa:2},{nro:shiftNro})).status,200);
         const kitchenStates = await call('get','/api/pos/pedido/:nro/estados-cocina',{}, {nro:shiftNro}, {empresa:2});
         assert.equal(kitchenStates.estados[0].estadoCocina,4);
+        passed++; console.log('✓ post-preventa commercial changes do not block kitchen delivery and do block reopening');
         await pool.request().input('nro',shiftNro).query('UPDATE Ticket_c SET Estado=3 WHERE NroTicket=@nro');
         const businessDay = new Date().toLocaleDateString('en-CA',{timeZone:'America/Lima'});
         const previousPin = process.env.MAINTENANCE_PIN_HASH;

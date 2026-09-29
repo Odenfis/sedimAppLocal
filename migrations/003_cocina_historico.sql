@@ -5,11 +5,13 @@ SELECT RTRIM(t.NroTicket), CASE LEFT(RTRIM(t.NroTicket),4) WHEN 'T001' THEN 2 WH
 FROM dbo.Ticket_c t
 WHERE t.Estado IN (1,2)
   AND LEFT(RTRIM(t.NroTicket),4) IN ('T001','T002','T005')
-  AND NOT EXISTS (SELECT 1 FROM dbo.Pedido_control p WHERE p.NroTicket=RTRIM(t.NroTicket));
+  AND NOT EXISTS (SELECT 1 FROM dbo.Pedido_control p
+      WHERE p.NroTicket COLLATE DATABASE_DEFAULT=RTRIM(t.NroTicket) COLLATE DATABASE_DEFAULT);
 INSERT dbo.Pedido_lineas(LineaId,NroTicket,Orden,Datos)
 SELECT NEWID(),RTRIM(d.NroTicket),ROW_NUMBER() OVER(PARTITION BY d.NroTicket ORDER BY d.Codpro,d.Precio),
        (SELECT RTRIM(d.Codpro) codPro,RTRIM(d.Descripcion) nombre,d.Cantidad cantidad,d.Precio precio,ISNULL(p.Afecto,0) afecto,JSON_QUERY('[]') notasRapidas,'' nota FOR JSON PATH,WITHOUT_ARRAY_WRAPPER)
-FROM dbo.Ticket_d d JOIN dbo.Pedido_control pc ON pc.NroTicket=RTRIM(d.NroTicket)
+FROM dbo.Ticket_d d JOIN dbo.Pedido_control pc
+  ON pc.NroTicket COLLATE DATABASE_DEFAULT=RTRIM(d.NroTicket) COLLATE DATABASE_DEFAULT
 LEFT JOIN dbo.Productos p ON p.CodPro=d.Codpro
 WHERE NOT EXISTS (SELECT 1 FROM dbo.Pedido_lineas l WHERE l.NroTicket=RTRIM(d.NroTicket));
 IF OBJECT_ID('dbo.Cocina_pedidos','U') IS NOT NULL AND OBJECT_ID('dbo.Cocina_pedidos_legacy','U') IS NOT NULL

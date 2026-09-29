@@ -1478,3 +1478,16 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - El error `468` se registra como `sql_collation_conflict`, responde `500` sin reintento automático y conserva el contrato público y la referencia de diagnóstico.
 - Se añadió la etiqueta web estándar para eliminar la advertencia de capacidad móvil; no estaba relacionada con el fallo de Cocina.
 - No se alteran la base, `tempdb`, tablas comerciales, migraciones, documentos, impresión, caché ni estados operativos.
+
+---
+
+## Fase 48: Conciliación comercial, limpieza atómica y entrega desacoplada (Implementada en código; validación en cliente pendiente)
+
+- SedimApp conserva autoridad sobre `Ticket_c`/`Ticket_d` antes de Preventa. Desde Preventa el POS local puede procesar el detalle comercial, mientras Cocina continúa exclusivamente con `Pedido_lineas`, `Cocina_estados` y `Cocina_envios`.
+- Preparar, reconocer, marcar listo y entregar ya no validan `SnapshotComercial`. Reabrir una Preventa sí exige conciliación para no devolver a edición un detalle modificado por el POS local.
+- La comparación comercial es canónica: normaliza espacios, decimales y orden de filas, calcula hashes SHA-256 y distingue diferencias reales de cambios de representación. `GET /api/pos/pedido` devuelve `conciliacionComercial` y permite mostrar el pedido divergente en modo seguro.
+- Las escrituras comerciales divergentes responden `409` con `errorCode=COMMERCIAL_CONFLICT`. Los errores SQL clasificados incluyen un código estable y la referencia de diagnóstico sin exponer el contenido del pedido.
+- Limpiar, borrar la última línea y Borrar Comanda usan la misma eliminación transaccional e idempotente. La interfaz conserva el carrito hasta confirmar el commit; una eliminación explícita puede descartar un detalle divergente, deja registro de hashes, conserva la auditoría de Cocina y libera la mesa solamente si no existe otro pedido activo.
+- Las uniones entre tablas comerciales y auxiliares aplican `COLLATE DATABASE_DEFAULT` de forma explícita en pedidos, Kanban, historial, cierres y herramientas de recuperación.
+- `npm run diagnose:order -- --empresa 2 --mesa N` exporta un respaldo y compara hashes sin modificar datos. La restauración controlada exige ticket explícito: `npm run diagnose:order -- --empresa 2 --ticket T001-NNNNNN --apply`; solo admite Estado 1 y reconstruye el detalle comercial desde las líneas web.
+- Validación automatizada: normalización semántica, códigos de error, conservación del carrito ante fallo, eliminación desde conflicto y entrega posterior al traspaso a Preventa. La integración SQL requiere una instancia de validación disponible y nunca debe ejecutarse contra datos operativos durante atención.

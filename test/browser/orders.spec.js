@@ -5,7 +5,7 @@ async function fixture(page, options = {}) {
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
-        orderState: 1, orderLoadError: false, orderLoadDelay: 0 };
+        orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -28,6 +28,8 @@ async function fixture(page, options = {}) {
         const pending = state.items.some(l => JSON.stringify(l) !== state.sent.get(l.lineaId)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
         const cancellations = [...state.sent.entries()].filter(([id]) => !state.items.some(l => l.lineaId === id)).map(([,line]) => JSON.parse(line));
         return { success: true, nroTicket: state.ticket, version: state.version,
+            conciliacionComercial: { status: state.commercialConflict ? 'conflict' : 'ok',
+                code: state.commercialConflict ? 'COMMERCIAL_CONFLICT' : null },
             pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: 1 } : null,
             items: state.items.map(l => ({ ...l, Codpro: l.codPro, Descripcion: l.nombre, Cantidad: l.cantidad, Precio: l.precio, Afecto: l.afecto,
                 enviada: state.sent.has(l.lineaId) ? JSON.parse(state.sent.get(l.lineaId)) : null, pendienteEnvio: !state.sent.has(l.lineaId),
@@ -109,6 +111,7 @@ async function fixture(page, options = {}) {
             return fulfill({success:true,...state.closure});
         }
         if (req.method() === 'DELETE' && url.pathname.startsWith('/api/pos/comanda/')) {
+            if (state.deleteError) return fulfill({ success:false,message:'No se pudo eliminar',diagnosticId:'diag-delete',retryable:false },500);
             state.deletes++; state.ticket=null; state.items=[]; state.sent.clear(); return fulfill({success:true,pedidoEliminado:true});
         }
         if (url.pathname.endsWith('/envios')) return fulfill({ envios: [] });
@@ -636,6 +639,43 @@ test('Limpiar y Borrar Comanda comparten el borrado definitivo', async ({ page }
     await page.locator('#btn-borrar-comanda').click();
     await expect.poll(() => state.deletes).toBe(2);
     await expect(page.locator('#view-pos-tables')).toBeVisible();
+});
+
+test('un fallo al Limpiar conserva el carrito y permite reintentar la eliminación', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    state.deleteError = true;
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('.btn-clear').click();
+    await expect(page.locator('#order-save-message')).toContainText('diag-delete');
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    expect(state.ticket).not.toBeNull();
+    await expect(page.locator('#order-retry-save')).toHaveText('Reintentar eliminación');
+
+    state.deleteError = false;
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#order-retry-save').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+    expect(state.ticket).toBeNull();
+});
+
+test('un conflicto comercial carga el pedido en solo lectura pero permite eliminarlo', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    state.commercialConflict = true;
+    await page.evaluate(() => openPOSOrder(1, 2));
+    await expect(page.locator('#order-save-message')).toContainText('difiere del pedido web');
+    await expect(page.locator('#pos-products-grid')).toBeHidden();
+    await expect(page.locator('.btn-clear')).toBeEnabled();
+    await expect(page.locator('#btn-borrar-comanda')).toBeEnabled();
+    const acceptDialogs = dialog => dialog.accept();
+    page.on('dialog', acceptDialogs);
+    await page.locator('.btn-clear').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+    page.off('dialog', acceptDialogs);
 });
 
 test('sidebar colapsado oculta el nombre y conserva el usuario accesible', async ({ page }) => {
