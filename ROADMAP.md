@@ -1492,3 +1492,14 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `npm run diagnose:order -- --empresa 2 --mesa N` exporta un respaldo y compara hashes sin modificar datos. La restauración controlada exige ticket explícito: `npm run diagnose:order -- --empresa 2 --ticket T001-NNNNNN --apply`; solo admite Estado 1 y reconstruye el detalle comercial desde las líneas web.
 - Validación automatizada: normalización semántica, códigos de error, conservación del carrito ante fallo, eliminación desde conflicto y entrega posterior al traspaso a Preventa. La integración SQL requiere una instancia de validación disponible y nunca debe ejecutarse contra datos operativos durante atención.
 - Corrección de despliegue: el diagnóstico productivo detectó SQL `207` porque la consulta del Kanban utilizaba `e.Cabecera` sin proyectarla en su `OUTER APPLY`. La proyección incluye ahora `ce.Cabecera`; no requiere migración ni modifica datos.
+
+---
+
+## Fase 49: Contexto canónico de empresa en Pedidos (Implementada en código; validación en cliente pendiente)
+
+- Las empresas públicas `2/02`, `4/04` y `6/06` se normalizan en un único catálogo de servidor con sus filas de correlativo `1`, `2` y `5`. Valores ambiguos responden `400 INVALID_COMPANY`; una mesa ajena responde `409 COMPANY_CONTEXT_MISMATCH`.
+- El mapa devuelve `Empresa` numérica y el filtro seleccionado es la autoridad al abrir una mesa. El pedido conserva un único valor canónico para carga, guardado, Cocina, Preventa, limpieza, historial y SSE.
+- Un contexto inválido pausa autoguardado y recargas, mantiene el carrito y exige reintento o descarte explícito del borrador antes de volver al mapa.
+- Los rechazos controlados registran referencia, ruta, método, tipo/valor acotado de empresa y mesa, sin detalle comercial. HTML y JavaScript se revalidan después de cada despliegue.
+- `npm run diagnose:pos -- --empresa=2` comprueba, sin escrituras, la normalización, el correlativo y una mesa. `actualizar.bat` exige este diagnóstico antes de comprobar Cocina y declarar éxito.
+- No incluye migraciones ni cambios de datos comerciales.

@@ -21,12 +21,17 @@ test('las tablas temporales de Cocina heredan la intercalación de la base sin f
     assert.match(source, /LEFT JOIN Ticket_c t ON t\.NroTicket COLLATE DATABASE_DEFAULT=pc\.NroTicket COLLATE DATABASE_DEFAULT/);
 });
 
-test('el actualizador exige una comprobación funcional de Cocina antes de declarar éxito', () => {
+test('el actualizador exige comprobaciones funcionales de POS y Cocina antes de declarar éxito', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'actualizar.bat'), 'utf8');
+    const posVerification = source.indexOf('npm run diagnose:pos -- --empresa=2');
     const verification = source.indexOf('npm run diagnose:kitchen -- --empresa=2');
     const success = source.indexOf(':success');
+    assert.ok(posVerification > 0);
     assert.ok(verification > 0);
+    assert.ok(verification > posVerification);
     assert.ok(success > verification);
+    assert.match(source, /if errorlevel 1 goto :error_pos/i);
+    assert.match(source, /:error_pos[\s\S]*type "!POS_LOG!"[\s\S]*logs --tail 80 app/i);
     assert.match(source, /if errorlevel 1 goto :error_kitchen/i);
     assert.match(source, /:error_kitchen[\s\S]*type "!KITCHEN_LOG!"[\s\S]*logs --tail 80 app/i);
 });

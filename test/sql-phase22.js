@@ -81,6 +81,11 @@ async function main() {
             return { status, ...result };
         }
         const get = (mesa = 1) => call('get','/api/pos/pedido',{}, {}, { empresa: 2, mesa });
+        const invalidCompany = await call('get','/api/pos/pedido',{}, {}, { empresa: '03', mesa: 1 });
+        assert.equal(invalidCompany.status,400); assert.equal(invalidCompany.errorCode,'INVALID_COMPANY');
+        const companyMismatch = await call('get','/api/pos/pedido',{}, {}, { empresa: '04', mesa: 2 });
+        assert.equal(companyMismatch.status,409); assert.equal(companyMismatch.errorCode,'COMPANY_CONTEXT_MISMATCH');
+        passed++; console.log('✓ company context normalizes public codes and rejects invalid or crossed tables without writes');
         const legacy = await get(); assert.equal(legacy.status,200); assert.equal(legacy.cocina.pendientes,1); assert.equal(legacy.items[0].estadoCocina,null);
         const legacyCommercial = (await pool.request().query("SELECT Precio,Importe FROM Ticket_d WHERE NroTicket='T001-000001'")).recordset[0];
         assert.equal(legacyCommercial.Precio,20); assert.equal(legacyCommercial.Importe,44.2);

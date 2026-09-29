@@ -4,6 +4,7 @@ let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromi
 let orderSaveError = '', orderLoadError = '', orderNavigationMessage = '', orderConfirmation = '', orderGeneration = 0;
 let orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
 let orderCommercialConflict = false;
+let orderCompanyContextError = false;
 let orderDeleteRetry = false;
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
@@ -54,19 +55,25 @@ function orderOperation() {
     if (ownOrderOperations.size > 200) ownOrderOperations.delete(ownOrderOperations.values().next().value);
     return id;
 }
+function isOrderConflict(error) {
+    return error.status === 409 && error.errorCode !== 'COMPANY_CONTEXT_MISMATCH';
+}
 async function orderRequest(url, method = 'GET', body) {
     const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
     const data = await res.json().catch(() => ({ message: 'Respuesta no válida del servidor' }));
     if (!res.ok) {
         const reference = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
         const e = new Error(`${data.message || 'No se pudo completar la operación'}${reference}`);
-        e.status = res.status; e.errorCode = data.errorCode; e.diagnosticId = data.diagnosticId; e.retryable = data.retryable === true; throw e;
+        e.status = res.status; e.errorCode = data.errorCode; e.diagnosticId = data.diagnosticId; e.retryable = data.retryable === true;
+        if (/^\/api\/pos\/(?:pedido|comanda)/.test(url) && ['INVALID_COMPANY', 'COMPANY_CONTEXT_MISMATCH'].includes(e.errorCode)
+            && typeof invalidatePOSCompanyContext === 'function') invalidatePOSCompanyContext(e.message);
+        throw e;
     }
     return data;
 }
 function orderReset() {
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
-    orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
+    orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data) {
@@ -88,13 +95,18 @@ function orderAccept(data) {
 function orderFinishDeletion() {
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
-    orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
+    orderCompanyContextError = false; orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     posCurrentNroTicket = null; posCart = []; posIsReadOnly = false;
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
 }
 function orderPayload() {
+    const company = normalizePOSCompany(posCurrentTableEmpresa);
+    if (!company) {
+        invalidatePOSCompanyContext();
+        throw new Error('La empresa del pedido no es válida. El carrito se conservó para reintentar.');
+    }
     return {
-        mesa: posCurrentTable, empresa: posCurrentTableEmpresa, turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
+        mesa: posCurrentTable, empresa: company, turno: getTurnoValue(company, posCurrentTurnoLabel),
         mozo: document.getElementById('pos-mojo-select').value || 1, nroTicket: posCurrentNroTicket,
         version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
             lineaId: i.lineaId, codPro: i.codPro,
@@ -105,6 +117,7 @@ function orderPayload() {
 }
 function orderSchedule() {
     if (posIsReadOnly || orderBusy) return;
+    if (!normalizePOSCompany(posCurrentTableEmpresa)) return invalidatePOSCompanyContext();
     orderDirty = true; orderDeleteRetry = false; orderGeneration++; orderSaveError = ''; orderConfirmation = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
     posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => { }), POS_AUTOSAVE_DEBOUNCE_MS);
 }
@@ -121,7 +134,7 @@ async function orderFlush() {
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
             orderAccept(data); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
-            orderDeleteRetry = false; orderSaveError = e.message; if (e.status === 409) orderConflict = true; throw e;
+            orderDeleteRetry = false; orderSaveError = e.message; if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
     })();
     await orderSavePromise;
@@ -171,7 +184,7 @@ async function sendOrderKitchen() {
         sessionStorage.removeItem(retryKey); orderSendAttempt = null; orderAccept(data);
         orderConfirmation = `Envío registrado en Cocina${data.envioId ? ` · ${data.envioId.slice(0, 8)}` : ''}.`;
         updateCartUI();
-    } catch (e) { orderSaveError = e.message; if (e.status === 409) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } }
+    } catch (e) { orderSaveError = e.message; if (isOrderConflict(e)) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } }
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function orderPay() {
@@ -183,7 +196,7 @@ async function orderPay() {
         await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/pagar`, 'PUT',
             { empresa: posCurrentTableEmpresa, version: orderVersion, operacionId: orderOperation() });
         posIsReadOnly = true; orderBusy = false; await openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
-    } catch (e) { orderSaveError = e.message; if (e.status === 409) orderConflict = true; }
+    } catch (e) { orderSaveError = e.message; if (isOrderConflict(e)) orderConflict = true; }
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function deleteCurrentOrder({ ask = true } = {}) {

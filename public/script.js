@@ -384,6 +384,23 @@ function isCocineria(empresa) {
     return Number(empresa) === 2;
 }
 
+function normalizePOSCompany(value) {
+    if (typeof value !== 'number' && typeof value !== 'string') return null;
+    const raw = typeof value === 'string' ? value.trim() : String(value);
+    if (!/^(?:2|02|4|04|6|06)$/.test(raw)) return null;
+    return Number(raw);
+}
+
+function invalidatePOSCompanyContext(message = 'La empresa del pedido no es válida. Seleccione nuevamente la empresa y pulse Reintentar.') {
+    clearTimeout(posAutoSaveTimer);
+    orderCompanyContextError = true;
+    orderLoadError = message;
+    orderSaveError = '';
+    posIsReadOnly = true;
+    renderOrderStatus();
+    updatePOSViewMode();
+}
+
 function getPOSTableVisual(numero, empresa) {
     const tableNumber = Number(numero);
     if (isCocineria(empresa) && tableNumber >= 81 && tableNumber <= 120) {
@@ -654,6 +671,13 @@ function selectTurno(label) {
 }
 
 function onEmpresaOrTurnoChange() {
+    if (typeof isPOSOrderViewVisible === 'function' && isPOSOrderViewVisible()) {
+        const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
+        if (!selectedCompany || selectedCompany !== normalizePOSCompany(posCurrentTableEmpresa)) {
+            invalidatePOSCompanyContext('La empresa seleccionada cambió mientras el pedido estaba abierto. El carrito se conservó; restaure la empresa original o regrese al mapa.');
+            return;
+        }
+    }
     closePOSTableGroups();
     loadPOSTables();
 }
@@ -890,6 +914,17 @@ function cancelPOSOrderLoad() {
 }
 
 async function openPOSOrder(tableNum, tableEmpresa = null) {
+    const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
+    const rowCompany = tableEmpresa == null ? selectedCompany : normalizePOSCompany(tableEmpresa);
+    const tableGrid = document.getElementById('pos-tables-grid');
+    if (!selectedCompany) {
+        setLoadNotice('tables', tableGrid, 'Seleccione una empresa válida antes de abrir la mesa.', () => loadPOSTables());
+        return;
+    }
+    if (!rowCompany || rowCompany !== selectedCompany) {
+        setLoadNotice('tables', tableGrid, 'La mesa no corresponde a la empresa seleccionada. Actualice el mapa antes de continuar.', () => loadPOSTables());
+        return;
+    }
     if (!await orderBeforeOpen()) return;
     posOrderAbortController?.abort();
     const generation = ++posOrderLoadGeneration;
@@ -899,7 +934,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     orderReset();
     posIsReadOnly = false;
     posCurrentTable = tableNum;
-    posCurrentTableEmpresa = tableEmpresa || document.getElementById('pos-empresa-select')?.value;
+    posCurrentTableEmpresa = selectedCompany;
     document.getElementById('pos-current-table').innerText = tableNum;
     showView('pos-order');
     closeCartSheet();
@@ -919,19 +954,21 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     document.getElementById('pos-mojo-select').value = '';
     document.getElementById('pos-mojo-name').innerText = 'Sin asignar';
     
-    const empresa = tableEmpresa || document.getElementById('pos-empresa-select')?.value;
+    const empresa = selectedCompany;
     if (empresa) {
         await loadMozos(empresa);
         if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         const controller = new AbortController();
         posOrderAbortController = controller;
         try {
-            const res = await fetch(`/api/pos/pedido?mesa=${tableNum}&empresa=${empresa}`, { signal: controller.signal, cache: 'no-store' });
+            const res = await fetch(`/api/pos/pedido?mesa=${encodeURIComponent(tableNum)}&empresa=${encodeURIComponent(empresa)}`, { signal: controller.signal, cache: 'no-store' });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 const ref = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
                 const error = new Error(`${data.message || 'No se pudo cargar el pedido'}${ref}`);
-                error.status = res.status; error.diagnosticId = data.diagnosticId; throw error;
+                error.status = res.status; error.errorCode = data.errorCode; error.diagnosticId = data.diagnosticId;
+                if (['INVALID_COMPANY', 'COMPANY_CONTEXT_MISMATCH'].includes(error.errorCode)) invalidatePOSCompanyContext(error.message);
+                throw error;
             }
             if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') || Number(posCurrentTable) !== Number(tableNum)) return;
             if (data.success && data.pedido) {
@@ -1127,8 +1164,7 @@ function selectMozo(codemp, nombre) {
 }
 
 function updateStateButtons() {
-    const empresa = document.getElementById('pos-empresa-select')?.value;
-    posCurrentTableEmpresa = posCurrentTableEmpresa || empresa;
+    if (posCurrentTableEmpresa == null) posCurrentTableEmpresa = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
 }
 
 function buildPosPedidoPayload() { return orderPayload(); }
@@ -1675,9 +1711,20 @@ function navigateView(viewName) {
 
 function retryPOSOrderLoad() {
     if (orderBusy || posCurrentTable == null) return;
+    const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
+    if (!selectedCompany) return invalidatePOSCompanyContext();
+    const currentCompany = normalizePOSCompany(posCurrentTableEmpresa);
+    if (currentCompany && currentCompany !== selectedCompany) {
+        return invalidatePOSCompanyContext('La empresa seleccionada cambió mientras el pedido estaba abierto. Regrese al mapa y descarte el borrador únicamente si corresponde.');
+    }
+    posCurrentTableEmpresa = currentCompany || selectedCompany;
+    orderCompanyContextError = false;
+    posIsReadOnly = false;
     orderLoadError = '';
     orderNavigationMessage = '';
     renderOrderStatus();
+    updatePOSViewMode();
+    if (orderDirty) return orderFlush();
     return openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
 }
 
@@ -1688,7 +1735,16 @@ async function leavePOSOrder(viewName = 'pos-tables') {
         renderOrderStatus();
         return false;
     }
-    if (orderConflict && orderDirty) {
+    if (orderCompanyContextError && orderDirty) {
+        if (!confirm('La empresa del pedido cambió o no es válida. ¿Descartar únicamente este borrador local y regresar al mapa?')) {
+            orderNavigationMessage = 'El borrador local continúa abierto.';
+            renderOrderStatus();
+            return false;
+        }
+        orderDirty = false;
+        orderCompanyContextError = false;
+        orderLoadError = '';
+    } else if (orderConflict && orderDirty) {
         if (!confirm('El pedido cambió en otro dispositivo. ¿Descartar únicamente este borrador local y regresar?')) {
             orderNavigationMessage = 'El borrador local continúa abierto.';
             renderOrderStatus();
@@ -2029,7 +2085,7 @@ function handleSSEEvent(data) {
         }
 
         if (posCurrentTable && parseInt(data.numero) === parseInt(posCurrentTable) &&
-            empresaActual && parseInt(data.empresa) === parseInt(empresaActual)) {
+            Number(data.empresa) === Number(posCurrentTableEmpresa)) {
             const orderView = document.getElementById('view-pos-order');
             if (orderView && orderView.style.display !== 'none') {
                 if (ownOrderOperations.has(data.operacionId)) {

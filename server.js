@@ -7,6 +7,7 @@ const SqlSessionStore = require('./lib/sql-session-store');
 const requestContext = require('./lib/request-context');
 const { assertOperationalSchema } = require('./lib/schema-readiness');
 const { createHealthHandler } = require('./lib/health');
+const { normalizeCompany } = require('./lib/company-context');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,7 +51,14 @@ function validateProductionConfig() {
     if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
     if (enabled(process.env.BAR_PRINTER_ENABLED) && !process.env.BAR_PRINTER_HOST) throw new Error('BAR_PRINTER_HOST es obligatorio cuando BAR_PRINTER_ENABLED=true');
 }
-function internalError(res, error, context) {
+function internalError(res, error, context, req = null) {
+    if (error?.status) {
+        const diagnosticId = requestContext.diagnosticId(res);
+        console.warn(JSON.stringify({ type: 'api_rejection', diagnosticId, context, method: req?.method,
+            status: error.status, errorCode: error.errorCode || null, request: requestContext.safeRequest(req) }));
+        return res.status(error.status).json({ success: false, message: error.message,
+            ...(error.errorCode ? { errorCode: error.errorCode } : {}), diagnosticId, retryable: false });
+    }
     const { diagnosticId, classification, body } = requestContext.errorPayload(res, error);
     console.error(JSON.stringify({ type: 'api_error', diagnosticId, context, classification: classification.kind,
         error: requestContext.safeError(error) }));
@@ -71,7 +79,9 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '512kb' }));
 app.use('/vendor/fontawesome', express.static(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free')));
-app.use(express.static('public'));
+app.use(express.static('public', { setHeaders(res, filePath) {
+    if (/\.(?:html|js)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+} }));
 app.use(session({
     name: 'sedim.sid',
     secret: process.env.SESSION_SECRET || 'development-only-session-secret-32',
@@ -189,16 +199,17 @@ app.get('/api/pos/tables', isAuthenticated, async (req, res) => {
     const { empresa } = req.query;
     try {
         const pool = await getConnection();
-        let query = "SELECT Numero, Ambiente, Estado, Empresa FROM Mesas";
+        let query = "SELECT Numero, Ambiente, Estado, CONVERT(INT, Empresa) Empresa FROM Mesas";
         const request = pool.request();
         if (empresa) {
+            const normalized = normalizeCompany(empresa);
             query += " WHERE Empresa = @empresa";
-            request.input('empresa', sql.Int, parseInt(empresa));
+            request.input('empresa', sql.Int, normalized.empresa);
         }
         query += " ORDER BY Numero";
         const result = await requestContext.measureSql(() => request.query(query));
         res.json(result.recordset);
-    } catch (e) { internalError(res, e, 'Listar mesas'); }
+    } catch (e) { internalError(res, e, 'Listar mesas', req); }
 });
 
 app.put('/api/pos/tables/:numero/estado', isAuthenticated, async (req, res) => {

@@ -5,7 +5,8 @@ async function fixture(page, options = {}) {
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
-        orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false };
+        orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false,
+        invalidCompanyError: false, orderLoads: 0, orderCompanies: [] };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -62,12 +63,16 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
         if (url.pathname === '/api/pos/products') return fulfill([product]);
         if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') {
+            state.orderLoads++;
+            state.orderCompanies.push(url.searchParams.get('empresa'));
             if (state.orderLoadDelay) await new Promise(resolve => setTimeout(resolve, state.orderLoadDelay));
             if (state.orderLoadError) return fulfill({ success:false,message:'No se pudo cargar el pedido',diagnosticId:'diag-order-load',retryable:false },500);
             return fulfill(data());
         }
         if (url.pathname === '/api/pos/pedido' && req.method() === 'POST') {
             state.requestOrder.push('save');
+            state.orderCompanies.push(body.empresa);
+            if (state.invalidCompanyError) return fulfill({ success:false,message:'Empresa inválida',errorCode:'INVALID_COMPANY',diagnosticId:'diag-company',retryable:false },400);
             if (state.delaySave) await new Promise(r => setTimeout(r, state.delaySave));
             if (state.conflict) return fulfill({ message: 'Pedido cambiado por otro dispositivo' }, 409);
             if (state.ticket && body.items.length === 0) {
@@ -126,6 +131,33 @@ async function fixture(page, options = {}) {
     }
     return state;
 }
+
+test('normaliza la empresa textual de Mesas y guarda siempre el valor canónico', async ({ page }) => {
+    const state = await fixture(page, { tables: [{ Numero: 1, Empresa: ' 02 ', Ambiente: 1, Estado: 1 }] });
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.orderCompanies).toEqual(['2', 2]);
+});
+
+test('una mesa de otra empresa se bloquea antes de consultar o modificar el pedido', async ({ page }) => {
+    const state = await fixture(page, { tables: [{ Numero: 1, Empresa: 4, Ambiente: 1, Estado: 1 }], openTable: false });
+    await page.locator('.pos-table-card').click();
+    await expect(page.locator('#load-notice-tables')).toContainText('no corresponde a la empresa');
+    expect(state.orderLoads).toBe(0);
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+});
+
+test('INVALID_COMPANY conserva el carrito y pausa nuevos autoguardados', async ({ page }) => {
+    const state = await fixture(page);
+    state.invalidCompanyError = true;
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Empresa inválida');
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    const attempts = state.requestOrder.filter(value => value === 'save').length;
+    await page.waitForTimeout(900);
+    expect(state.requestOrder.filter(value => value === 'save')).toHaveLength(attempts);
+    await expect(page.locator('#order-retry-load')).toBeVisible();
+});
 
 test('mapa filtra por agrupación y limita Desayunos a Cocinería', async ({ page }) => {
     const tablesFor = empresa => [

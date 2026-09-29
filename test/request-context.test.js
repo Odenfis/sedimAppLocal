@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { classifyError, errorPayload } = require('../lib/request-context');
+const { classifyError, errorPayload, safeRequest } = require('../lib/request-context');
 
 test('clasifica timeouts SQL como reintentables y responde 504', () => {
     assert.deepEqual(classifyError({ code: 'ETIMEOUT', message: 'Request timeout' }),
@@ -31,4 +31,10 @@ test('la respuesta clasificada conserva referencia y mensaje operativo', () => {
     assert.equal(result.classification.status, 504);
     assert.deepEqual(result.body, { success: false, message: 'La consulta excedió el tiempo de espera.', errorCode: 'SQL_TIMEOUT',
         diagnosticId: 'diag-123', retryable: true });
+});
+
+test('el contexto seguro registra empresa y mesa sin incluir el detalle del pedido', () => {
+    const result = safeRequest({ body: { empresa: { unexpected: true }, mesa: '1', items: [{ nombre: 'secreto' }] }, query: {} });
+    assert.deepEqual(result, { company: { type: 'object', value: '[object]' }, table: { type: 'string', value: '1' } });
+    assert.equal(JSON.stringify(result).includes('secreto'), false);
 });
