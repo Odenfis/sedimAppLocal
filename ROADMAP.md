@@ -1369,3 +1369,59 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - El diagnóstico es estrictamente de lectura salvo por la transmisión física voluntaria: no crea ni actualiza tablas, trabajos, rutas o pedidos.
 - Validación local: `npm run check`, 32 pruebas unitarias/configuración/migraciones aprobadas y `git diff --check` sin errores.
 - Validación física completada el 23/09/2026: Windows y Docker alcanzaron la RPT004, TCP 9100 respondió, la trama ESC/POS imprimió correctamente, CP850 produjo tildes y `ñ`, y el corte funcionó. El diagnóstico queda disponible para futuras incidencias de red o reemplazo de impresora.
+
+---
+
+## Fase 39: Recuperación operativa y configuración privada estable (Operativa en el cliente)
+
+- Tras eliminarse la carpeta del proyecto por una incidencia de hardware, el repositorio se clonó nuevamente y se restauró el `.env` privado, que permanece fuera de Git por diseño.
+- La advertencia de Compose por `PORT` vacío y el error por `.env` ausente quedaron resueltos al recuperar el archivo en la raíz del proyecto. `DB_SERVER=host.docker.internal` permite que el contenedor alcance SQL Server en la misma máquina Windows.
+- La configuración estable incluye servidor, secreto de sesión, conexión y pool SQL, Cocina, Barra, retención y las opciones HTTP de red local. No se registran valores privados en documentación ni en el repositorio.
+- La ausencia temporal de usuarios se diagnosticó mediante `/api/users`: la aplicación y SQL respondían correctamente, pero la base local no tenía datos. El contenido fue recuperado sin requerir cambios de código.
+- El flujo cotidiano vuelve a ser exclusivamente doble clic en `actualizar.bat`: conserva `.env`, descarga con `git pull --ff-only`, reconstruye/recrea el contenedor, espera el healthcheck y abre la aplicación.
+- Continuidad operativa: mantener una copia segura y externa de `.env`, respaldos verificados de SQL Server y rotar `DB_PASS`/`SESSION_SECRET` si fueran expuestos; nunca documentar sus valores reales.
+
+---
+
+## Fase 40: Jerarquía visual ESC/POS de comandas (Operativa y validada en el cliente)
+
+- El documento persistido en SQL continúa siendo texto plano, inmutable, sin bytes de control y con un máximo de 42 caracteres por línea. Los estilos se agregan exclusivamente al construir la trama ESC/POS.
+- **COMANDA DE COCINA/BARRA**, ticket, mozo y productos se imprimen en negrita; las notas usan doble altura sin doble ancho. Los estados `ADICIÓN`, `CORRECCIÓN`, `ANULACIÓN`, `ANTES` y `AHORA` permanecen normales.
+- Un analizador de la estructura confiable de la comanda aplica estilos también a continuaciones de productos/notas y a reimpresiones. Un documento histórico no reconocido conserva formato normal en vez de fallar.
+- Negrita y tamaño se restablecen después de cada segmento y antes del avance/corte; CP850, caracteres españoles, TCP 9100, corte y enrutamiento por destino permanecen intactos.
+- La hoja técnica de Barra incluye título, ticket, mozo, producto y nota ficticios para validar estilos sin imprimir datos comerciales.
+- Publicada en `af87e6f`. Validación automatizada: `npm run check`, 34/34 pruebas unitarias y `git diff --check`; la impresión real permitió continuar el ajuste visual sobre ambas RPT004.
+
+---
+
+## Fase 41: Mesa y productos visibles a distancia (Operativa y validada en el cliente)
+
+- La línea textual `Mesa ... / Mozo ...` se conserva sin cambios en SQL, pero durante la impresión se transforma visualmente en dos líneas: **Mesa** en negrita/doble altura y **Mozo** debajo en negrita/tamaño normal.
+- Los productos y todas sus continuaciones usan negrita más doble altura, manteniendo ancho normal y 42 columnas para evitar cortes adicionales.
+- Las notas conservan doble altura y agregan `ESC SP 1` (un punto de separación lateral por carácter); `ESC SP 0` restaura el espaciado inmediatamente después de cada línea.
+- El reconocimiento especial de cabecera se limita al bloque anterior al primer separador, evitando interpretar como Mesa, Mozo o Ticket contenido que pertenezca al detalle.
+- La trama restablece negrita, tamaño y espaciado antes del avance y corte. Cocina, Barra, reimpresiones, documentos históricos y fallback normal comparten el mismo renderizador.
+- Publicada en `b38867a`. Validación automatizada: `npm run check`, 34/34 pruebas unitarias y `git diff --check`; la prueba física posterior confirmó la legibilidad y reveló únicamente la necesidad de mayor margen inferior.
+
+---
+
+## Fase 42: Margen inferior seguro antes del corte (Implementada y publicada; validación física final pendiente)
+
+- El avance posterior al documento aumenta de tres a cinco líneas antes de enviar el comando de corte, dejando dos líneas adicionales para que el último contenido no quede al ras.
+- El margen se aplica en la capa común de transporte y por ello cubre Cocina, Barra, reimpresiones y hoja técnica sin modificar documentos SQL ni colas.
+- Las pruebas verifican cinco avances tanto con corte habilitado como deshabilitado y exigen que negrita, tamaño y espaciado se restablezcan antes del margen final.
+- Publicada en `429ba49`. Validación automatizada: `npm run check`, 34/34 pruebas unitarias y `git diff --check` sin errores.
+- No existen migraciones, variables nuevas, cambios de API, modificaciones comerciales ni cambios de enrutamiento en las Fases 40–42.
+- Siguiente verificación: imprimir una comanda controlada en cada RPT004, confirmar margen suficiente sin desperdicio excesivo y conservar el flujo habitual de despliegue mediante `actualizar.bat`.
+
+---
+
+## Fase 43: Ajuste de legibilidad de comandas ESC/POS (Implementada en código; validación física pendiente)
+
+- Las notas pasan de doble altura a altura normal y conservan `ESC SP 1`, incluida cualquier línea de continuación, para reducir su jerarquía sin perder legibilidad.
+- Los productos conservan negrita y doble altura y agregan `ESC SP 1` en el nombre completo y sus continuaciones, separando visualmente caracteres que antes quedaban demasiado juntos.
+- En la cabecera textual `Ticket ... / Envío N`, que permanece intacta en SQL, únicamente `Envío N` se presenta en negrita y doble altura. El analizador admite también la variante histórica sin tilde `Envio N`.
+- Cada segmento restablece negrita, tamaño y espaciado; el restablecimiento final anterior al margen y corte permanece como protección adicional.
+- El ajuste se aplica mediante el renderizador común a Cocina, Barra, impresiones automáticas, reimpresiones y hoja técnica. No cambia APIs, base de datos, migraciones, variables, colas, rutas ni documentos persistidos.
+- Validación automatizada: pruebas de bytes ESC/POS para notas, productos, continuaciones, encabezado de envío, Barra, históricos y restauración de estilos; `npm test`, `npm run check` y `git diff --check`.
+- Validación física pendiente: imprimir una comanda controlada en ambas RPT004, comprobar nombres/notas largos sin recorte y confirmar conjuntamente el margen inferior de la Fase 42.
