@@ -1425,3 +1425,18 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - El ajuste se aplica mediante el renderizador común a Cocina, Barra, impresiones automáticas, reimpresiones y hoja técnica. No cambia APIs, base de datos, migraciones, variables, colas, rutas ni documentos persistidos.
 - Validación automatizada: pruebas de bytes ESC/POS para notas, productos, continuaciones, encabezado de envío, Barra, históricos y restauración de estilos; `npm test`, `npm run check` y `git diff --check`.
 - Validación física pendiente: imprimir una comanda controlada en ambas RPT004, comprobar nombres/notas largos sin recorte y confirmar conjuntamente el margen inferior de la Fase 42.
+
+---
+
+## Fase 44: Comanda independiente de Bebidas (Implementada en código; validación física pendiente)
+
+- Los productos con `Productos.Clinea=2`, independientemente de `Tipo`, se enrutan exclusivamente a **COMANDA DE BEBIDAS**. Cocina conserva los demás productos y Barra mantiene su regla `Clinea=7 AND Tipo=3`.
+- El destino se congela por `LineaId` desde el primer envío; correcciones y anulaciones continúan en Cocina, Bebidas o Barra aunque posteriormente cambie el catálogo.
+- `009_beverage_printing.sql` crea tablas auxiliares para los tres destinos de línea y para distinguir trabajos de Cocina/Bebidas dentro de `Impresion_trabajos`; migra las rutas y trabajos existentes como Cocina/Barra sin modificar tablas comerciales.
+- Cocina y Bebidas comparten una sola cola física, worker y configuración `PRINTER_*`. Los trabajos se transmiten en serie y, dentro de un envío mixto, Cocina se inserta antes que Bebidas. Barra conserva su cola e impresora independientes.
+- El envío canónico y el KDS continúan incluyendo todas las líneas. Solo se separan los documentos impresos e inmutables; nunca se crean comandas vacías.
+- API, SSE, POS, tablero e historial reconocen el destino `bebidas`, muestran estados separados y permiten reimpresión idempotente de cada documento. `impresion` conserva su significado histórico de Cocina.
+- El título **COMANDA DE BEBIDAS** recibe la misma jerarquía ESC/POS de las comandas actuales. CP850, notas, productos, encabezado, cinco líneas de margen y corte permanecen intactos.
+- Archivo, conteos, hash y purga de turnos incluyen los nuevos destinos. No se agregan variables de entorno ni un tercer worker.
+- Validación automatizada: 36/36 pruebas unitarias/configuración/migraciones, 37/37 pruebas Playwright y 16 escenarios de integración SQL aprobados; `npm run check` y `git diff --check` sin errores.
+- Validación física pendiente: confirmar en la RPT004 de Cocina pedidos solo Cocina, solo Bebidas, Cocina+Bebidas y Cocina+Bebidas+Barra, además del orden del papel y las reimpresiones separadas.

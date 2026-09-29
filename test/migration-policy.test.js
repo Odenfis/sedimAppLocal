@@ -31,3 +31,13 @@ test('la migración de Barra es aditiva y no altera tablas comerciales', () => {
         assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
     }
 });
+
+test('la migración de Bebidas agrega destinos sin alterar tablas comerciales ni la cola compartida', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '009_beverage_printing.sql'), 'utf8');
+    assert.match(source, /CREATE TABLE dbo\.Impresion_linea_destinos/);
+    assert.match(source, /CREATE TABLE dbo\.Impresion_trabajo_destinos/);
+    assert.match(source, /Destino IN\('cocina','bebidas','barra'\)/);
+    for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos', 'Tablas', 'Impresion_trabajos']) {
+        assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
+    }
+});

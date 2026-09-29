@@ -29,7 +29,9 @@ async function main() {
         estados: await select(request(), 'SELECT * FROM Cocina_estados WHERE NroTicket=@nro'),
         envios: await select(request(), 'SELECT * FROM Cocina_envios WHERE NroTicket=@nro ORDER BY Numero'),
         detallesEnvio: await select(request(), `SELECT d.* FROM Cocina_envio_detalles d JOIN Cocina_envios e ON e.Id=d.EnvioId WHERE e.NroTicket=@nro ORDER BY e.Numero`),
-        impresion: await select(request(), `SELECT j.* FROM Impresion_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro ORDER BY j.Fecha`)
+        impresion: await select(request(), `SELECT j.*,COALESCE(d.Destino,'cocina') Destino FROM Impresion_trabajos j
+            JOIN Cocina_envios e ON e.Id=j.EnvioId LEFT JOIN Impresion_trabajo_destinos d ON d.TrabajoId=j.Id WHERE e.NroTicket=@nro ORDER BY j.Fecha`),
+        destinosLinea: await select(request(), `SELECT d.* FROM Impresion_linea_destinos d JOIN Pedido_lineas l ON l.LineaId=d.LineaId WHERE l.NroTicket=@nro ORDER BY d.LineaId`)
     };
     const dir = path.join(__dirname, '..', 'backups'); fs.mkdirSync(dir, { recursive:true });
     const file = path.join(dir, `recovery-${nro.replace(/[^A-Za-z0-9_-]/g,'_')}-${Date.now()}.json`);

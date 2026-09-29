@@ -4,6 +4,9 @@ let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromi
 let orderSaveError = '', orderConfirmation = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
+const PRINT_DESTINATIONS = ['cocina', 'bebidas', 'barra'];
+function printDestinationName(destination) { return destination === 'barra' ? 'Barra' : destination === 'bebidas' ? 'Bebidas' : 'Cocina'; }
+function printDestinationEnabled(destination) { return destination === 'barra' ? APP_FEATURES.barPrinterEnabled : APP_FEATURES.printerEnabled; }
 function newOrderId() {
     // crypto.randomUUID is unavailable on HTTP LAN origins in some browsers.
     const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
@@ -128,7 +131,7 @@ function renderOrderStatus() {
     const print = document.getElementById('order-print-status');
     const labels = { en_cola: 'En cola de impresión', procesando: 'Transmitiendo a impresora', enviado: 'Enviado a impresora', error: 'Error de impresión', incierto: 'Impresión incierta: revise el papel antes de reimprimir' };
     print.textContent = orderPrintings.map(item => {
-        const name = item.destino === 'barra' ? 'Barra' : 'Cocina';
+        const name = printDestinationName(item.destino);
         const state = item.estado || item.Estado, error = item.error || item.Error;
         return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
     }).join(' · ');
@@ -227,12 +230,12 @@ async function showOrderHistory() {
         for (const e of data.envios) {
             const section = document.createElement('section'), h = document.createElement('h3'), pre = document.createElement('pre');
             h.textContent = `Envío ${e.Numero}${e.Historico ? ' · Histórico' : ''}`; pre.textContent = e.Documento; section.append(h, pre);
-            for (const j of e.trabajos) { const p = document.createElement('p'); p.textContent = `${j.Destino === 'barra' ? 'Barra' : 'Cocina'}: ${j.Estado} · Intentos: ${j.Intentos}${j.Error ? ' · ' + j.Error : ''}`; section.append(p); }
-            for (const destination of ['cocina','barra']) {
-                const destinationEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+            for (const j of e.trabajos) { const p = document.createElement('p'); p.textContent = `${printDestinationName(j.Destino || 'cocina')}: ${j.Estado} · Intentos: ${j.Intentos}${j.Error ? ' · ' + j.Error : ''}`; section.append(p); }
+            for (const destination of PRINT_DESTINATIONS) {
+                const destinationEnabled = printDestinationEnabled(destination);
                 const jobs = e.trabajos.filter(j => (j.Destino || 'cocina') === destination);
                 if (!destinationEnabled || !jobs.length) continue;
-                const btn = document.createElement('button'); btn.textContent = `Reimprimir ${destination === 'barra' ? 'Barra' : 'Cocina'}`; btn.disabled = jobs.some(j => ['en_cola', 'procesando'].includes(j.Estado));
+                const btn = document.createElement('button'); btn.textContent = `Reimprimir ${printDestinationName(destination)}`; btn.disabled = jobs.some(j => ['en_cola', 'procesando'].includes(j.Estado));
                 let attempt = null;
                 btn.onclick = async () => {
                     if (!confirm('Revise si el ticket ya salió. Esta acción imprimirá una copia marcada REIMPRESIÓN.')) return;

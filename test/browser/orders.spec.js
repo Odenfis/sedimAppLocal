@@ -555,17 +555,19 @@ test('ticket largo de Cocina desplaza el contenido y encola una sola reimpresió
     expect(state.reprintDestinations).toEqual(['cocina']);
 });
 
-test('ticket mixto muestra y encola Cocina y Barra de forma independiente', async ({ page }) => {
+test('ticket mixto muestra y encola Cocina, Bebidas y Barra de forma independiente', async ({ page }) => {
     const state = await fixture(page, { features: { printerEnabled:true, barPrinterEnabled:true, closuresEnabled:true } });
     state.kds=[{NroTicket:'T001-000001',NroMesa:1,LineaId:'11111111-1111-4111-8111-111111111111',Codpro:'02001',EstadoCocina:1,
         Cantidad:1,Descripcion:'Arroz',notasRapidas:[],nota:'',Categoria:'Platos',FechaTicket:new Date().toISOString(),MinutosEspera:1,
-        Documento:'COMANDA COMPLETA',Impresion:{estado:'enviado'},Impresiones:[{estado:'enviado',destino:'cocina'},{estado:'enviado',destino:'barra'}]}];
+        Documento:'COMANDA COMPLETA',Impresion:{estado:'enviado'},Impresiones:[{estado:'enviado',destino:'cocina'},{estado:'enviado',destino:'bebidas'},{estado:'enviado',destino:'barra'}]}];
     await page.locator('.sidebar li[data-module="cocina"]').click();
     await page.selectOption('#cocina-empresa-select','02');
     await page.getByRole('button',{name:'Ver ticket',exact:true}).click();
+    await page.locator('#cocina-ticket-print-bebidas').click();
+    await expect(page.locator('#cocina-ticket-print-status')).toHaveText('Reimpresión de Bebidas en cola.');
     await page.locator('#cocina-ticket-print-barra').click();
     await expect(page.locator('#cocina-ticket-print-status')).toHaveText('Reimpresión de Barra en cola.');
-    expect(state.reprintDestinations).toEqual(['barra']);
+    expect(state.reprintDestinations).toEqual(['bebidas','barra']);
 });
 test('espera el autoguardado en curso antes de enviar', async ({ page }) => {
     const state = await fixture(page); state.delaySave = 350;

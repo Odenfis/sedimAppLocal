@@ -19,9 +19,9 @@ function applyFeatureFlags(features = {}) {
     APP_FEATURES = { ...APP_FEATURES, ...features };
     const closuresMenu = document.querySelector('[data-module="cierres"]');
     if (closuresMenu) closuresMenu.classList.toggle('feature-disabled', !APP_FEATURES.closuresEnabled);
-    for (const destination of ['cocina','barra']) {
+    for (const destination of PRINT_DESTINATIONS) {
         const printButton = document.getElementById(`cocina-ticket-print-${destination}`);
-        if (printButton) printButton.classList.toggle('feature-disabled', destination === 'cocina' ? !APP_FEATURES.printerEnabled : !APP_FEATURES.barPrinterEnabled);
+        if (printButton) printButton.classList.toggle('feature-disabled', !printDestinationEnabled(destination));
     }
     document.body.classList.toggle('printing-disabled', !APP_FEATURES.printerEnabled);
 }
@@ -2318,8 +2318,8 @@ function construirTarjetaCocina(t) {
 let cocinaTicketActual = null;
 let cocinaPrintAttempt = {};
 function estadoImpresionCocina(impresion, destination = 'cocina') {
-    const name = destination === 'barra' ? 'Barra' : 'Cocina';
-    const featureEnabled = destination === 'barra' ? APP_FEATURES.barPrinterEnabled : APP_FEATURES.printerEnabled;
+    const name = printDestinationName(destination);
+    const featureEnabled = printDestinationEnabled(destination);
     if (!featureEnabled) return `${name}: impresión deshabilitada.`;
     if (!impresion) return `${name}: sin comanda para este envío.`;
     const labels = { en_cola:'En cola de impresión', procesando:'Transmitiendo a impresora', enviado:'Enviado a impresora', error:'Error de impresión', incierto:'Impresión incierta: revise el papel antes de reimprimir' };
@@ -2334,11 +2334,11 @@ function abrirTicketCocina(t) {
     cocinaTicketActual = t;
     cocinaPrintAttempt = {};
     t.Impresiones ||= t.Impresion ? [{ ...t.Impresion, destino: 'cocina' }] : [];
-    for (const destination of ['cocina','barra']) {
+    for (const destination of PRINT_DESTINATIONS) {
         const printButton = document.getElementById(`cocina-ticket-print-${destination}`);
         const printing = t.Impresiones.find(item => (item.destino || item.Destino || 'cocina') === destination);
         const estado = printing?.estado || printing?.Estado;
-        const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+        const featureEnabled = printDestinationEnabled(destination);
         if (printButton) {
             printButton.hidden = !printing;
             printButton.classList.toggle('feature-disabled', !featureEnabled);
@@ -2370,7 +2370,7 @@ function abrirTicketCocina(t) {
 async function imprimirTicketCocina(destination = 'cocina') {
     const t = cocinaTicketActual, button = document.getElementById(`cocina-ticket-print-${destination}`);
     const status = document.getElementById('cocina-ticket-print-status');
-    const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+    const featureEnabled = printDestinationEnabled(destination);
     if (!featureEnabled || !t?.EnvioId || !t?.NroTicket || button?.disabled) return;
     button.disabled = true;
     if (status) status.textContent = 'Solicitando impresión…';
@@ -2378,7 +2378,7 @@ async function imprimirTicketCocina(destination = 'cocina') {
         cocinaPrintAttempt[destination] ||= newOrderId();
         await orderRequest(`/api/pos/pedido/${encodeURIComponent(t.NroTicket)}/envios/${encodeURIComponent(t.EnvioId)}/reimprimir`, 'POST',
             { empresa: kitchenCompany(), clave: cocinaPrintAttempt[destination], destino: destination });
-        if (status) status.textContent = `Reimpresión de ${destination === 'barra' ? 'Barra' : 'Cocina'} en cola.`;
+        if (status) status.textContent = `Reimpresión de ${printDestinationName(destination)} en cola.`;
     } catch (e) {
         if (status) status.textContent = e.message;
         button.disabled = false;
@@ -2427,15 +2427,15 @@ async function loadCocinaHistorial(page = 1) {
             const view = document.createElement('button'); view.type = 'button'; view.textContent = 'Ver ticket';
             const latestKitchenJob = [...envio.trabajos].reverse().find(j => (j.Destino || 'cocina') === 'cocina') || null;
             view.onclick = () => abrirTicketCocina({ Documento: envio.Documento, NroTicket: envio.nroTicket,
-                EnvioId: envio.Id, Impresion: latestKitchenJob, Impresiones: ['cocina','barra'].map(destination => {
+                EnvioId: envio.Id, Impresion: latestKitchenJob, Impresiones: PRINT_DESTINATIONS.map(destination => {
                     const item = [...envio.trabajos].reverse().find(j => (j.Destino || 'cocina') === destination);
                     return item ? { ...item, destino: destination } : null;
                 }).filter(Boolean) }); actions.appendChild(view);
-            for (const destination of ['cocina','barra']) {
-                const featureEnabled = destination === 'cocina' ? APP_FEATURES.printerEnabled : APP_FEATURES.barPrinterEnabled;
+            for (const destination of PRINT_DESTINATIONS) {
+                const featureEnabled = printDestinationEnabled(destination);
                 const jobs = envio.trabajos.filter(j => (j.Destino || 'cocina') === destination);
                 if (!featureEnabled || !jobs.length) continue;
-                const reprint = document.createElement('button'); reprint.type = 'button'; reprint.textContent = `Reimprimir ${destination === 'barra' ? 'Barra' : 'Cocina'}`;
+                const reprint = document.createElement('button'); reprint.type = 'button'; reprint.textContent = `Reimprimir ${printDestinationName(destination)}`;
                 reprint.disabled = jobs.some(j => ['en_cola','procesando'].includes(j.Estado));
                 reprint.onclick = async () => {
                     if (!confirm('Revise si el ticket ya salió. Se imprimirá una copia marcada REIMPRESIÓN.')) return;

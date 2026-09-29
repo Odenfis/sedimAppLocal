@@ -142,6 +142,16 @@ test('RPT004 estiliza Barra y deja documentos desconocidos en formato normal', (
     assert.ok(!frame.includes(Buffer.concat([boldOn, Buffer.from('DOCUMENTO ANTIGUO'), boldOff])));
 });
 
+test('RPT004 aplica a Bebidas la misma jerarquía visual de las demás comandas', () => {
+    const boldOn = Buffer.from([0x1b, 0x45, 0x01]), boldOff = Buffer.from([0x1b, 0x45, 0x00]);
+    const doubleHeight = Buffer.from([0x1d, 0x21, 0x01]);
+    const spacedCharacters = Buffer.from([0x1b, 0x20, 0x01]);
+    const frame = buildEscPosFrame('COMANDA DE BEBIDAS\nTicket T001-1 / Envío 1\nMesa 1 / Mozo JOSE\n' + '-'.repeat(42)
+        + '\nADICIÓN\n1 x Chicha morada\nNOTA: Sin hielo\n' + '-'.repeat(42) + '\n', { codepage: 'cp850' });
+    assert.ok(frame.includes(Buffer.concat([boldOn, Buffer.from('COMANDA DE BEBIDAS'), boldOff])));
+    assert.ok(frame.includes(Buffer.concat([boldOn, doubleHeight, spacedCharacters, Buffer.from('1 x Chicha morada')])));
+});
+
 test('separar cantidades fraccionarias conserva el total comercial y nunca asigna importes negativos', () => {
     const { amounts } = require('../public/order-math');
     const a = { codPro:'02001',precio:3.33,afecto:0,cantidad:.02 };
