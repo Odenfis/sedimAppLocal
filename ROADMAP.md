@@ -1440,3 +1440,16 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Archivo, conteos, hash y purga de turnos incluyen los nuevos destinos. No se agregan variables de entorno ni un tercer worker.
 - Validación automatizada: 36/36 pruebas unitarias/configuración/migraciones, 37/37 pruebas Playwright y 16 escenarios de integración SQL aprobados; `npm run check` y `git diff --check` sin errores.
 - Validación física pendiente: confirmar en la RPT004 de Cocina pedidos solo Cocina, solo Bebidas, Cocina+Bebidas y Cocina+Bebidas+Barra, además del orden del papel y las reimpresiones separadas.
+
+---
+
+## Fase 45: Resiliencia y rendimiento del Kanban de Cocina (Implementada en código; validación productiva pendiente)
+
+- `GET /api/cocina/pedidos` materializa las líneas activas una sola vez y obtiene líneas, cabeceras y últimos trabajos de impresión en conjuntos separados. El documento de la comanda y las búsquedas de Cocina/Bebidas/Barra dejan de repetirse por cada producto.
+- Una instantánea en memoria por empresa dura dos segundos y consolida todas las lecturas concurrentes. Cada actualización de Cocina incrementa su generación; una consulta iniciada antes de la escritura no puede volver a publicarse como vigente.
+- Ante timeouts, deadlocks o indisponibilidad SQL, el servidor devuelve el último tablero válido con hora y referencia de diagnóstico. Los errores inesperados y el primer fallo sin instantánea conservan su respuesta de error normal.
+- El cliente mantiene las comandas visibles, informa que los datos están desactualizados y reintenta a los 2, 5, 10 y 15 segundos. Los reintentos se pausan fuera de la vista, sin red o al cambiar de módulo, y se restablecen después de una lectura actual.
+- Los logs `kitchen_snapshot` distinguen lecturas SQL, caché vigente, consultas compartidas, invalidaciones y recuperaciones desactualizadas sin registrar comandas ni datos comerciales.
+- `npm run diagnose:kitchen -- --empresa=2` revisa de forma estrictamente lectora las migraciones `007`/`009`, índices auxiliares, aislamiento, volúmenes, bloqueos visibles y duración puntual del KDS sin mostrar contenido del pedido.
+- No se agregan migraciones, variables, tablas ni cambios de impresión. Tampoco se aumenta el timeout, se usa `NOLOCK` o se modifica el aislamiento global de SQL Server.
+- Validación productiva pendiente: correlacionar la referencia `118bed9f-19ef-4453-a09e-ed45edab3f96`, ejecutar el diagnóstico en el servidor del cliente y medir durante 30 minutos con diez dispositivos la meta p95 menor de 500 ms y ausencia de tableros vaciados.

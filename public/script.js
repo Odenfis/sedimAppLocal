@@ -1923,11 +1923,12 @@ document.addEventListener('visibilitychange', () => {
     else {
         clearTimeout(sseRetryTimer);
         sseRetryTimer = null;
+        clearCocinaRecovery(false);
     }
 });
 window.addEventListener('pageshow', event => { if (event.persisted) scheduleAppResumeSync(); });
 window.addEventListener('online', () => scheduleAppResumeSync());
-window.addEventListener('offline', closeSSE);
+window.addEventListener('offline', () => { closeSSE(); clearCocinaRecovery(false); });
 window.addEventListener('focus', () => scheduleAppResumeSync());
 
 function handleSSEEvent(data) {
@@ -2026,11 +2027,15 @@ let cocinaAbortController = null;
 let cocinaActiveKey = '';
 let cocinaLoadGeneration = 0;
 let cocinaUpdateExpected = false;
+let cocinaRetryTimer = null;
+let cocinaRetryAttempt = 0;
+const COCINA_RETRY_DELAYS_MS = [2000, 5000, 10000, 15000];
 
 function cancelCocinaLoad() {
     cocinaRefreshPending = false;
     cocinaLoadGeneration++;
     cocinaAbortController?.abort();
+    clearCocinaRecovery();
 }
 
 function unlockCocinaAudio() {
@@ -2106,6 +2111,37 @@ function isCocinaViewVisible() {
     return v && v.style.display !== 'none';
 }
 
+function clearCocinaRecovery(resetAttempt = true) {
+    clearTimeout(cocinaRetryTimer);
+    cocinaRetryTimer = null;
+    if (resetAttempt) cocinaRetryAttempt = 0;
+}
+
+function scheduleCocinaRecovery() {
+    if (cocinaRetryTimer || !isCocinaViewVisible() || !appCanUseNetwork()) return;
+    const delay = COCINA_RETRY_DELAYS_MS[Math.min(cocinaRetryAttempt, COCINA_RETRY_DELAYS_MS.length - 1)];
+    cocinaRetryAttempt = Math.min(cocinaRetryAttempt + 1, COCINA_RETRY_DELAYS_MS.length - 1);
+    cocinaRetryTimer = setTimeout(() => {
+        cocinaRetryTimer = null;
+        if (isCocinaViewVisible() && appCanUseNetwork()) loadCocinaPedidos();
+    }, delay);
+}
+
+function retryCocinaNow() {
+    clearCocinaRecovery();
+    return loadCocinaPedidos();
+}
+
+function cocinaSyncTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.valueOf())) return 'hora desconocida';
+    const seconds = Math.max(0, Math.floor((Date.now() - date.valueOf()) / 1000));
+    const age = seconds < 60 ? `hace ${seconds} s`
+        : seconds < 3600 ? `hace ${Math.floor(seconds / 60)} min`
+            : `hace ${Math.floor(seconds / 3600)} h`;
+    return `${date.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (${age})`;
+}
+
 async function loadCocinaPedidosOnce() {
     const empresaSelect = document.getElementById('cocina-empresa-select');
     const board = document.getElementById('cocina-board');
@@ -2126,6 +2162,7 @@ async function loadCocinaPedidosOnce() {
         cocinaAbortController = controller;
         const data = await fetchViewJson(`/api/cocina/pedidos?empresa=${company}`, controller.signal);
         if (generation !== cocinaLoadGeneration || empresaSelect.value !== company || !isCocinaViewVisible()) return;
+        const synchronization = data.sincronizacion || { desactualizado: false, actualizadaEn: new Date().toISOString() };
         // Normaliza el contrato agrupado de la API al modelo interno del tablero.
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
             NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
@@ -2135,16 +2172,25 @@ async function loadCocinaPedidosOnce() {
             Descripcion: l.nombre, notasRapidas: l.notasRapidas || [], nota: l.nota || '',
             Categoria: l.Categoria, datosIncompletos: Boolean(l.datosIncompletos), pendiente: l.correccionPendiente || null
         })));
-        cocinaFetchTime = Date.now();
+        const synchronizedAt = new Date(synchronization.actualizadaEn).valueOf();
+        cocinaFetchTime = Number.isNaN(synchronizedAt) ? Date.now() : synchronizedAt;
 
         const totalTickets = new Set(cocinaData.map(r => r.NroTicket)).size;
-        if (cocinaSoundOn && cocinaUltimoTotal !== null && totalTickets > cocinaUltimoTotal) {
+        if (!synchronization.desactualizado && cocinaSoundOn && cocinaUltimoTotal !== null && totalTickets > cocinaUltimoTotal) {
             playCocinaBeep();
         }
         cocinaUltimoTotal = totalTickets;
-        cocinaUpdateExpected = false;
-
-        setLoadNotice('kitchen', board, '');
+        if (synchronization.desactualizado) {
+            const ref = synchronization.diagnosticId ? ` Referencia: ${synchronization.diagnosticId}.` : '';
+            setLoadNotice('kitchen', board,
+                `Mostrando el último tablero válido. Última actualización: ${cocinaSyncTime(synchronization.actualizadaEn)}. Reintentando automáticamente.${ref}`,
+                retryCocinaNow);
+            scheduleCocinaRecovery();
+        } else {
+            cocinaUpdateExpected = false;
+            clearCocinaRecovery();
+            setLoadNotice('kitchen', board, '');
+        }
         renderCocinaBoard();
     } catch (e) {
         if (e.name === 'AbortError') return;
@@ -2152,7 +2198,9 @@ async function loadCocinaPedidosOnce() {
         if (generation === cocinaLoadGeneration && isCocinaViewVisible()) {
             const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
             const prefix = cocinaUpdateExpected ? 'Envío registrado, actualización pendiente. ' : 'No se pudo actualizar Cocina. ';
-            setLoadNotice('kitchen', board, `${prefix}${e.message}${ref}`, () => loadCocinaPedidos());
+            const retrying = e.retryable === true || e.status == null;
+            setLoadNotice('kitchen', board, `${prefix}${e.message}${ref}${retrying ? ' Reintentando automáticamente.' : ''}`, retryCocinaNow);
+            if (retrying) scheduleCocinaRecovery();
         }
     } finally {
         if (controller && cocinaAbortController === controller) cocinaAbortController = null;

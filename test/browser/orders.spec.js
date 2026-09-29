@@ -4,7 +4,7 @@ async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
-        tableError: false, kitchenError: false, kitchenTransientFailures: 0 };
+        tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0 };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -83,11 +83,16 @@ async function fixture(page, options = {}) {
             return fulfill({ success:false,message:'Base temporalmente no disponible',diagnosticId:'diag-retry-503',retryable:true },503);
         }
         if (url.pathname === '/api/cocina/pedidos' && state.kitchenError) return fulfill({ success:false,message:'Fallo SQL controlado',diagnosticId:'diag-kds-123',retryable:false },500);
-        if (url.pathname === '/api/cocina/pedidos') return fulfill({ success:true,pedidos:state.kds.map(l => ({ nroTicket:l.NroTicket,mesa:l.NroMesa,
-            envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
-            minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
-            impresiones:l.Impresiones || [{...(l.Impresion || {estado:'enviado'}),destino:'cocina'}],
-            lineas:[{ lineaId:l.LineaId,codPro:l.Codpro,cantidad:l.Cantidad,nombre:l.Descripcion,notasRapidas:l.notasRapidas,nota:l.nota,estado:l.EstadoCocina,Categoria:l.Categoria,correccionPendiente:l.pendiente }] })) });
+        if (url.pathname === '/api/cocina/pedidos') {
+            const stale = state.kitchenStaleResponses > 0;
+            if (stale) state.kitchenStaleResponses--;
+            return fulfill({ success:true,pedidos:state.kds.map(l => ({ nroTicket:l.NroTicket,mesa:l.NroMesa,
+                envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
+                minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
+                impresiones:l.Impresiones || [{...(l.Impresion || {estado:'enviado'}),destino:'cocina'}],
+                lineas:[{ lineaId:l.LineaId,codPro:l.Codpro,cantidad:l.Cantidad,nombre:l.Descripcion,notasRapidas:l.notasRapidas,nota:l.nota,estado:l.EstadoCocina,Categoria:l.Categoria,correccionPendiente:l.pendiente }] })),
+                sincronizacion: { desactualizado: stale, actualizadaEn: '2026-09-28T13:07:00.000Z', ...(stale ? { diagnosticId:'diag-stale-45' } : {}) } });
+        }
         if (url.pathname.endsWith('/reconocer')) { const l=state.kds.find(l=>url.pathname.includes(l.LineaId)); l.nota=l.pendiente.nueva.nota; l.pendiente=null; return fulfill({success:true}); }
         if (url.pathname.endsWith('/reimprimir')) { state.reprints++; state.reprintDestinations.push(body.destino || 'cocina'); return fulfill({success:true,trabajoId:'33333333-3333-4333-8333-333333333333'}); }
         if (url.pathname.endsWith('/todo-listo')) { state.kitchenStates.forEach((_,id)=>state.kitchenStates.set(id,3)); return fulfill({success:true}); }
@@ -372,6 +377,37 @@ test('Cocina conserva datos y muestra referencia al fallar sin alert modal', asy
     await page.evaluate(() => loadCocinaPedidos());
     await expect(page.locator('#load-notice-kitchen')).toContainText('diag-kds-123');
     await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
+});
+
+test('Cocina identifica una instantánea desactualizada y se recupera automáticamente', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.kds.push({ NroTicket:'T001-000045',NroMesa:45,LineaId:'45454545-4545-4545-8545-454545454545',Codpro:'02001',
+        EstadoCocina:1,Cantidad:1,Descripcion:'Plato resiliente',Categoria:'Platos',FechaTicket:new Date().toISOString(),MinutosEspera:1 });
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await expect(page.locator('#cocina-board')).toContainText('Plato resiliente');
+
+    state.kitchenStaleResponses = 1;
+    const before = state.kitchenLoads;
+    await page.evaluate(() => loadCocinaPedidos());
+    await expect(page.locator('#load-notice-kitchen')).toContainText('Última actualización');
+    await expect(page.locator('#load-notice-kitchen')).toContainText('diag-stale-45');
+    await expect(page.locator('#cocina-board')).toContainText('Plato resiliente');
+    await expect.poll(() => state.kitchenLoads, { timeout: 5000 }).toBeGreaterThan(before + 1);
+    await expect(page.locator('#load-notice-kitchen')).toHaveCount(0);
+});
+
+test('Cocina pausa la recuperación automática al abandonar la vista', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    state.kitchenStaleResponses = 10;
+    await page.evaluate(() => loadCocinaPedidos());
+    await expect(page.locator('#load-notice-kitchen')).toContainText('Reintentando automáticamente');
+    await page.evaluate(() => showView('pos-tables'));
+    const afterLeaving = state.kitchenLoads;
+    await page.waitForTimeout(2300);
+    expect(state.kitchenLoads).toBe(afterLeaving);
 });
 
 test('avisos de Mesas y Cocina permanecen dentro de su propia vista', async ({ page }) => {
