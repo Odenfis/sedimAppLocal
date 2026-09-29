@@ -41,3 +41,14 @@ test('la migración de Bebidas agrega destinos sin alterar tablas comerciales ni
         assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
     }
 });
+
+test('la reparación de destinos es aditiva, idempotente y no toca tablas comerciales', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '010_repair_beverage_destinations.sql'), 'utf8');
+    assert.match(source, /IF OBJECT_ID\('dbo\.Impresion_linea_destinos','U'\) IS NULL/);
+    assert.match(source, /IF OBJECT_ID\('dbo\.Impresion_trabajo_destinos','U'\) IS NULL/);
+    assert.match(source, /WHERE NOT EXISTS/);
+    assert.match(source, /IX_Impresion_trabajo_destinos_destino/);
+    for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos', 'Tablas', 'Impresion_trabajos']) {
+        assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
+    }
+});

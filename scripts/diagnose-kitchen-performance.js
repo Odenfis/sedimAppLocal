@@ -3,15 +3,8 @@
 require('dotenv').config();
 const { getConnection, closeConnections } = require('../db');
 const { loadKitchenBoard } = require('../lib/orders');
-
-const EXPECTED_MIGRATIONS = ['007_performance_indexes.sql', '009_beverage_printing.sql'];
-const EXPECTED_INDEXES = [
-    'IX_Pedido_control_empresa_ticket',
-    'IX_Cocina_estados_activos',
-    'IX_Cocina_estados_pendientes',
-    'IX_Impresion_trabajos_envio_fecha',
-    'IX_Impresion_trabajo_destinos_destino'
-];
+const { REQUIRED_TABLES: EXPECTED_TABLES, REQUIRED_INDEXES: EXPECTED_INDEXES,
+    REQUIRED_MIGRATIONS: EXPECTED_MIGRATIONS, inspectOperationalSchema } = require('../lib/schema-readiness');
 
 function selectedCompany(args = process.argv.slice(2)) {
     const raw = args.find(value => value.startsWith('--empresa='))?.split('=')[1] || '2';
@@ -23,13 +16,7 @@ function selectedCompany(args = process.argv.slice(2)) {
 async function inspect(pool) {
     const database = (await pool.request().query(`SELECT is_read_committed_snapshot_on,snapshot_isolation_state_desc
         FROM sys.databases WHERE name=DB_NAME()`)).recordset[0];
-    const migrations = (await pool.request().query(`SELECT MigrationName FROM Migrations
-        WHERE MigrationName IN('007_performance_indexes.sql','009_beverage_printing.sql')`)).recordset.map(row => row.MigrationName);
-    const indexes = (await pool.request().query(`SELECT i.name,OBJECT_NAME(i.object_id) Tabla
-        FROM sys.indexes i WHERE i.name IN(
-            'IX_Pedido_control_empresa_ticket','IX_Cocina_estados_activos','IX_Cocina_estados_pendientes',
-            'IX_Impresion_trabajos_envio_fecha','IX_Impresion_trabajo_destinos_destino')
-        ORDER BY i.name`)).recordset;
+    const schema = await inspectOperationalSchema(pool);
     const volumes = (await pool.request().query(`SELECT
         (SELECT COUNT_BIG(*) FROM Pedido_control) PedidosControl,
         (SELECT COUNT_BIG(*) FROM Cocina_estados) EstadosCocina,
@@ -44,7 +31,7 @@ async function inspect(pool) {
     } catch (error) {
         blockers = `no disponible (${error.number || error.code || 'sin permiso'})`;
     }
-    return { database, migrations, indexes, volumes, blockers };
+    return { database, schema, volumes, blockers };
 }
 
 async function main(args = process.argv.slice(2)) {
@@ -52,15 +39,11 @@ async function main(args = process.argv.slice(2)) {
     const pool = await getConnection();
     try {
         const report = await inspect(pool);
-        const missingMigrations = EXPECTED_MIGRATIONS.filter(name => !report.migrations.includes(name));
-        const indexNames = report.indexes.map(index => index.name);
-        const missingIndexes = EXPECTED_INDEXES.filter(name => !indexNames.includes(name));
         console.log(`[SQL] Aislamiento: snapshot=${report.database.snapshot_isolation_state_desc}; RCSI=${Boolean(report.database.is_read_committed_snapshot_on)}.`);
-        console.log(`[SQL] Migraciones: ${missingMigrations.length ? `faltan ${missingMigrations.join(', ')}` : '007 y 009 aplicadas'}.`);
-        console.log(`[SQL] Índices auxiliares: ${missingIndexes.length ? `faltan ${missingIndexes.join(', ')}` : 'completos'}.`);
+        console.log(`[SQL] Esquema auxiliar: ${report.schema.ready ? 'completo, incluidas 009/010' : `faltan ${report.schema.missing.join(', ')}`}.`);
         console.log(`[SQL] Volúmenes: control=${report.volumes.PedidosControl}, estados=${report.volumes.EstadosCocina}, activos=${report.volumes.LineasActivas}, correcciones=${report.volumes.CorreccionesPendientes}, envíos=${report.volumes.Envios}, trabajos=${report.volumes.TrabajosCompartidos}.`);
         console.log(`[SQL] Solicitudes bloqueadas en este instante: ${report.blockers}.`);
-        if (missingMigrations.length || missingIndexes.length) {
+        if (!report.schema.ready) {
             console.warn('[KDS] Medición omitida: aplique las migraciones pendientes mediante el despliegue normal antes de consultar el Kanban.');
             return 1;
         }
@@ -84,4 +67,4 @@ if (require.main === module) main().then(code => { process.exitCode = code; }).c
     process.exitCode = 1;
 });
 
-module.exports = { selectedCompany, EXPECTED_MIGRATIONS, EXPECTED_INDEXES };
+module.exports = { selectedCompany, EXPECTED_TABLES, EXPECTED_MIGRATIONS, EXPECTED_INDEXES };

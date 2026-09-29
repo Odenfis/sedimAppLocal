@@ -305,6 +305,8 @@ let posTableGroupsExpanded = false;
 let posCurrentCategory = null;
 let posSearchTerm = '';
 let posIsReadOnly = false;
+let posOrderLoadGeneration = 0;
+let posOrderAbortController = null;
 
 const POS_NORMAL_TABLE_VISUAL = Object.freeze({
     key: 'normal',
@@ -881,8 +883,16 @@ function renderPOSTables(tables) {
     });
 }
 
+function cancelPOSOrderLoad() {
+    posOrderLoadGeneration++;
+    posOrderAbortController?.abort();
+    posOrderAbortController = null;
+}
+
 async function openPOSOrder(tableNum, tableEmpresa = null) {
     if (!await orderBeforeOpen()) return;
+    posOrderAbortController?.abort();
+    const generation = ++posOrderLoadGeneration;
     resetMobilePOSSearch();
     resetMobilePOSHeader();
     resetPOSAddFeedback();
@@ -912,11 +922,18 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     const empresa = tableEmpresa || document.getElementById('pos-empresa-select')?.value;
     if (empresa) {
         await loadMozos(empresa);
-        
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        const controller = new AbortController();
+        posOrderAbortController = controller;
         try {
-            const res = await fetch(`/api/pos/pedido?mesa=${tableNum}&empresa=${empresa}`);
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.message || 'No se pudo cargar el pedido');
+            const res = await fetch(`/api/pos/pedido?mesa=${tableNum}&empresa=${empresa}`, { signal: controller.signal, cache: 'no-store' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const ref = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
+                const error = new Error(`${data.message || 'No se pudo cargar el pedido'}${ref}`);
+                error.status = res.status; error.diagnosticId = data.diagnosticId; throw error;
+            }
+            if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') || Number(posCurrentTable) !== Number(tableNum)) return;
             if (data.success && data.pedido) {
                 posCurrentNroTicket = data.pedido.NroTicket;
                 document.getElementById('pos-guests').value = data.pedido.Comensales || 1;
@@ -947,10 +964,13 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 updatePOSViewMode();
             }
         } catch (e) {
+            if (e.name === 'AbortError' || generation !== posOrderLoadGeneration) return;
             console.error('Error al cargar pedido:', e);
-            orderConflict = true; orderSaveError = e.message;
+            orderConflict = false; orderSaveError = ''; orderLoadError = e.message;
             posIsReadOnly = true;
             updatePOSViewMode();
+        } finally {
+            if (posOrderAbortController === controller) posOrderAbortController = null;
         }
     } else {
         posIsReadOnly = false;
@@ -1635,11 +1655,7 @@ async function reabrirPedido() {
 
 // Modificar showView para cargar POS
 const originalShowView = showView;
-showView = function(viewName) {
-    if (viewName !== 'pos-order' && (orderBusy || orderConflict)) return;
-    if (viewName !== 'pos-order' && (orderDirty || orderSavePromise)) {
-        orderFlush().then(() => showView(viewName)).catch(e => alert(e.message)); return;
-    }
+function navigateView(viewName) {
     if (viewName !== 'pos-tables') {
         posTablesRefreshPending = false;
         posTablesAbortController?.abort();
@@ -1656,6 +1672,61 @@ showView = function(viewName) {
     }
     if (viewName === 'cocina') loadCocinaPedidos();
     if (viewName === 'cierres') loadShiftClosurePreview();
+}
+
+function retryPOSOrderLoad() {
+    if (orderBusy || posCurrentTable == null) return;
+    orderLoadError = '';
+    orderNavigationMessage = '';
+    renderOrderStatus();
+    return openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+}
+
+async function leavePOSOrder(viewName = 'pos-tables') {
+    orderNavigationMessage = '';
+    if (orderBusy) {
+        orderNavigationMessage = 'Espere a que termine la operación antes de regresar.';
+        renderOrderStatus();
+        return false;
+    }
+    if (orderConflict && orderDirty) {
+        if (!confirm('El pedido cambió en otro dispositivo. ¿Descartar únicamente este borrador local y regresar?')) {
+            orderNavigationMessage = 'El borrador local continúa abierto.';
+            renderOrderStatus();
+            return false;
+        }
+        orderDirty = false;
+        orderConflict = false;
+        orderSaveError = '';
+    } else if (orderDirty || orderSavePromise) {
+        try { await orderFlush(); }
+        catch (error) {
+            orderNavigationMessage = `No se pudo salir: ${error.message}`;
+            renderOrderStatus();
+            return false;
+        }
+    }
+
+    cancelPOSOrderLoad();
+    for (const id of ['order-notes-dialog', 'order-conflict-dialog', 'order-history-dialog']) {
+        const dialog = document.getElementById(id);
+        if (dialog?.open) dialog.close();
+    }
+    orderReset();
+    posCart = [];
+    posCurrentNroTicket = null;
+    posCurrentTable = null;
+    posCurrentTableEmpresa = null;
+    posIsReadOnly = false;
+    updateCartUI();
+    updatePOSViewMode();
+    navigateView(viewName);
+    return true;
+}
+
+showView = function(viewName) {
+    if (viewName !== 'pos-order' && isViewVisible('view-pos-order')) return leavePOSOrder(viewName);
+    return navigateView(viewName);
 };
 
 // ==========================================
@@ -1857,8 +1928,13 @@ async function reconcileActiveOrder() {
         return;
     }
 
+    const generation = posOrderLoadGeneration;
+    const table = posCurrentTable;
+    const empresa = posCurrentTableEmpresa;
     try {
-        const data = await orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`);
+        const data = await orderRequest(`/api/pos/pedido?mesa=${table}&empresa=${empresa}`);
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') ||
+            Number(posCurrentTable) !== Number(table) || Number(posCurrentTableEmpresa) !== Number(empresa)) return;
         if (Number(data.version || 0) !== Number(orderVersion || 0)) {
             orderConflict = true;
             orderSaveError = 'El pedido cambió mientras el dispositivo estaba en reposo. Revise la versión actual.';
@@ -1965,7 +2041,13 @@ function handleSSEEvent(data) {
     }
 
     if (data.type === 'impresion_updated' && posCurrentNroTicket && !orderDirty && !orderBusy) {
-        orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`).then(orderAccept).catch(() => {});
+        const generation = posOrderLoadGeneration;
+        const table = posCurrentTable;
+        const empresa = posCurrentTableEmpresa;
+        orderRequest(`/api/pos/pedido?mesa=${table}&empresa=${empresa}`).then(response => {
+            if (generation === posOrderLoadGeneration && isViewVisible('view-pos-order') &&
+                Number(posCurrentTable) === Number(table) && Number(posCurrentTableEmpresa) === Number(empresa)) orderAccept(response);
+        }).catch(() => {});
     }
     if (data.type === 'impresion_updated' && typeof cocinaTicketActual !== 'undefined' && cocinaTicketActual?.EnvioId === data.envioId) {
         const destination = data.destino || 'cocina';

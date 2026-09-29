@@ -5,6 +5,8 @@ const { getConnection, closeConnections, sql } = require('./db');
 const runMigrations = require('./migrate');
 const SqlSessionStore = require('./lib/sql-session-store');
 const requestContext = require('./lib/request-context');
+const { assertOperationalSchema } = require('./lib/schema-readiness');
+const { createHealthHandler } = require('./lib/health');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -85,16 +87,8 @@ function isAuthenticated(req, res, next) {
 }
 
 app.get('/', (req, res) => res.redirect('/login.html'));
-app.get('/healthz', async (req, res) => {
-    try {
-        const pool = await getConnection();
-        await pool.request().query('SELECT 1 AS ok');
-        res.json({ status: 'ok' });
-    } catch (error) {
-        console.error('Healthcheck DB:', error.message);
-        res.status(503).json({ status: 'unavailable' });
-    }
-});
+app.get('/healthz', createHealthHandler({ getConnection, assertOperationalSchema,
+    logger: message => console.error(message), safeError: requestContext.safeError }));
 
 // ==========================================
 //  LOGIN Y SESIÓN
@@ -355,6 +349,7 @@ async function start() {
     for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
         try {
             await runMigrations();
+            await assertOperationalSchema(await getConnection());
             const createTransport = protocol => String(protocol || '').toLowerCase() === 'escpos_tcp'
                 ? require('./lib/escpos-tcp').createEscPosTcpTransport() : null;
             const { startPrintWorker } = require('./lib/print-worker');
@@ -375,7 +370,7 @@ async function start() {
             process.once('SIGINT', () => shutdown('SIGINT'));
             return;
         } catch (err) {
-            console.error(`[${intento}/${MAX_REINTENTOS}] DB no disponible: ${err.message}. Reintentando en 5s...`);
+            console.error(`[${intento}/${MAX_REINTENTOS}] Inicio no disponible: ${err.message}. Reintentando en 5s...`);
             if (intento < MAX_REINTENTOS) await new Promise(r => setTimeout(r, 5000));
         }
     }

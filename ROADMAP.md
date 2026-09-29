@@ -1453,3 +1453,16 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `npm run diagnose:kitchen -- --empresa=2` revisa de forma estrictamente lectora las migraciones `007`/`009`, índices auxiliares, aislamiento, volúmenes, bloqueos visibles y duración puntual del KDS sin mostrar contenido del pedido.
 - No se agregan migraciones, variables, tablas ni cambios de impresión. Tampoco se aumenta el timeout, se usa `NOLOCK` o se modifica el aislamiento global de SQL Server.
 - Validación productiva pendiente: correlacionar la referencia `118bed9f-19ef-4453-a09e-ed45edab3f96`, ejecutar el diagnóstico en el servidor del cliente y medir durante 30 minutos con diez dispositivos la meta p95 menor de 500 ms y ausencia de tableros vaciados.
+
+---
+
+## Fase 46: Reparación de esquema y navegación segura del POS (Implementada en código; validación en cliente pendiente)
+
+- El diagnóstico de la base configurada confirmó una instalación sin `009_beverage_printing.sql`, condición que hace fallar con `500` a Cocina y al detalle POS porque ambos requieren las tablas de destinos de Bebidas. La correlación exacta de la referencia del cliente `56bb6954-0997-4801-889d-dda0ad141ecc` queda pendiente de revisar sus logs durante el despliegue.
+- `010_repair_beverage_destinations.sql` recrea de forma aditiva e idempotente las tablas e índices de destinos y completa las rutas históricas sin modificar tablas comerciales, comandas ni estados operativos.
+- El arranque valida migraciones, tablas e índices críticos después de migrar. `/healthz` solo responde correctamente con el esquema completo; `actualizar.bat` muestra automáticamente los últimos logs cuando el contenedor no alcanza ese estado.
+- El diagnóstico de Cocina comprueba ahora `009/010`, Cocina, Bebidas y Barra antes de medir el Kanban, y nunca muestra contenido comercial.
+- Los errores al cargar una mesa se separan de los conflictos de edición. Presentan **Reintentar carga**, conservan el pedido bloqueado para edición y permiten regresar al mapa.
+- Regresar cancela respuestas pendientes, limpia el contexto y funciona directamente en preventas. Un guardado normal termina antes de salir; un conflicto con borrador solicita confirmación antes de descartar únicamente los cambios locales; una escritura activa muestra una explicación en lugar de ignorar el botón.
+- La navegación invalida respuestas tardías para que una consulta iniciada en una mesa no pueda modificar otra vista después de regresar.
+- Se mantienen la caché y reintentos de la Fase 45, las comandas separadas de la Fase 44 y todos los contratos comerciales existentes. No se aumentan timeouts, no se usa `NOLOCK` y no cambia el aislamiento SQL.

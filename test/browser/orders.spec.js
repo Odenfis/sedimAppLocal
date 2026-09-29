@@ -4,7 +4,8 @@ async function fixture(page, options = {}) {
     const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
-        tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0 };
+        tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
+        orderState: 1, orderLoadError: false, orderLoadDelay: 0 };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -27,7 +28,7 @@ async function fixture(page, options = {}) {
         const pending = state.items.some(l => JSON.stringify(l) !== state.sent.get(l.lineaId)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
         const cancellations = [...state.sent.entries()].filter(([id]) => !state.items.some(l => l.lineaId === id)).map(([,line]) => JSON.parse(line));
         return { success: true, nroTicket: state.ticket, version: state.version,
-            pedido: state.ticket ? { NroTicket: state.ticket, Estado: 1, Mozo: 1 } : null,
+            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: 1 } : null,
             items: state.items.map(l => ({ ...l, Codpro: l.codPro, Descripcion: l.nombre, Cantidad: l.cantidad, Precio: l.precio, Afecto: l.afecto,
                 enviada: state.sent.has(l.lineaId) ? JSON.parse(state.sent.get(l.lineaId)) : null, pendienteEnvio: !state.sent.has(l.lineaId),
                 estadoCocina: state.kitchenStates.get(l.lineaId) || null, pendienteId: null, anulada: false })),
@@ -58,7 +59,11 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/pos/mozos') return fulfill([{ Codemp: 1, Nombre: 'José' }]);
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
         if (url.pathname === '/api/pos/products') return fulfill([product]);
-        if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') return fulfill(data());
+        if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') {
+            if (state.orderLoadDelay) await new Promise(resolve => setTimeout(resolve, state.orderLoadDelay));
+            if (state.orderLoadError) return fulfill({ success:false,message:'No se pudo cargar el pedido',diagnosticId:'diag-order-load',retryable:false },500);
+            return fulfill(data());
+        }
         if (url.pathname === '/api/pos/pedido' && req.method() === 'POST') {
             state.requestOrder.push('save');
             if (state.delaySave) await new Promise(r => setTimeout(r, state.delaySave));
@@ -364,6 +369,72 @@ test('autoguardado no recarga el mapa oculto', async ({ page }) => {
     await page.locator('.pos-product-card').first().click();
     await expect.poll(() => state.saves).toBe(1);
     expect(state.tableLoads).toBe(baseline);
+});
+
+test('Regresar funciona en una preventa de solo lectura', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.ticket = 'T001-000046';
+    state.orderState = 2;
+    state.items = [{ lineaId:'46464646-4646-4646-8646-464646464646',codPro:'02001',nombre:'Arroz con mariscos',
+        cantidad:1,precio:20,afecto:1,notasRapidas:[],nota:'' }];
+    state.sent.set(state.items[0].lineaId, JSON.stringify(state.items[0]));
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#pos-preventa-badge')).toBeVisible();
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+    expect(await page.evaluate(() => ({ table:posCurrentTable,ticket:posCurrentNroTicket,readOnly:posIsReadOnly })))
+        .toEqual({ table:null,ticket:null,readOnly:false });
+});
+
+test('un error al cargar pedido permite reintentar o regresar sin crear conflicto', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.orderLoadError = true;
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('diag-order-load');
+    await expect(page.locator('#order-retry-load')).toBeVisible();
+    expect(await page.evaluate(() => orderConflict)).toBe(false);
+
+    state.orderLoadError = false;
+    await page.locator('#order-retry-load').click();
+    await expect(page.locator('#order-retry-load')).toBeHidden();
+    state.orderLoadError = true;
+    await page.evaluate(() => retryPOSOrderLoad());
+    await expect(page.locator('#order-retry-load')).toBeVisible();
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+});
+
+test('Regresar invalida una carga tardía del pedido', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.ticket = 'T001-000047';
+    state.orderLoadDelay = 700;
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+    await page.waitForTimeout(850);
+    expect(await page.evaluate(() => ({ ticket:posCurrentNroTicket,orderVisible:isViewVisible('view-pos-order') })))
+        .toEqual({ ticket:null,orderVisible:false });
+});
+
+test('Regresar confirma el descarte de un conflicto real y espera guardados normales', async ({ page }) => {
+    const state = await fixture(page);
+    await page.evaluate(() => { orderBusy = true; renderOrderStatus(); });
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    await expect(page.locator('#order-save-message')).toContainText('Espere a que termine');
+    await page.evaluate(() => { orderBusy = false; renderOrderStatus(); });
+    await page.evaluate(() => { orderDirty = true; orderConflict = true; updateCartUI(); });
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+
+    await page.locator('.pos-table-card').first().click();
+    state.delaySave = 350;
+    await page.locator('.pos-product-card').first().click();
+    await page.locator('#pos-order-back').click();
+    await expect.poll(() => state.saves).toBeGreaterThan(0);
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
 });
 
 test('Cocina conserva datos y muestra referencia al fallar sin alert modal', async ({ page }) => {

@@ -124,7 +124,7 @@
                         <header class="pos-order-header">
                             <div class="pos-header-row top">
                                 <div class="pos-header-title" style="display:flex; align-items:center; gap:12px;">
-                                    <button class="btn-back" onclick="showView('pos-tables')"><i class="fas fa-arrow-left"></i></button>
+                                    <button id="pos-order-back" class="btn-back" type="button" onclick="leavePOSOrder()" aria-label="Regresar al mapa de mesas"><i class="fas fa-arrow-left"></i></button>
                                     <h1><span class="pos-title-desktop">Ticket de Venta - </span><span class="pos-title-mobile">Mesa </span><span class="pos-title-desktop">Mesa </span><span id="pos-current-table">0</span></h1>
                                 </div>
                                 <span id="pos-preventa-badge" class="preventa-badge" style="display:none"><i class="fas fa-lock"></i> PREVENTA - Solo Visualización</span>
@@ -210,6 +210,7 @@
                             <div class="order-status-stack">
                                 <strong id="order-kitchen-status" role="status">Sin enviar</strong>
                                 <small id="order-save-message" role="status"></small>
+                                <button id="order-retry-load" hidden onclick="retryPOSOrderLoad()">Reintentar carga</button>
                                 <button id="order-retry-save" hidden onclick="guardarMesa()">Reintentar guardado</button>
                                 <button id="order-review-conflict" hidden onclick="reviewOrderConflict()">Revisar versión actual</button>
                                 <small id="order-print-status" role="status"></small>

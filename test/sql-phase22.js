@@ -41,7 +41,7 @@ async function main() {
             CREATE TABLE Empleados(Codemp INT,Nombre VARCHAR(50),Empresa INT,Tipo INT,FecCese DATETIME);
             CREATE TABLE Valores(c_valor VARCHAR(20),n_valor DECIMAL(9,2));
             CREATE TABLE Migrations(Id INT IDENTITY PRIMARY KEY,MigrationName NVARCHAR(255),AppliedAt DATETIME DEFAULT GETDATE());
-            INSERT Migrations(MigrationName) VALUES('001_create_cocina_pedidos.sql');
+            INSERT Migrations(MigrationName) VALUES('001_create_cocina_pedidos.sql'),('009_beverage_printing.sql');
             INSERT Tablas VALUES(23,1,'T001-000001'),(23,2,'T002-000001'),(23,5,'T005-000001'),(200,2,'Cocinería');
             INSERT Mesas VALUES(1,2,2),(2,2,1),(3,2,1),(4,2,1),(5,2,1),(6,2,1),(1,4,1);
             INSERT Productos VALUES('02001','Arroz con mariscos',20,1,0,1,3),('02002','Chicha morada',8,1,0,2,1),('02007','Pisco sour',18,1,0,7,3),('04001','Otro producto',30,1,0,1,3);
@@ -53,6 +53,11 @@ async function main() {
         await pool.request().query(fs.readFileSync(path.join(__dirname,'../migrations/001_create_cocina_pedidos.sql'),'utf8'));
         await pool.request().query("INSERT Cocina_pedidos(NroTicket,Codpro,Estado) VALUES('T001-000001','02001',2)");
         await require('../migrate')(); await require('../migrate')();
+        const readiness = await require('../lib/schema-readiness').assertOperationalSchema(pool);
+        assert.equal(readiness.ready,true);
+        assert.equal((await pool.request().query("SELECT COUNT(*) n FROM Migrations WHERE MigrationName='010_repair_beverage_destinations.sql'")).recordset[0].n,1);
+        assert.ok((await pool.request().query("SELECT OBJECT_ID('Impresion_linea_destinos','U') id")).recordset[0].id);
+        assert.ok((await pool.request().query("SELECT OBJECT_ID('Impresion_trabajo_destinos','U') id")).recordset[0].id);
         const router = {};
         const app = Object.fromEntries(['get','post','put','delete'].map(method => [method, (url, auth, handler) => { router[method + ' ' + url] = handler; }]));
         require('../lib/orders').install(app, () => {}, () => {});

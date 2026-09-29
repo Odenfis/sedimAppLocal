@@ -1,7 +1,8 @@
 /* Fase 22: shared order state. Loaded before script.js; handlers run after both scripts. */
 let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
-let orderSaveError = '', orderConfirmation = '', orderGeneration = 0, orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
+let orderSaveError = '', orderLoadError = '', orderNavigationMessage = '', orderConfirmation = '', orderGeneration = 0;
+let orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
 const PRINT_DESTINATIONS = ['cocina', 'bebidas', 'barra'];
@@ -63,11 +64,12 @@ async function orderRequest(url, method = 'GET', body) {
 }
 function orderReset() {
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data) {
     if (!data.pedido) return;
+    orderLoadError = ''; orderNavigationMessage = '';
     orderVersion = data.version || 0; orderSummary = data.cocina || orderSummary; orderPrinting = data.impresion || null;
     orderPrintings = Array.isArray(data.impresiones) ? data.impresiones : (orderPrinting ? [{ ...orderPrinting, destino: 'cocina' }] : []);
     orderPendingCancellations = data.cocina?.anulaciones || [];
@@ -80,7 +82,7 @@ function orderAccept(data) {
 }
 function orderFinishDeletion() {
     clearTimeout(posAutoSaveTimer);
-    orderDirty = false; orderConflict = false; orderSaveError = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
+    orderDirty = false; orderConflict = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     posCurrentNroTicket = null; posCart = []; posIsReadOnly = false;
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
@@ -124,9 +126,10 @@ function renderOrderStatus() {
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
     const msg = document.getElementById('order-save-message');
-    msg.textContent = orderSaveError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
-    msg.classList.toggle('is-confirmation', !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
-    document.getElementById('order-retry-save').hidden = !orderSaveError || orderConflict;
+    msg.textContent = orderLoadError || orderNavigationMessage || orderSaveError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
+    msg.classList.toggle('is-confirmation', !orderLoadError && !orderNavigationMessage && !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
+    document.getElementById('order-retry-load').hidden = !orderLoadError;
+    document.getElementById('order-retry-save').hidden = !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage);
     document.getElementById('order-review-conflict').hidden = !orderConflict;
     const print = document.getElementById('order-print-status');
     const labels = { en_cola: 'En cola de impresión', procesando: 'Transmitiendo a impresora', enviado: 'Enviado a impresora', error: 'Error de impresión', incierto: 'Impresión incierta: revise el papel antes de reimprimir' };

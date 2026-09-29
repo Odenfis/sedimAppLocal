@@ -77,7 +77,10 @@ goto :failed
 
 :error_health
 echo [ERROR] SedimApp no respondio a tiempo.
-echo Revise el detalle con: %COMPOSE% logs --tail 50 app
+echo Ultimos mensajes del contenedor:
+%COMPOSE% logs --tail 80 app
+echo.
+echo Revise nuevamente con: %COMPOSE% logs --tail 100 app
 
 :failed
 echo.
