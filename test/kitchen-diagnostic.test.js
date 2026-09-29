@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { selectedCompany, EXPECTED_TABLES, EXPECTED_MIGRATIONS, EXPECTED_INDEXES } = require('../scripts/diagnose-kitchen-performance');
+const { selectedCompany, diagnosticFailure, EXPECTED_TABLES, EXPECTED_MIGRATIONS, EXPECTED_INDEXES } = require('../scripts/diagnose-kitchen-performance');
 
 test('diagnóstico de Cocina limita la empresa y verifica migraciones e índices auxiliares', () => {
     assert.equal(selectedCompany([]), 2);
@@ -12,4 +12,9 @@ test('diagnóstico de Cocina limita la empresa y verifica migraciones e índices
     assert.ok(EXPECTED_TABLES.includes('Impresion_linea_destinos'));
     assert.ok(EXPECTED_INDEXES.includes('IX_Cocina_estados_activos'));
     assert.ok(EXPECTED_INDEXES.includes('IX_Impresion_trabajo_destinos_destino'));
+});
+
+test('diagnóstico de Cocina informa código y detalle SQL sin volcar datos', () => {
+    assert.equal(diagnosticFailure({ number: 207, message: "Invalid column name 'Cabecera'." }),
+        "codigo=207; detalle=Invalid column name 'Cabecera'.");
 });

@@ -13,6 +13,12 @@ function selectedCompany(args = process.argv.slice(2)) {
     return company;
 }
 
+function diagnosticFailure(error) {
+    const identifier = error?.number || error?.code || 'sin_codigo';
+    const message = String(error?.message || 'sin detalle').replace(/\s+/g, ' ').slice(0, 240);
+    return `codigo=${identifier}; detalle=${message}`;
+}
+
 async function inspect(pool) {
     const database = (await pool.request().query(`SELECT
             CONVERT(NVARCHAR(128),SERVERPROPERTY('ProductVersion')) ProductVersion,
@@ -70,9 +76,9 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().then(code => { process.exitCode = code; }).catch(async error => {
-    console.error(`[KDS] Diagnóstico fallido: ${error.number || error.code || error.message}`);
+    console.error(`[KDS] Diagnostico fallido: ${diagnosticFailure(error)}`);
     await closeConnections();
     process.exitCode = 1;
 });
 
-module.exports = { selectedCompany, EXPECTED_TABLES, EXPECTED_MIGRATIONS, EXPECTED_INDEXES };
+module.exports = { selectedCompany, diagnosticFailure, EXPECTED_TABLES, EXPECTED_MIGRATIONS, EXPECTED_INDEXES };
