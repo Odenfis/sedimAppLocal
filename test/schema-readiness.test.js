@@ -14,8 +14,10 @@ test('la preparación exige objetos e índices de Cocina, Bebidas y Barra', () =
     assert.ok(REQUIRED_TABLES.includes('Impresion_linea_destinos'));
     assert.ok(REQUIRED_TABLES.includes('Impresion_trabajo_destinos'));
     assert.ok(REQUIRED_TABLES.includes('Impresion_barra_trabajos'));
+    assert.ok(REQUIRED_TABLES.includes('Pedido_residuos_archivo'));
     assert.ok(REQUIRED_INDEXES.includes('IX_Impresion_trabajo_destinos_destino'));
     assert.ok(REQUIRED_MIGRATIONS.includes('010_repair_beverage_destinations.sql'));
+    assert.ok(REQUIRED_MIGRATIONS.includes('011_ticket_residue_archive.sql'));
 });
 
 test('el esquema completo queda listo y uno incompleto informa solo identificadores técnicos', async () => {

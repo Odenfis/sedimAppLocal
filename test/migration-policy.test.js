@@ -52,3 +52,13 @@ test('la reparación de destinos es aditiva, idempotente y no toca tablas comerc
         assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
     }
 });
+
+test('el archivo de residuos es aditivo y no altera tablas comerciales', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '011_ticket_residue_archive.sql'), 'utf8');
+    assert.match(source, /CREATE TABLE dbo\.Pedido_residuos_archivo/);
+    assert.match(source, /CHECK\(ISJSON\(Payload\)=1\)/);
+    assert.match(source, /IX_Pedido_residuos_ticket_fecha/);
+    for (const table of ['Mesas', 'Ticket_c', 'Ticket_d', 'Productos', 'Tablas', 'Pedido_control', 'Pedido_lineas']) {
+        assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
+    }
+});

@@ -54,7 +54,7 @@ async function main(args = process.argv.slice(2)) {
         console.log(`[SQL] Motor: versión=${report.database.ProductVersion}; edición=${report.database.Edition}; compatibilidad=${report.database.compatibility_level}.`);
         console.log(`[SQL] Intercalaciones: instancia=${report.database.ServerCollation}; base=${report.database.DatabaseCollation}; tempdb=${report.database.TempdbCollation}.`);
         console.log(`[SQL] Aislamiento: snapshot=${report.database.snapshot_isolation_state_desc}; RCSI=${Boolean(report.database.is_read_committed_snapshot_on)}.`);
-        console.log(`[SQL] Esquema auxiliar: ${report.schema.ready ? 'completo, incluidas 009/010' : `faltan ${report.schema.missing.join(', ')}`}.`);
+        console.log(`[SQL] Esquema auxiliar: ${report.schema.ready ? 'completo, incluidas 009/010/011' : `faltan ${report.schema.missing.join(', ')}`}.`);
         console.log(`[SQL] Volúmenes: control=${report.volumes.PedidosControl}, estados=${report.volumes.EstadosCocina}, activos=${report.volumes.LineasActivas}, correcciones=${report.volumes.CorreccionesPendientes}, envíos=${report.volumes.Envios}, trabajos=${report.volumes.TrabajosCompartidos}.`);
         console.log(`[SQL] Solicitudes bloqueadas en este instante: ${report.blockers}.`);
         if (!report.schema.ready) {

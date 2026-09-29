@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -97,8 +97,27 @@ async function main() {
         assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Cocina_pedidos_legacy')).recordset[0].n,1);
         const base = { lineaId: randomUUID(), codPro: '02001', nombre: 'Arroz con mariscos', cantidad: 1, precio: 20, afecto: 1, notasRapidas: ['Sin cebolla'], nota: 'Sin sal' };
         const save = (items, version, nro, mesa = 2) => call('post','/api/pos/pedido',{ items, version, nroTicket: nro, mesa, empresa: 2, mozo: 1, turno: 1 });
+        const orphanLines = Array.from({ length: 4 }, (_, Orden) => ({ LineaId: randomUUID(), Orden,
+            Datos: JSON.stringify({ lineaId: randomUUID(), codPro:'02001', nombre:'Borrador', cantidad:1, precio:20, afecto:1, notasRapidas:[], nota:'' }) }));
+        await pool.request().query("INSERT Pedido_control(NroTicket,Empresa,Version,UltimoEnvio) VALUES('T001-000002',2,5,0)");
+        for (const line of orphanLines) await pool.request().input('id',line.LineaId).input('orden',line.Orden).input('datos',line.Datos)
+            .query("INSERT Pedido_lineas(LineaId,NroTicket,Orden,Datos) VALUES(@id,'T001-000002',@orden,@datos)");
         let saved = await save([base, { ...base, lineaId: randomUUID(), notasRapidas: [], nota: 'Poco picante' }]);
-        assert.equal(saved.status,200, JSON.stringify(saved)); const nro = saved.nroTicket;
+        assert.equal(saved.status,200, JSON.stringify(saved)); assert.equal(saved.nroTicket,'T001-000002'); const nro = saved.nroTicket;
+        const residueArchive = (await pool.request().query("SELECT Payload,Hash FROM Pedido_residuos_archivo WHERE NroTicket='T001-000002'")).recordset[0];
+        assert.ok(residueArchive); assert.equal(String(residueArchive.Hash).trim().length,64);
+        const archivedPayload = JSON.parse(residueArchive.Payload);
+        assert.equal(archivedPayload.tables.Pedido_control.Version,5); assert.equal(archivedPayload.tables.Pedido_lineas.length,4);
+        assert.equal((await pool.request().query("SELECT COUNT(*) n FROM Pedido_control WHERE NroTicket='T001-000002'")).recordset[0].n,1);
+        passed++; console.log('✓ exact table sequence archives and replaces only an unsent orphaned auxiliary draft');
+        await pool.request().query("INSERT Pedido_control(NroTicket,Empresa,Version,UltimoEnvio) VALUES('T001-000003',2,1,1)");
+        const unsafeRecovery = await save([{ ...base, lineaId: randomUUID() }], undefined, undefined, 3);
+        assert.equal(unsafeRecovery.status,409); assert.equal(unsafeRecovery.errorCode,'TICKET_SEQUENCE_CONFLICT');
+        assert.equal((await pool.request().query("SELECT RTRIM(c_describe) correlativo FROM Tablas WHERE n_codtabla=23 AND n_numero=1")).recordset[0].correlativo,'T001-000002');
+        assert.equal((await pool.request().query("SELECT COUNT(*) n FROM Pedido_control WHERE NroTicket='T001-000003'")).recordset[0].n,1);
+        assert.equal((await pool.request().query("SELECT COUNT(*) n FROM Pedido_residuos_archivo WHERE NroTicket='T001-000003'")).recordset[0].n,0);
+        await pool.request().query("DELETE FROM Pedido_control WHERE NroTicket='T001-000003'");
+        passed++; console.log('✓ sequence recovery rejects auxiliary records with operational activity without advancing Tablas');
         let kds = await call('get','/api/cocina/pedidos',{}, {}, { empresa: 2 }); assert.equal(kds.pedidos.filter(p => p.nroTicket === nro).length,0);
         let payment = await call('put','/api/pos/pedido/:nro/pagar',{ empresa: 2,version:saved.version },{nro}); assert.equal(payment.status,409);
         passed++; console.log('✓ save keeps notes separate and out of kitchen; pre-sale blocked');
@@ -392,7 +411,7 @@ async function main() {
         if (suitePrinterHost === undefined) delete process.env.PRINTER_HOST; else process.env.PRINTER_HOST = suitePrinterHost;
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();

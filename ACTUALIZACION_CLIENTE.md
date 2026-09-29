@@ -126,3 +126,11 @@ Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `act
 - Limpiar o Borrar Comanda conserva el carrito si SQL rechaza la operación. Cuando confirma el borrado, el ticket comercial se elimina atómicamente, la auditoría de Cocina permanece y la mesa vuelve a Libre.
 - Si un pedido anterior a Preventa debe seguir editándose y el diagnóstico indica `COMMERCIAL_CONFLICT`, soporte puede restaurar la versión web únicamente después de revisar el respaldo: `docker compose exec app npm run diagnose:order -- --empresa 2 --ticket T001-NNNNNN --apply`. `--apply` no acepta una mesa ni actúa sobre varios pedidos.
 - Después de actualizar, valide en este orden: guardar un pedido, enviar a Cocina, generar Preventa, simular el procesamiento del POS local, marcar Todo listo y Entregado, y finalmente limpiar otro pedido confirmando que regresa al mapa con la mesa Libre.
+
+## Fase 50 — correlativo bloqueado por residuo auxiliar
+
+- `Tablas` (`n_codtabla=23`) sigue definiendo el último ticket utilizado. No adelante el correlativo ni elimine filas manualmente desde SSMS.
+- Si el siguiente número solo existe como borrador auxiliar nunca enviado, el primer guardado después de actualizar lo archivará con hash y reutilizará exactamente ese número dentro de una sola transacción.
+- El log `orphaned_draft_archived` confirma la recuperación e incluye ticket, identificador de archivo, cantidad de líneas y hash, pero no el contenido del pedido.
+- Si existe `Ticket_c`, `Ticket_d`, un envío o un estado de Cocina, la aplicación responderá `409 TICKET_SEQUENCE_CONFLICT` y no modificará el residuo ni `Tablas`; entregue la referencia a soporte para revisión individual.
+- Para el caso confirmado del cliente, el resultado esperado es crear `T001-251595`, conservar el residuo anterior en `Pedido_residuos_archivo` y dejar `Tablas.c_describe` en `T001-251595`.

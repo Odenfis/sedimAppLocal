@@ -26,6 +26,14 @@ test('un conflicto de intercalación SQL se identifica sin reintento automático
     { status: 500, retryable: false, kind: 'sql_collation_conflict', errorCode: 'SQL_COLLATION_CONFLICT' });
 });
 
+test('una clave SQL duplicada es un conflicto controlado y no un error 500', () => {
+    assert.deepEqual(classifyError({ code: 'EREQUEST', number: 2627, message: 'Violation of PRIMARY KEY constraint' }),
+        { status: 409, retryable: false, kind: 'sql_unique_conflict', errorCode: 'SQL_UNIQUE_CONFLICT' });
+    const result = errorPayload({ locals: { diagnosticId: 'duplicate-1' } }, { number: 2627 });
+    assert.equal(result.body.errorCode, 'SQL_UNIQUE_CONFLICT');
+    assert.equal(result.classification.status, 409);
+});
+
 test('la respuesta clasificada conserva referencia y mensaje operativo', () => {
     const result = errorPayload({ locals: { diagnosticId: 'diag-123' } }, { code: 'ETIMEOUT' });
     assert.equal(result.classification.status, 504);

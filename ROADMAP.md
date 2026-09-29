@@ -1503,3 +1503,16 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Los rechazos controlados registran referencia, ruta, método, tipo/valor acotado de empresa y mesa, sin detalle comercial. HTML y JavaScript se revalidan después de cada despliegue.
 - `npm run diagnose:pos -- --empresa=2` comprueba, sin escrituras, la normalización, el correlativo y una mesa. `actualizar.bat` exige este diagnóstico antes de comprobar Cocina y declarar éxito.
 - No incluye migraciones ni cambios de datos comerciales.
+
+---
+
+## Fase 50: Recuperación auditada de residuos que bloquean el correlativo (Implementada en código; validación en cliente pendiente)
+
+- `Tablas`, con `n_codtabla=23` y la fila correspondiente a cada empresa, continúa siendo la única autoridad del correlativo. La aplicación toma su `c_describe`, incrementa exactamente una unidad y no busca máximos alternativos en tablas comerciales o auxiliares.
+- Antes de crear el ticket siguiente, la misma transacción comprueba si ese número está ocupado. Un ticket comercial existente o cualquier evidencia de actividad operativa responde `409 TICKET_SEQUENCE_CONFLICT`, no avanza `Tablas` y no elimina datos.
+- La recuperación automática se limita a un residuo auxiliar huérfano: `Pedido_control` de la misma empresa, sin `Ticket_c`, sin `Ticket_d`, con `UltimoEnvio=0`, sin `Cocina_envios` y sin `Cocina_estados`.
+- El residuo y sus líneas/rutas se serializan en `Pedido_residuos_archivo`, se protegen con SHA-256 y solo entonces se retiran de las tablas activas. Archivo, limpieza, avance de `Tablas` y creación del nuevo pedido comparten un único commit; cualquier fallo revierte el conjunto completo.
+- La migración `011_ticket_residue_archive.sql` crea únicamente la tabla e índice auxiliares de auditoría. No altera `Ticket_c`, `Ticket_d`, `Tablas`, `Mesas`, `Productos` ni pedidos existentes durante el despliegue.
+- Los conflictos SQL de clave única `2601/2627` se clasifican como `409 SQL_UNIQUE_CONFLICT`, evitando presentarlos como un fallo interno reintentable.
+- El escenario productivo confirmado `T001-251595` cumple el perfil recuperable: empresa 2, versión 5, cuatro líneas auxiliares, sin cabecera/detalle comercial, envíos, estados, impresiones ni archivos de cierre. Su primera creación posterior al despliegue conservará una copia auditable del residuo y utilizará exactamente `T001-251595`.
+- No se autorizan borrados SQL manuales ni recuperación masiva. La prueba de integración cubre el residuo recuperable y el bloqueo de un registro con actividad sin modificar el correlativo.
