@@ -2161,10 +2161,15 @@ connectSSE();
 // ==========================================
 let cocinaFiltro = 'todas';
 let cocinaSoundOn = false;
-let cocinaUltimoTotal = null;
+const cocinaEnviosVistos = new Map();
 let cocinaFetchTime = null;
 let cocinaData = [];
 let cocinaAudioCtx = null;
+let cocinaBellBuffer = null;
+let cocinaBellPromise = null;
+let cocinaBellFailed = false;
+let cocinaNextBellAt = 0;
+const cocinaBellSources = new Set();
 let cocinaLoadPromise = null;
 let cocinaRefreshPending = false;
 let cocinaAbortController = null;
@@ -2182,47 +2187,131 @@ function cancelCocinaLoad() {
     clearCocinaRecovery();
 }
 
-function unlockCocinaAudio() {
+async function unlockCocinaAudio() {
     try {
         if (!cocinaAudioCtx) {
             cocinaAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
-        if (cocinaAudioCtx.state === 'suspended') cocinaAudioCtx.resume();
-    } catch (e) { /* audio no disponible */ }
+        if (cocinaAudioCtx.state === 'suspended') await cocinaAudioCtx.resume();
+        return cocinaAudioCtx.state === 'running';
+    } catch (e) { return false; }
 }
 
-function toggleCocinaSound() {
-    cocinaSoundOn = !cocinaSoundOn;
+function setCocinaSoundStatus(message) {
+    const status = document.getElementById('cocina-sound-status');
+    if (status) status.textContent = message;
+}
+
+function loadCocinaBell() {
+    if (cocinaBellBuffer || cocinaBellFailed) return Promise.resolve();
+    if (!cocinaBellPromise) {
+        setCocinaSoundStatus('Cargando sonido…');
+        cocinaBellPromise = fetch('/sounds/universe_bell.mp3')
+            .then(response => {
+                if (!response.ok) throw new Error('Archivo de sonido no disponible');
+                return response.arrayBuffer();
+            })
+            .then(bytes => cocinaAudioCtx.decodeAudioData(bytes))
+            .then(buffer => {
+                cocinaBellBuffer = buffer;
+                setCocinaSoundStatus('');
+            })
+            .catch(() => {
+                cocinaBellFailed = true;
+                setCocinaSoundStatus('MP3 no disponible; se usará la alarma de respaldo.');
+            });
+    }
+    return cocinaBellPromise;
+}
+
+function renderCocinaSound() {
     const icon = document.getElementById('cocina-sound-icon');
     if (icon) icon.className = cocinaSoundOn ? 'fas fa-volume-high' : 'fas fa-volume-xmark';
-    if (cocinaSoundOn) unlockCocinaAudio();
+    const button = document.getElementById('cocina-sound-btn');
+    if (button) button.setAttribute('aria-pressed', String(cocinaSoundOn));
+    const label = document.getElementById('cocina-sound-label');
+    if (label) label.textContent = cocinaSoundOn ? 'Sonido activo' : 'Activar sonido';
 }
 
-function playTonoCocina(frecuencia, inicio, duracion) {
+async function toggleCocinaSound() {
+    if (cocinaSoundOn) {
+        cocinaSoundOn = false;
+        for (const source of cocinaBellSources) source.stop();
+        cocinaBellSources.clear();
+        cocinaNextBellAt = 0;
+    } else {
+        cocinaSoundOn = await unlockCocinaAudio();
+        if (cocinaSoundOn) void loadCocinaBell();
+        else setCocinaSoundStatus('Audio bloqueado. Toque Activar sonido nuevamente.');
+    }
+    renderCocinaSound();
+}
+
+function playTonoCocina(frecuencia, inicio, duracion, level) {
     const ctx = cocinaAudioCtx;
     if (!ctx || ctx.state !== 'running') return;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
     gain.connect(ctx.destination);
-    osc.type = 'sine';
+    osc.type = 'square';
     osc.frequency.value = frecuencia;
     const t0 = ctx.currentTime + inicio;
-    gain.gain.setValueAtTime(0.4, t0);
+    gain.gain.setValueAtTime(0.001, t0);
+    gain.gain.linearRampToValueAtTime(level, t0 + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.001, t0 + duracion);
     osc.start(t0);
     osc.stop(t0 + duracion);
 }
 
+function playCocinaFallback(level) {
+    const offset = Math.max(0, cocinaNextBellAt - cocinaAudioCtx.currentTime);
+    cocinaNextBellAt = cocinaAudioCtx.currentTime + offset + 1.35;
+    [0, 0.45, 0.9].forEach(start => {
+        playTonoCocina(1050, offset + start, 0.22, level * 0.18);
+        playTonoCocina(740, offset + start + 0.23, 0.2, level * 0.18);
+    });
+}
+
 function playCocinaBeep() {
     if (!cocinaSoundOn) return;
     try {
-        if (!cocinaAudioCtx) unlockCocinaAudio();
-        if (cocinaAudioCtx && cocinaAudioCtx.state === 'suspended') cocinaAudioCtx.resume();
-        // Doble pitido para destacar en ambiente ruidoso
-        playTonoCocina(880, 0, 0.25);
-        playTonoCocina(660, 0.3, 0.35);
+        const volume = Number(document.getElementById('cocina-volume')?.value ?? 80) / 100;
+        const level = Math.max(0, Math.min(1, volume));
+        const ctx = cocinaAudioCtx;
+        if (!level || ctx?.state !== 'running') return;
+        if (!cocinaBellBuffer) return playCocinaFallback(level);
+        const source = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        source.buffer = cocinaBellBuffer;
+        gain.gain.value = level;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+        source.onended = () => { cocinaBellSources.delete(source); source.disconnect(); gain.disconnect(); };
+        const startAt = Math.max(ctx.currentTime, cocinaNextBellAt);
+        cocinaNextBellAt = startAt + cocinaBellBuffer.duration;
+        cocinaBellSources.add(source);
+        source.start(startAt);
     } catch (e) { /* audio no disponible */ }
+}
+
+async function testCocinaSound() {
+    if (!cocinaSoundOn) cocinaSoundOn = await unlockCocinaAudio();
+    renderCocinaSound();
+    if (!cocinaSoundOn) {
+        setCocinaSoundStatus('Audio bloqueado. Toque Probar sonido nuevamente.');
+        return;
+    }
+    await loadCocinaBell();
+    playCocinaBeep();
+}
+
+function observeCocinaEnvios(empresa, pedidos, stale) {
+    if (stale) return false;
+    const current = new Set(pedidos.map(p => p.envioId).filter(Boolean));
+    const previous = cocinaEnviosVistos.get(empresa);
+    cocinaEnviosVistos.set(empresa, new Set([...(previous || []), ...current]));
+    return Boolean(previous && [...current].some(id => !previous.has(id)));
 }
 
 function setCocinaFiltro(f) {
@@ -2319,11 +2408,7 @@ async function loadCocinaPedidosOnce() {
         const synchronizedAt = new Date(synchronization.actualizadaEn).valueOf();
         cocinaFetchTime = Number.isNaN(synchronizedAt) ? Date.now() : synchronizedAt;
 
-        const totalTickets = new Set(cocinaData.map(r => r.NroTicket)).size;
-        if (!synchronization.desactualizado && cocinaSoundOn && cocinaUltimoTotal !== null && totalTickets > cocinaUltimoTotal) {
-            playCocinaBeep();
-        }
-        cocinaUltimoTotal = totalTickets;
+        if (observeCocinaEnvios(company, data.pedidos || [], synchronization.desactualizado)) playCocinaBeep();
         if (synchronization.desactualizado) {
             const ref = synchronization.diagnosticId ? ` Referencia: ${synchronization.diagnosticId}.` : '';
             setLoadNotice('kitchen', board,
@@ -2681,7 +2766,6 @@ async function entregarCocina(nroTicket) {
     try {
         await orderRequest(`/api/cocina/ticket/${encodeURIComponent(nroTicket)}/entregado`, 'PUT', { empresa: kitchenCompany() });
         cocinaData = cocinaData.filter(r => r.NroTicket !== nroTicket);
-        cocinaUltimoTotal = new Set(cocinaData.map(r => r.NroTicket)).size;
         renderCocinaBoard();
     } catch (e) {
         console.error(e);

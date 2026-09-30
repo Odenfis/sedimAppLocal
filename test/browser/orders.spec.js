@@ -485,6 +485,60 @@ test('Cocina conserva datos y muestra referencia al fallar sin alert modal', asy
     await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
 });
 
+test('Cocina avisa una vez por envío, incluso al actualizar el mismo ticket', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.kds.push({ NroTicket:'T001-000010', NroMesa:10, LineaId:'10101010-1010-4010-8010-101010101010',
+        EnvioId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', Codpro:'02001', EstadoCocina:1, Cantidad:1,
+        Descripcion:'Plato', Categoria:'Platos', FechaTicket:new Date().toISOString(), MinutosEspera:0 });
+    await page.evaluate(() => {
+        window.__kitchenAlarms = 0;
+        playCocinaBeep = () => { window.__kitchenAlarms++; };
+        showView('cocina');
+    });
+    await page.selectOption('#cocina-empresa-select', '02');
+    await expect(page.locator('#cocina-board')).toContainText('Plato');
+    expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(0);
+
+    state.kds[0].EnvioId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await page.evaluate(() => loadCocinaPedidos());
+    expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(1);
+    await page.evaluate(() => loadCocinaPedidos());
+    expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(1);
+
+    state.kds[0].EnvioId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    state.kitchenStaleResponses = 1;
+    await page.evaluate(() => loadCocinaPedidos());
+    expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(1);
+    await page.evaluate(() => loadCocinaPedidos());
+    expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(2);
+});
+
+test('Cocina carga el MP3 local y Probar sonido usa el nivel elegido', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    await page.evaluate(() => showView('cocina'));
+    const response = await page.request.get('/sounds/universe_bell.mp3');
+    expect(response.ok()).toBeTruthy();
+    expect(response.headers()['content-type']).toContain('audio/mpeg');
+
+    await page.locator('#cocina-volume').fill('35');
+    await page.locator('#cocina-sound-test').click();
+    await expect(page.locator('#cocina-sound-btn')).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => page.evaluate(() => cocinaBellBuffer?.duration || 0)).toBeGreaterThan(1);
+    expect(await page.evaluate(() => cocinaBellFailed)).toBe(false);
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(1);
+    expect(await page.locator('#cocina-volume').inputValue()).toBe('35');
+});
+
+test('Cocina informa el fallo del MP3 y conserva la alarma de respaldo', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    await page.route('**/sounds/universe_bell.mp3', route => route.fulfill({ status: 404, body: '' }));
+    await page.evaluate(() => showView('cocina'));
+    await page.locator('#cocina-sound-test').click();
+    await expect(page.locator('#cocina-sound-status')).toContainText('alarma de respaldo');
+    expect(await page.evaluate(() => cocinaBellFailed)).toBe(true);
+    await expect(page.locator('#cocina-sound-btn')).toHaveAttribute('aria-pressed', 'true');
+});
+
 test('Cocina identifica una instantánea desactualizada y se recupera automáticamente', async ({ page }) => {
     const state = await fixture(page, { openTable: false });
     state.kds.push({ NroTicket:'T001-000045',NroMesa:45,LineaId:'45454545-4545-4545-8545-454545454545',Codpro:'02001',

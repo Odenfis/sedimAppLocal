@@ -252,9 +252,16 @@
                             <option value="06">Inversiones Abruzzo SAC</option>
                         </select>
                     </div>
-                    <button id="cocina-sound-btn" class="cocina-sound-btn" onclick="toggleCocinaSound()" title="Sonido al llegar comanda">
-                        <i class="fas fa-volume-xmark" id="cocina-sound-icon"></i>
-                    </button>
+                    <div class="cocina-sound-controls">
+                        <button id="cocina-sound-btn" class="cocina-sound-btn" type="button" onclick="toggleCocinaSound()" aria-pressed="false">
+                            <i class="fas fa-volume-xmark" id="cocina-sound-icon" aria-hidden="true"></i>
+                            <span id="cocina-sound-label">Activar sonido</span>
+                        </button>
+                        <label for="cocina-volume">Nivel</label>
+                        <input id="cocina-volume" type="range" min="0" max="100" value="80" aria-label="Nivel de alarma de Cocina">
+                        <button id="cocina-sound-test" type="button" onclick="testCocinaSound()">Probar sonido</button>
+                        <span id="cocina-sound-status" role="status" aria-live="polite"></span>
+                    </div>
                 </div>
 
                 <div class="cocina-chips">
