@@ -107,7 +107,7 @@ function orderPayload() {
     }
     return {
         mesa: posCurrentTable, empresa: company, turno: getTurnoValue(company, posCurrentTurnoLabel),
-        mozo: document.getElementById('pos-mojo-select').value || 1, nroTicket: posCurrentNroTicket,
+        mozo: document.getElementById('pos-mojo-select').value || null, nroTicket: posCurrentNroTicket,
         version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
             lineaId: i.lineaId, codPro: i.codPro,
             nombre: i.nombre, precio: i.precioBase ?? i.precio, cantidad: i.cantidad, afecto: i.afecto,

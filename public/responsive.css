@@ -4,8 +4,8 @@
    Cargar SIEMPRE después de style.css
    Breakpoints:
      - Móvil:  max-width 480px   (ref 440x956)
-     - Tablet: 481px a 1200px    (incluye iPad 10\" horizontal)
-     - >1200px: desktop sin cambios
+     - Tablet: 481px a 1200px; táctil hasta 1400px
+     - Desktop: >1200px con puntero fino; >1400px en táctil
    ============================================ */
 
 /* =========================================
@@ -109,7 +109,7 @@ button,
 /* =========================================
    2. MAPA COMPACTO (hasta 1200px)
    ========================================= */
-@media (max-width: 1200px) {
+@media (max-width: 1200px), (max-width: 1400px) and (pointer: coarse) {
     .pos-table-group-filter-row {
         display: block;
         padding-top: 10px;
@@ -201,10 +201,10 @@ button,
 
 /* =========================================
    3. TABLET (481px a 1200px) — incluye iPad Safari horizontal
-   Se mantiene el layout de 2 columnas del POS.
+   El catálogo ocupa el ancho y el detalle se abre como panel lateral.
    El sidebar ya es drawer por reglas existentes.
    ========================================= */
-@media (min-width: 481px) and (max-width: 1200px) {
+@media (min-width: 481px) and (max-width: 1200px), (min-width: 481px) and (max-width: 1400px) and (pointer: coarse) {
     .content {
         padding: 1.25rem;
         padding-top: 60px;
@@ -828,7 +828,7 @@ button,
     display: none;
 }
 
-@media (min-width: 1201px) {
+@media (min-width: 1201px) and (pointer: fine), (min-width: 1401px) {
     .pos-totals-breakdown {
         display: block !important;
     }
@@ -850,7 +850,7 @@ button,
     width: 100%;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1200px), (max-width: 1400px) and (pointer: coarse) {
     body.cart-drawer-open {
         overflow: hidden;
     }
@@ -1210,4 +1210,24 @@ button,
     .pos-totals-details summary i {
         transition: none;
     }
+}
+
+/* Fase 52: tablets táctiles, incluida Tab A11 con viewport de escritorio. */
+@media (min-width: 481px) and (max-width: 1200px), (min-width: 481px) and (max-width: 1400px) and (pointer: coarse) {
+    .pos-order-layout {
+        height: calc(100dvh - 80px);
+        box-sizing: border-box;
+        padding: 8px;
+    }
+    .pos-order-main { gap: 8px; min-height: 0; }
+    .pos-order-header { padding: 8px 12px; flex-shrink: 0; }
+    .pos-order-header h1 { font-size: 1rem; }
+    .pos-order-sidebar { width: min(680px, 96vw); }
+    .pos-sidebar-header { min-height: 56px; padding: 8px 14px; flex-shrink: 0; }
+    .pos-cart-totals, .pos-order-actions { flex-shrink: 0; }
+    .pos-cart-empty { min-height: 120px; padding: 16px; }
+    .cart-item { gap: 6px 12px; padding: 10px 0; }
+    .pos-cart-totals { padding: 8px 16px; }
+    .pos-order-actions { padding: 8px 14px; }
+    .order-primary-actions > button { min-height: 44px; }
 }

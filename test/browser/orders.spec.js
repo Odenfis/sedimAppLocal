@@ -59,7 +59,12 @@ async function fixture(page, options = {}) {
                 : options.tables;
             return fulfill(tables || [{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 }]);
         }
-        if (url.pathname === '/api/pos/mozos') return fulfill([{ Codemp: 1, Nombre: 'José' }]);
+        if (url.pathname === '/api/pos/mozos') {
+            if (options.employeeScope && Number(url.searchParams.get('empresa')) === 2 && Number(url.searchParams.get('mesa')) >= 220 && Number(url.searchParams.get('mesa')) <= 230) {
+                return fulfill([{ Codemp: 195, Nombre: 'PEDIDOS YA' }, { Codemp: 203, Nombre: 'RAPPI' }]);
+            }
+            return fulfill([{ Codemp: 1, Nombre: 'José' }]);
+        }
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
         if (url.pathname === '/api/pos/products') return fulfill([product]);
         if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') {
@@ -72,6 +77,11 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/pos/pedido' && req.method() === 'POST') {
             state.requestOrder.push('save');
             state.orderCompanies.push(body.empresa);
+            if (options.employeeScope) {
+                const marketplace = Number(body.empresa) === 2 && Number(body.mesa) >= 220 && Number(body.mesa) <= 230;
+                const allowed = marketplace ? [195, 203].includes(Number(body.mozo)) : Number(body.mozo) === 1;
+                if (!allowed) return fulfill({ success:false, message:marketplace ? 'Seleccione PEDIDOS YA o RAPPI para esta mesa' : 'Seleccione un mozo activo de esta empresa' }, 400);
+            }
             if (state.invalidCompanyError) return fulfill({ success:false,message:'Empresa inválida',errorCode:'INVALID_COMPANY',diagnosticId:'diag-company',retryable:false },400);
             if (state.delaySave) await new Promise(r => setTimeout(r, state.delaySave));
             if (state.conflict) return fulfill({ message: 'Pedido cambiado por otro dispositivo' }, 409);
@@ -137,6 +147,40 @@ test('normaliza la empresa textual de Mesas y guarda siempre el valor canónico'
     await page.locator('.pos-product-card').first().click();
     await expect.poll(() => state.saves).toBe(1);
     expect(state.orderCompanies).toEqual(['2', 2]);
+});
+
+test('mesas 220 y 230 de Empresa 2 exigen elegir PEDIDOS YA o RAPPI', async ({ page }) => {
+    for (const [mesa, employee] of [[220, 195], [230, 203]]) {
+        const state = await fixture(page, { openTable: false, employeeScope: true,
+            tables: [{ Numero: mesa, Empresa: 2, Ambiente: 1, Estado: 1 }] });
+        await page.locator(`[data-table-number="${mesa}"]`).click();
+        await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione plataforma');
+        expect(await page.locator('#pos-mojo-select').inputValue()).toBe('');
+        await page.locator('.pos-product-card').first().click();
+        await expect(page.locator('#order-save-message')).toContainText('Seleccione PEDIDOS YA o RAPPI');
+        expect(state.saves).toBe(0);
+        await page.locator('.pos-mojo-badge').click();
+        await expect(page.locator('#mozo-list .mozo-option')).toHaveText(['PEDIDOS YA', 'RAPPI']);
+        await page.locator(`#mozo-list .mozo-option:has-text("${employee === 195 ? 'PEDIDOS YA' : 'RAPPI'}")`).click();
+        await expect.poll(() => state.saves).toBe(1);
+        expect(await page.locator('#pos-mojo-select').inputValue()).toBe(String(employee));
+    }
+});
+
+test('plataformas no heredan mozos y mesas vecinas conservan mozos Tipo 3', async ({ page }) => {
+    await fixture(page, { openTable: false, employeeScope: true,
+        tables: empresa => [219, 220, 231].map(Numero => ({ Numero, Empresa: Number(empresa), Ambiente: 1, Estado: 1 })) });
+    await page.locator('[data-table-number="219"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José');
+    await page.evaluate(() => openPOSOrder(220, 2));
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione plataforma');
+    expect(await page.locator('#pos-mojo-select').inputValue()).toBe('');
+    await page.evaluate(() => openPOSOrder(231, 2));
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José');
+    await page.evaluate(() => showView('pos-tables'));
+    await page.selectOption('#pos-empresa-select', '04');
+    await page.locator('[data-table-number="220"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José');
 });
 
 test('una mesa de otra empresa se bloquea antes de consultar o modificar el pedido', async ({ page }) => {
@@ -1113,14 +1157,14 @@ test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', 
     await page.locator('#pos-cart-fab').click();
     let sheet = await page.locator('#pos-order-sidebar').boundingBox();
     expect(sheet.width).toBeGreaterThanOrEqual(480);
-    expect(sheet.width).toBeLessThanOrEqual(560);
+    expect(sheet.width).toBeLessThanOrEqual(680);
     expect(sheet.x).toBeGreaterThan(0);
     await page.locator('#pos-cart-close').click();
 
     await page.setViewportSize({ width: 1024, height: 1366 });
     await page.locator('#pos-cart-fab').click();
     sheet = await page.locator('#pos-order-sidebar').boundingBox();
-    expect(sheet.width).toBeCloseTo(560, 1);
+    expect(sheet.width).toBeCloseTo(680, 1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await page.setViewportSize({ width: 1194, height: 834 });
@@ -1138,8 +1182,8 @@ test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', 
     await page.locator('#mobile-overlay').click({ position: { x: 500, y: 100 } });
     await page.locator('#pos-cart-fab').click();
     sheet = await page.locator('#pos-order-sidebar').boundingBox();
-    expect(sheet.width).toBeCloseTo(560, 1);
-    expect(sheet.x).toBeGreaterThan(600);
+    expect(sheet.width).toBeCloseTo(680, 1);
+    expect(sheet.x).toBeGreaterThan(500);
 
     await page.setViewportSize({ width: 834, height: 1194 });
     await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
@@ -1168,4 +1212,46 @@ test('cocina presenta antes/después y permite reconocer conservando preparació
     await page.getByRole('button',{name:'Reconocer cambio',exact:true}).click();
     await expect(page.locator('.kitchen-correction')).toHaveCount(0);
     await expect(page.locator('.cocina-item.estado-2')).toContainText('Sin azúcar');
+});
+
+test('tablet conserva foco y texto al cambiar solo la altura del teclado', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 1340 });
+    const state = await fixture(page);
+    const search = page.locator('#pos-product-search');
+    await search.fill('Arroz');
+    for (const height of [700, 620, 1340]) {
+        await page.setViewportSize({ width: 800, height });
+        await expect(search).toBeFocused();
+        await expect(search).toHaveValue('Arroz');
+    }
+    await search.press('End');
+    await search.pressSequentially(' con');
+    await expect(search).toHaveValue('Arroz con');
+    expect(state.saves).toBe(0);
+    await page.setViewportSize({ width: 1340, height: 800 });
+    await expect(search).not.toBeFocused();
+});
+
+test('@android tablet táctil de 1340px usa detalle amplio y menú bajo demanda', async ({ page }) => {
+    await page.setViewportSize({ width: 1340, height: 800 });
+    const state = await fixture(page);
+    expect(await page.locator('#sidebar').evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+    const search = page.locator('#pos-product-search');
+    await search.fill('Arroz');
+    await page.setViewportSize({ width: 1340, height: 470 });
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue('Arroz');
+    await page.setViewportSize({ width: 1340, height: 800 });
+    await page.locator('.pos-product-card').first().tap();
+    await expect.poll(() => state.saves).toBe(1);
+    await page.locator('#pos-cart-fab').tap();
+    const detail = page.locator('#pos-order-sidebar');
+    await expect(detail).toHaveClass(/open/);
+    const box = await detail.boundingBox();
+    await expect(page.locator('#pos-cart-close')).toBeFocused();
+    await page.screenshot({ path: '/tmp/sedim-tablet-detail.png' });
+    expect(box.width).toBeGreaterThanOrEqual(640);
+    expect(await page.locator('.pos-cart-scroll-region').evaluate(element => element.clientHeight)).toBeGreaterThan(400);
+    await expect(page.locator('#pos-totals-details')).not.toHaveAttribute('open', '');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

@@ -1516,3 +1516,25 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Los conflictos SQL de clave única `2601/2627` se clasifican como `409 SQL_UNIQUE_CONFLICT`, evitando presentarlos como un fallo interno reintentable.
 - El escenario productivo confirmado `T001-251595` cumple el perfil recuperable: empresa 2, versión 5, cuatro líneas auxiliares, sin cabecera/detalle comercial, envíos, estados, impresiones ni archivos de cierre. Su primera creación posterior al despliegue conservará una copia auditable del residuo y utilizará exactamente `T001-251595`.
 - No se autorizan borrados SQL manuales ni recuperación masiva. La prueba de integración cubre el residuo recuperable y el bloqueo de un registro con actividad sin modificar el correlativo.
+
+---
+
+## Fase 51: Empleados de plataformas en mesas 220–230 (Implementada en código; validación en cliente pendiente)
+
+- En Empresa 2, las mesas 220–230 ofrecen únicamente los empleados activos 195 (PEDIDOS YA) y 203 (RAPPI), sin selección inicial. Las demás mesas conservan mozos activos `Tipo=3`, excluyendo esos códigos.
+- La consulta de empleados y el guardado aplican la misma regla en el servidor. Un empleado fuera de alcance se rechaza antes de crear o modificar el pedido.
+- Al cambiar de mesa se limpia la selección anterior. No hay migraciones ni cambios en Cocina, impresión o tablas comerciales.
+- Validación automatizada: límites del rango, ambas plataformas, selección obligatoria, mesas vecinas y otra empresa. Falta corroborar los dos empleados y guardar una comanda de prueba en el cliente.
+
+---
+
+## Fase 52: Búsqueda estable y espacio útil en tablets (Implementada en código; validación física pendiente)
+
+- Los cambios exclusivos de altura al abrir/cerrar el teclado ya no reinician el buscador ni interpretan una falsa rotación. La limpieza de búsqueda y drawers se limita a cambios de ancho o del ángulo de orientación reportado por el dispositivo.
+- Menú, mapa y detalle comparten el criterio adaptable: hasta 1200 px en todos los dispositivos y hasta 1400 px cuando el puntero principal es táctil. Esto cubre tablets que presentan un viewport ancho como el observado en la Galaxy Tab A11 sin cambiar el escritorio con ratón de 1280 px.
+- El catálogo recupera el ancho del menú fijo y del detalle cerrado. En tablet el detalle abre un panel lateral de hasta 680 px o 96% del viewport, con cabecera y pie compactos, desglose plegable y lista desplazable. Se conserva una sola instancia del carrito.
+- La cabecera del catálogo reduce padding y separación y el contenedor aprovecha mejor la altura disponible. Los controles principales mantienen al menos 44 px y el diseño de celular conserva sus reglas.
+- Los enlaces de las dos hojas de estilo incluyen versión 52 para evitar reutilizar estilos anteriores después de actualizar.
+- No se modifican backend, API, migraciones, persistencia, lógica comercial, autoguardado, Cocina ni impresión en esta fase. Se respetan los cambios locales anteriores de la Fase 51.
+- Validación: comprobación de sintaxis, 60/60 pruebas unitarias y 55/55 pruebas Playwright aprobadas. Playwright cubre foco/texto durante reducción y recuperación de altura, rotación real, tablet táctil de 1340 px, amplitud/altura útil del detalle y regresiones existentes de celular/escritorio y operaciones del pedido.
+- Pendiente física: comprobar en la Tab A11 Chrome y acceso tipo app, vertical/horizontal, teclado Samsung, pedidos largos, notas, envío explícito y Preventa antes de dar por validada la fase en el cliente. La emulación del navegador no reproduce el teclado Android físico.

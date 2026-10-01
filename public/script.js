@@ -256,10 +256,12 @@ function toggleSubmenu(element) {
     if (arrow) arrow.style.transform = submenu.classList.contains('open') ? 'rotate(180deg)' : 'rotate(0deg)';
 }
 
+const compactPOSMedia = window.matchMedia('(max-width: 1200px), (max-width: 1400px) and (pointer: coarse)');
+
 function toggleSidebar() {
     const sidebar = document.getElementById('sidebar');
     const overlay = document.getElementById('mobile-overlay');
-    const isCompact = window.innerWidth <= 1200;
+    const isCompact = compactPOSMedia.matches;
     if (isCompact) { sidebar.classList.toggle('open'); overlay.classList.toggle('active'); }
     else {
         sidebar.classList.toggle('collapsed');
@@ -268,27 +270,31 @@ function toggleSidebar() {
         else { icon.classList.remove('fa-arrow-right'); icon.classList.add('fa-bars'); }
     }
 }
-let lastViewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
-let lastTableMapCompact = window.innerWidth <= 1200;
+let lastViewportWidth = window.innerWidth;
+let lastScreenAngle = window.screen.orientation?.angle;
+let lastTableMapCompact = compactPOSMedia.matches;
 window.addEventListener('resize', () => {
-    const viewportOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
-    const tableMapCompact = window.innerWidth <= 1200;
-    if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) {
+    const screenAngle = window.screen.orientation?.angle;
+    // Keyboard resizing changes height; it must never dismiss the focused search.
+    const layoutChanged = window.innerWidth !== lastViewportWidth || screenAngle !== lastScreenAngle;
+    const tableMapCompact = compactPOSMedia.matches;
+    if (!tableMapCompact || layoutChanged) {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('mobile-overlay').classList.remove('active');
     }
-    if (window.innerWidth > 1200 || viewportOrientation !== lastViewportOrientation) closeCartSheet();
-    if (window.innerWidth > 480 || viewportOrientation !== lastViewportOrientation) {
+    if (!tableMapCompact || layoutChanged) closeCartSheet();
+    if (layoutChanged) {
         resetMobilePOSSearch();
         resetMobilePOSHeader();
     }
-    if ((tableMapCompact && !lastTableMapCompact) || viewportOrientation !== lastViewportOrientation) {
+    if ((tableMapCompact && !lastTableMapCompact) || layoutChanged) {
         closePOSTableGroups();
     } else {
         syncPOSTableGroupDisclosure();
     }
     lastTableMapCompact = tableMapCompact;
-    lastViewportOrientation = viewportOrientation;
+    lastViewportWidth = window.innerWidth;
+    lastScreenAngle = screenAngle;
 });
 // ... existing code ...
 async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; }
@@ -346,7 +352,7 @@ const POS_TABLE_GROUP_FILTERS = Object.freeze([
 ]);
 
 function isCompactTableMapView() {
-    return window.innerWidth <= 1200;
+    return compactPOSMedia.matches;
 }
 
 function getPOSTableGroupLabel() {
@@ -956,7 +962,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     
     const empresa = selectedCompany;
     if (empresa) {
-        await loadMozos(empresa);
+        await loadMozos(empresa, tableNum);
         if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         const controller = new AbortController();
         posOrderAbortController = controller;
@@ -976,7 +982,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 document.getElementById('pos-guests').value = data.pedido.Comensales || 1;
                 
                 if (data.pedido.Mozo) {
-                    const mozoActual = posMozosList.find(m => m.Codemp === data.pedido.Mozo);
+                    const mozoActual = posMozosList.find(m => Number(m.Codemp) === Number(data.pedido.Mozo));
                     if (mozoActual) {
                         document.getElementById('pos-mojo-select').value = mozoActual.Codemp;
                         document.getElementById('pos-mojo-name').innerText = mozoActual.Nombre;
@@ -1094,9 +1100,13 @@ function updatePOSViewMode() {
     updateCartUI();
 }
 
-async function loadMozos(empresa) {
+async function loadMozos(empresa, mesa) {
     const select = document.getElementById('pos-mojo-select');
     if (!select) return;
+    select.value = '';
+    posMozosList = [];
+    const badge = document.querySelector('.pos-mojo-badge');
+    badge?.classList.remove('has-mozos');
     
     if (!empresa) {
         select.innerHTML = '<option value="">Seleccione empresa</option>';
@@ -1104,19 +1114,20 @@ async function loadMozos(empresa) {
     }
     
     try {
-        const res = await fetch(`/api/pos/mozos?empresa=${empresa}`);
+        const res = await fetch(`/api/pos/mozos?empresa=${encodeURIComponent(empresa)}&mesa=${encodeURIComponent(mesa)}`);
+        if (!res.ok) throw new Error('No se pudo cargar la lista de empleados');
         const mozos = await res.json();
+        if (Number(posCurrentTable) !== Number(mesa) || Number(posCurrentTableEmpresa) !== Number(empresa)) return;
         
         select.innerHTML = '<option value="">Seleccione mozo</option>';
         posMozosList = mozos;
         
-        const currentMozo = document.getElementById('pos-mojo-select').value;
-        const badge = document.querySelector('.pos-mojo-badge');
-        
         if (mozos.length > 0) {
-            if (!currentMozo) {
+            if (!(Number(empresa) === 2 && getPOSTableVisual(mesa, empresa).key === 'marketplaces')) {
                 select.value = mozos[0].Codemp;
                 document.getElementById('pos-mojo-name').innerText = mozos[0].Nombre;
+            } else {
+                document.getElementById('pos-mojo-name').innerText = 'Seleccione plataforma';
             }
             if (badge) badge.classList.add('has-mozos');
         } else {
@@ -1124,6 +1135,9 @@ async function loadMozos(empresa) {
         }
     } catch (e) {
         console.error('Error al cargar mozos:', e);
+        if (Number(posCurrentTable) === Number(mesa) && Number(posCurrentTableEmpresa) === Number(empresa)) {
+            document.getElementById('pos-mojo-name').innerText = 'Empleados no disponibles';
+        }
     }
 }
 
@@ -1787,7 +1801,7 @@ showView = function(viewName) {
 // ==========================================
 //  RESPONSIVE: DRAWER DEL CARRITO (MÓVIL Y TABLET)
 // ==========================================
-const compactOrderMedia = window.matchMedia('(max-width: 1200px)');
+const compactOrderMedia = compactPOSMedia;
 let cartSheetReturnFocus = null;
 let cartSheetFocusTimer = null;
 

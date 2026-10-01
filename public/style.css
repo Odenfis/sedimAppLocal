@@ -2235,7 +2235,7 @@ form label {
 }
 
 /* MEDIA QUERIES */
-@media (max-width: 1200px) {
+@media (max-width: 1200px), (max-width: 1400px) and (pointer: coarse) {
     .sidebar {
         position: fixed;
         height: 100%;

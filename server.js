@@ -8,6 +8,7 @@ const requestContext = require('./lib/request-context');
 const { assertOperationalSchema } = require('./lib/schema-readiness');
 const { createHealthHandler } = require('./lib/health');
 const { normalizeCompany } = require('./lib/company-context');
+const { employeeEligibilitySql } = require('./lib/employee-scope');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -263,21 +264,25 @@ app.put('/api/pos/tables/:numero/liberar-reservada', isAuthenticated, async (req
 });
 
 app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
-    const { empresa } = req.query;
+    const { empresa, mesa } = req.query;
     try {
+        const company = normalizeCompany(empresa).empresa;
+        if (mesa != null && (!/^\d+$/.test(String(mesa)) || !Number.isSafeInteger(Number(mesa)))) {
+            return res.status(400).json({ success: false, message: 'Mesa inválida' });
+        }
         const pool = await getConnection();
         const request = pool.request();
-        request.input('empresa', sql.Int, parseInt(empresa));
+        request.input('empresa', sql.Int, company);
 
         const result = await request.query(`
             SELECT Codemp, Nombre 
             FROM Empleados 
-            WHERE Tipo = 3 AND Empresa = @empresa AND FecCese IS NULL
+            WHERE ${employeeEligibilitySql(company, mesa)} AND Empresa = @empresa AND FecCese IS NULL
             ORDER BY Nombre
         `);
 
         res.json(result.recordset);
-    } catch (e) { internalError(res, e, 'Listar mozos'); }
+    } catch (e) { internalError(res, e, 'Listar mozos', req); }
 });
 
 function buildPOSCategoriesQuery({ empresa } = {}) {
