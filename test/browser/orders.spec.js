@@ -31,7 +31,7 @@ async function fixture(page, options = {}) {
         return { success: true, nroTicket: state.ticket, version: state.version,
             conciliacionComercial: { status: state.commercialConflict ? 'conflict' : 'ok',
                 code: state.commercialConflict ? 'COMMERCIAL_CONFLICT' : null },
-            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: 1 } : null,
+            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: 1, CodigoPedido: state.codigoPedido || null } : null,
             items: state.items.map(l => ({ ...l, Codpro: l.codPro, Descripcion: l.nombre, Cantidad: l.cantidad, Precio: l.precio, Afecto: l.afecto,
                 enviada: state.sent.has(l.lineaId) ? JSON.parse(state.sent.get(l.lineaId)) : null, pendienteEnvio: !state.sent.has(l.lineaId),
                 estadoCocina: state.kitchenStates.get(l.lineaId) || null, pendienteId: null, anulada: false })),
@@ -89,7 +89,7 @@ async function fixture(page, options = {}) {
                 state.deletes++; state.version++; state.ticket = null; state.items = []; state.sent.clear();
                 return fulfill({ success:true,pedidoEliminado:true });
             }
-            state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
+            state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
         }
         if (url.pathname.endsWith('/enviar-cocina')) {
             state.requestOrder.push('send'); state.sends++; state.version++;
@@ -1384,4 +1384,102 @@ test('confirmación rechaza cambio de mesa y solo lectura', async ({ page }) => 
     await page.locator('[data-action="del"]').click();
     await page.evaluate(() => orderReset());
     await expect(page.locator('#order-remove-dialog')).not.toBeVisible();
+});
+
+for (const width of [390, 768, 1280]) {
+    test(`código de pedido persiste y exige envío a ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        const state = await fixture(page, { openTable: false, tables: [{ Numero: 201, Empresa: 2, Estado: 1 }] });
+        await page.evaluate(() => openPOSOrder(201, 2));
+        const input = page.locator('#order-code');
+        await expect(input).toBeVisible();
+        await input.fill('ab-001_X');
+        await page.waitForTimeout(850);
+        expect(state.ticket).toBeNull();
+        await page.locator('.pos-product-card').first().click();
+        await expect.poll(() => state.codigoPedido).toBe('ab-001_X');
+        await input.fill('');
+        await page.evaluate(() => sendOrderKitchen());
+        await expect(page.locator('#order-code-error')).toContainText('Ingrese');
+        expect(state.sends).toBe(0);
+        await input.fill('ab-002_X');
+        await page.evaluate(() => sendOrderKitchen());
+        await expect.poll(() => state.sends).toBe(1);
+        await page.evaluate(() => openPOSOrder(201, 2));
+        await expect(input).toHaveValue('ab-002_X');
+        await input.fill('nuevo-003');
+        await expect.poll(() => state.codigoPedido).toBe('nuevo-003');
+        expect(state.sends).toBe(1);
+        expect(await input.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.evaluate(() => openPOSOrder(231, 2));
+        await expect(input).toBeHidden();
+    });
+}
+
+test('código conserva edición durante guardado, valida formato y respeta Preventa', async ({ page }) => {
+    const state = await fixture(page, { openTable:false, tables:[{Numero:210,Empresa:2,Estado:1}] });
+    await page.evaluate(() => openPOSOrder(210,2));
+    const input = page.locator('#order-code');
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    state.delaySave = 500;
+    await input.fill('primero-001');
+    const request = page.waitForRequest(req => req.url().includes('/api/pos/pedido') && req.method() === 'POST');
+    const saving = page.evaluate(() => orderFlush());
+    await request;
+    await input.fill('segundo_002');
+    await saving;
+    await expect(input).toHaveValue('segundo_002');
+    await expect.poll(() => state.codigoPedido).toBe('segundo_002');
+    await input.fill('mal codigo');
+    await expect(page.locator('#order-code-error')).toContainText('Use hasta');
+    const saves = state.saves;
+    await page.waitForTimeout(850);
+    expect(state.saves).toBe(saves);
+    await input.fill('correcto-003');
+    await page.evaluate(() => orderFlush());
+    state.orderState = 2;
+    await page.evaluate(() => openPOSOrder(210,2));
+    await expect(input).toHaveAttribute('readonly','');
+    await expect(input).toHaveValue('correcto-003');
+    state.orderState = 1;
+    await page.evaluate(() => openPOSOrder(210,2));
+    await expect(input).not.toHaveAttribute('readonly','');
+    await page.setViewportSize({width:768,height:500});
+    await input.focus();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue('correcto-003');
+    await page.setViewportSize({width:768,height:900});
+    await expect(input).toHaveValue('correcto-003');
+});
+
+test('conflicto de código mantiene el borrador y pausa autoguardado', async ({ page }) => {
+    const state = await fixture(page, { openTable:false, tables:[{Numero:219,Empresa:2,Estado:1}] });
+    await page.evaluate(() => openPOSOrder(219,2));
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    state.conflict = true;
+    await page.locator('#order-code').fill('borrador-001');
+    await expect(page.locator('#order-save-message')).toContainText('Pedido cambiado');
+    await expect(page.locator('#order-code')).toHaveValue('borrador-001');
+    await expect(page.locator('#order-code')).toHaveAttribute('readonly','');
+    expect(state.codigoPedido).toBeNull();
+});
+
+test('precio unitario visible permanece estable al aumentar cantidad y recargar', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#pos-total')).toHaveText('S/ 22.10');
+    await expect.poll(() => state.saves).toBe(1);
+    for (const cantidad of [2,3]) {
+        await page.locator('.cart-item [data-action="inc"]').click();
+        await expect(page.locator('#pos-total')).toHaveText(`S/ ${(22.1 * cantidad).toFixed(2)}`);
+        await expect(page.locator('.cart-item')).toContainText(`S/ 22.10 x ${cantidad}`);
+        await page.evaluate(() => orderFlush());
+        expect(state.items[0].precio).toBe(20);
+    }
+    await page.evaluate(() => openPOSOrder(1,2));
+    await expect(page.locator('#pos-total')).toHaveText('S/ 66.30');
+    await expect(page.locator('.cart-item')).toContainText('S/ 22.10 x 3');
 });

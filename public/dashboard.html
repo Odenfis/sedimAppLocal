@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=53">
+    <link rel="stylesheet" href="style.css?v=54">
     <link rel="stylesheet" href="responsive.css?v=52">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -142,6 +142,11 @@
                                     </div>
                                     <input type="hidden" id="pos-mojo-select" value="">
                                     <span class="pos-comensales"><i class="fas fa-users"></i> <input type="number" id="pos-guests" value="1" style="width:50px;"></span>
+                                    <div id="order-code-group" class="order-code-group" hidden>
+                                        <label for="order-code">Código de pedido</label>
+                                        <input id="order-code" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="order-code-error" oninput="editOrderCode(this.value)" onblur="if(validateOrderCode()){orderCode=orderCode.trim();renderOrderCode();}">
+                                        <small id="order-code-error" role="alert"></small>
+                                    </div>
                                 </div>
                                 <div id="pos-header-actions-region" class="pos-header-actions">
                                     <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> <span class="btn-label">Guardar</span></button>
@@ -383,9 +388,9 @@
         <button onclick="document.getElementById('order-conflict-dialog').close()">Conservar borrador</button>
         <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
     </dialog>
-    <script src="order-math.js"></script>
-    <script src="orders-ui.js?v=53"></script>
-    <script src="script.js?v=53"></script>
+    <script src="order-math.js?v=55"></script>
+    <script src="orders-ui.js?v=54"></script>
+    <script src="script.js?v=55"></script>
 </body>
 
 </html>

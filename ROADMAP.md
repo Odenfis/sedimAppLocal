@@ -1200,7 +1200,7 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 
 ---
 
-## Fase 27: Total con IGV en ambas columnas de Ticket_d (Implementada en código)
+## Fase 27: Total con IGV en ambas columnas de Ticket_d (Regla reemplazada por Fase 55)
 
 ### Regla comercial
 
@@ -1552,3 +1552,35 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Validación automatizada: cancelación, Escape, cierre, foco, filas agrupadas enviadas/nuevas, notas diferentes, cantidades fraccionarias, invalidación de contexto/solo lectura, doble ejecución, fallo y reintento del último producto, texto literal y tamaños de computadora/tablet/celular.
 - Verificación: 60/60 pruebas unitarias y 63/63 pruebas Playwright aprobadas; `npm run check` y `git diff --check` sin errores.
 - Validación física pendiente: Galaxy Tab A11 y celular en vertical/horizontal con el detalle abierto; teclado, lectura del mensaje y alcance cómodo de ambos botones.
+
+---
+
+## Fase 54: Código de referencia en comandas (Implementada en código; validación física pendiente)
+
+- Delivery (201–209), Para llevar (210–219) y PedidosYa | Rappi (220–230) muestran **Código de pedido** en la cabecera del detalle, en las tres empresas. En escritorio se integra con los datos de mesa; en tablet/celular ocupa una fila completa fuera de las acciones plegables, con entrada de al menos 44 px.
+- Admite hasta 30 letras ASCII, números, guion y guion bajo; recorta espacios exteriores y conserva mayúsculas, minúsculas y ceros iniciales. Permite guardar sin código, pero lo exige antes de un envío explícito nuevo. Los errores `ORDER_CODE_REQUIRED` / `INVALID_ORDER_CODE` responden 400 sin registrar envíos ni trabajos.
+- El código pertenece al pedido y utiliza el autoguardado, transacción, versión y SSE existentes. `POST /api/pos/pedido` acepta `codigoPedido`; omitirlo conserva el valor, null/vacío lo limpia y la respuesta devuelve `pedido.CodigoPedido`. Un código no vacío fuera de esas mesas se rechaza.
+- La interfaz conserva el borrador ante fallos/conflictos y evita que un guardado anterior sobrescriba una edición posterior. Ingresarlo sin productos no crea tickets. Preventa lo muestra en solo lectura, reapertura permite corregirlo y el cambio de mesa o eliminación limpia la referencia local.
+- Cada envío captura el código en `Cocina_envios.Cabecera` y en sus documentos generales y por destino Cocina/Bebidas/Barra. La línea **Código: …** aparece debajo de mesa/mozo, antes de fecha y detalle, en negrita de tamaño normal. Se mantienen jerarquía, ancho y corte actuales.
+- Corregir solamente el código no genera novedades de Cocina. Los siguientes envíos usan el valor actualizado; reimpresiones y reintentos idempotentes conservan el documento original. Los históricos sin código permanecen intactos.
+- Borrar Comanda, Limpiar y sus anulaciones automáticas no exigen completar la referencia; utilizan la existente cuando está disponible. No se añade una obligación independiente a Preventa ni se cambian KDS, correlativo, totales o selección especial de empleados.
+- `012_order_reference_code.sql` agrega idempotentemente `CodigoPedido VARCHAR(30) NULL` a `Pedido_control`, sin modificar esquemas comerciales. La política de migraciones permite exclusivamente esa instrucción para ese archivo; mantiene el bloqueo de las demás alteraciones. El arranque comprueba migración y columna. Los recursos modificados usan versión 54.
+- Validación: `npm run check`, 63/63 pruebas unitarias, 66/66 pruebas Playwright de la suite completa y dos pruebas adicionales aprobadas individualmente (68 escenarios de interfaz en total), 22/22 escenarios SQL y `git diff --check`. SQL utiliza un esquema aislado en tempdb, ejecuta las migraciones dos veces y elimina únicamente sus fixtures al terminar.
+- Cobertura nueva: formato/límites, mesas elegibles y vecinas, documentos de tres destinos/empresas, rechazo de envío vacío, persistencia y campo omitido, limpieza explícita, edición durante guardado, conflicto conservando borrador, Preventa/reapertura, variación de altura por teclado y anchos 390/768/1280 px. Se conservan las regresiones de tablet táctil, selección de plataformas y reimpresión por destino.
+- Pendiente en cliente: aplicar la actualización habitual y comprobar tablet/celular en vertical/horizontal con teclado físico; imprimir una comanda real de cada destino habilitado, corregir el código y verificar un envío posterior y una reimpresión del original. No se ha desplegado esta fase ni realizado una impresión física desde estas pruebas.
+
+
+---
+
+## Fase 55: Precio unitario correcto en Ticket_d (Implementada en código; validación contable en cliente pendiente)
+
+- Reemplaza la regla comercial de la Fase 27: `Ticket_d.Precio` conserva el precio **unitario final con IGV**; `Importe` conserva el total de la línea. Ejemplo: cantidad 1/2/3, unitario S/13.06, importes S/13.06 / S/26.12 / S/39.18.
+- Backend, cálculo de importes y presentación del unitario comparten `unitPrice` en `public/order-math.js`. Parte del precio base de `Pedido_lineas`, aplica `Valores.Igvv` solamente a productos afectos y redondea el unitario a dos decimales. No divide importe entre cantidad para reconstruirlo.
+- La persistencia comercial envía precio e importe separados a SQL y agrupa por producto, precio base y afectación. Mantiene la distribución de centavos entre variantes con notas/cantidades fraccionarias y `Ticket_c.Total` como suma de importes.
+- No hay cambios al contrato público: `items.Precio` continúa siendo el precio base auxiliar para edición/recarga, evitando duplicar IGV. No se alteran código de pedido, autoguardado, documentos impresos ni estados de Cocina.
+- La comparación comercial previa conserva la instantánea original; un pedido divergente sigue protegido por `COMMERCIAL_CONFLICT`. Tras guardar, detalle y snapshot actualizado comparten el mismo commit y versión. La restauración comercial explícita utiliza también la regla corregida y conserva sus restricciones existentes.
+- Los nuevos pedidos y los activos editables adoptan la corrección al guardarse. No hay migración, reparación masiva ni cambios de históricos/preventas durante despliegue. La base unitaria de líneas ya existentes se conserva.
+- Los scripts de presentación y cálculo usan versión 55 para evitar caché de JavaScript anterior.
+- Validación SQL en tempdb aislado: cantidades 1/2/3 y reducción, recarga con base intacta, conversión al guardar de un borrador íntegro de Fase 27, fracciones con notas, afectos/exentos, precio cero, IGV configurable, rollback del detalle ante fallo y rechazo de discrepancia externa. La prueba previa de dos unidades/base S/20/IGV 10.5% exige ahora `Precio=22.10`, `Importe=44.20`.
+- Verificación: `npm run check`, `git diff --check`, 65/65 pruebas unitarias y 23/23 escenarios SQL aprobados. Playwright: 68/68 pruebas de la suite completa y una prueba adicional de estabilidad de unitario/total al aumentar cantidad y recargar (69 escenarios en total).
+- Pendiente en cliente: comprobar un pedido con una y dos unidades en `Ticket_d`, total visible y lectura del POS contable. Esta fase no se declara validada contablemente ni desplegada por las pruebas locales.

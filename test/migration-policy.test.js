@@ -62,3 +62,10 @@ test('el archivo de residuos es aditivo y no altera tablas comerciales', () => {
         assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE)\\s+TABLE\\s+(?:dbo\\.)?${table}\\b`, 'i'));
     }
 });
+
+test('la excepción de referencia no permite otras alteraciones', () => {
+    for (const source of ['ALTER TABLE Ticket_c ADD CodigoPedido VARCHAR(30) NULL;',
+        'ALTER TABLE dbo.Pedido_control ADD Otro VARCHAR(30) NULL;',
+        'ALTER TABLE dbo.Pedido_control DROP COLUMN CodigoPedido;'])
+        assert.throws(() => validateMigration(source, '012_order_reference_code.sql'));
+});

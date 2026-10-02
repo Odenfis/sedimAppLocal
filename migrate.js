@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { getConnection, closeConnections, sql } = require('./db');
 function validateMigration(source, file) {
-    const stripped = source.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    let stripped = source.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    if (file === '012_order_reference_code.sql') {
+        stripped = stripped.replace(/\bALTER\s+TABLE\s+dbo\.Pedido_control\s+ADD\s+CodigoPedido\s+VARCHAR\s*\(30\)\s+NULL\s*;/gi, '');
+    }
     if (/\b(?:ALTER|DROP|TRUNCATE|DELETE|UPDATE|MERGE|EXEC|TRIGGER)\b/i.test(stripped)) {
         throw new Error(`Migración ${file} contiene una operación prohibida sobre el esquema protegido`);
     }

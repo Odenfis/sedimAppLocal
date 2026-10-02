@@ -2676,3 +2676,16 @@ form label {
 .order-remove-dialog #order-remove-product { font-weight: 700; }
 .order-remove-dialog #order-remove-confirm { background: #b42318; border-color: #b42318; color: #fff; }
 .order-remove-dialog button:focus-visible { outline: 3px solid #667eea; outline-offset: 3px; }
+
+/* Fase 54: referencia visible fuera de las acciones plegables. */
+.pos-header-info { flex-wrap: wrap; min-width: 0; }
+.order-code-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; width: 250px; max-width: 100%; }
+.order-code-group[hidden] { display: none; }
+.order-code-group label { font-size: .85rem; font-weight: 600; }
+.order-code-group input { box-sizing: border-box; min-height: 44px; width: 100%; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font: inherit; }
+.order-code-group input[aria-invalid="true"] { border-color: #b42318; }
+.order-code-group small { color: #b42318; overflow-wrap: anywhere; }
+.order-code-group small:empty { display: none; }
+@media (max-width: 1200px), (max-width: 1400px) and (pointer: coarse) {
+    .order-code-group { flex-basis: 100%; width: 100%; margin: 8px 0; }
+}

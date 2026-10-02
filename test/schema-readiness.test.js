@@ -6,6 +6,7 @@ const { REQUIRED_TABLES, REQUIRED_INDEXES, REQUIRED_MIGRATIONS, inspectOperation
 function poolWith(recordset) {
     return { request: () => ({ query: async source => {
         assert.match(source, /OBJECT_ID/);
+        assert.match(source, /COL_LENGTH\('dbo.Pedido_control','CodigoPedido'\)/);
         return { recordset };
     } }) };
 }
@@ -18,6 +19,7 @@ test('la preparación exige objetos e índices de Cocina, Bebidas y Barra', () =
     assert.ok(REQUIRED_INDEXES.includes('IX_Impresion_trabajo_destinos_destino'));
     assert.ok(REQUIRED_MIGRATIONS.includes('010_repair_beverage_destinations.sql'));
     assert.ok(REQUIRED_MIGRATIONS.includes('011_ticket_residue_archive.sql'));
+    assert.ok(REQUIRED_MIGRATIONS.includes('012_order_reference_code.sql'));
 });
 
 test('el esquema completo queda listo y uno incompleto informa solo identificadores técnicos', async () => {

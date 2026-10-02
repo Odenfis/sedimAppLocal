@@ -1,3 +1,27 @@
+let orderCode = '', orderCodeRevision = 0, orderCodeError = '';
+function orderCodeEligible() { return Number(posCurrentTable) >= 201 && Number(posCurrentTable) <= 230; }
+function renderOrderCode() {
+    const group = document.getElementById('order-code-group'), input = document.getElementById('order-code');
+    if (!group || !input) return;
+    group.hidden = !orderCodeEligible();
+    if (input.value !== orderCode) input.value = orderCode;
+    input.readOnly = posIsReadOnly || orderConflict || Boolean(orderLoadError) || orderCompanyContextError;
+    input.disabled = orderBusy;
+    input.setAttribute('aria-invalid', String(Boolean(orderCodeError)));
+    document.getElementById('order-code-error').textContent = orderCodeError;
+}
+function validateOrderCode(required = false) {
+    const code = orderCode.trim();
+    orderCodeError = code && !/^[A-Za-z0-9_-]{1,30}$/.test(code)
+        ? 'Use hasta 30 letras, números, guiones o guiones bajos.'
+        : required && orderCodeEligible() && !code ? 'Ingrese el código de pedido antes de enviar.' : '';
+    renderOrderCode();
+    return !orderCodeError;
+}
+function editOrderCode(value) {
+    if (posIsReadOnly || orderBusy || orderConflict || orderLoadError || orderCompanyContextError) return;
+    orderCode = value; orderCodeRevision++; validateOrderCode(); orderSchedule();
+}
 /* Fase 22: shared order state. Loaded before script.js; handlers run after both scripts. */
 let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
@@ -72,13 +96,17 @@ async function orderRequest(url, method = 'GET', body) {
     return data;
 }
 function orderReset() {
+    orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
-function orderAccept(data) {
+function orderAccept(data, codeRevision = null) {
     if (!data.pedido) return;
+    if (codeRevision === orderCodeRevision || (codeRevision === null && !orderDirty)) {
+        orderCode = data.pedido.CodigoPedido || ''; orderCodeError = '';
+    }
     orderLoadError = ''; orderNavigationMessage = '';
     orderVersion = data.version || 0; orderSummary = data.cocina || orderSummary; orderPrinting = data.impresion || null;
     orderCommercialConflict = data.conciliacionComercial?.status === 'conflict';
@@ -94,6 +122,7 @@ function orderAccept(data) {
     renderOrderStatus();
 }
 function orderFinishDeletion() {
+    orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
@@ -108,6 +137,7 @@ function orderPayload() {
         throw new Error('La empresa del pedido no es válida. El carrito se conservó para reintentar.');
     }
     return {
+        codigoPedido: orderCodeEligible() ? orderCode.trim() || null : null,
         mesa: posCurrentTable, empresa: company, turno: getTurnoValue(company, posCurrentTurnoLabel),
         mozo: document.getElementById('pos-mojo-select').value || null, nroTicket: posCurrentNroTicket,
         version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
@@ -129,12 +159,13 @@ async function orderFlush() {
     if (orderConflict) throw new Error('Revise la versión actual antes de guardar. Su borrador se conserva.');
     if (!posCurrentNroTicket && !posCart.length) { orderDirty = false; return; }
     if (!orderDirty || posIsReadOnly) return;
-    const generation = orderGeneration, payload = orderPayload();
+    if (!validateOrderCode()) throw new Error(orderCodeError);
+    const generation = orderGeneration, codeRevision = orderCodeRevision, payload = orderPayload();
     orderSavePromise = (async () => {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
-            orderAccept(data); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
+            orderAccept(data, codeRevision); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
             orderDeleteRetry = false; orderSaveError = e.message; if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
@@ -143,6 +174,7 @@ async function orderFlush() {
     if (orderDirty) await orderFlush();
 }
 function renderOrderStatus() {
+    renderOrderCode();
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
     const msg = document.getElementById('order-save-message');
@@ -175,6 +207,7 @@ async function orderBeforeOpen() {
 }
 async function sendOrderKitchen() {
     if (orderBusy || posIsReadOnly) return;
+    if (!validateOrderCode(true)) { document.getElementById('order-code').focus(); return; }
     orderBusy = true; renderOrderStatus();
     try {
         await orderFlush();

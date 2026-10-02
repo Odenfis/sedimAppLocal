@@ -35,7 +35,7 @@ function factorIgv(afecto) {
 }
 
 function precioFinalUnitario(precioBase, afecto) {
-    return redondear2(precioBase * factorIgv(afecto));
+    return orderUnitPrice(precioBase, afecto, GLOBAL_IGVV_PCT);
 }
 
 //variables reporte cargos caja
@@ -1403,7 +1403,7 @@ function renderPOSProducts(products) {
                 precioBase = parseFloat(precioBase) || 0;
             }
             const esAfecto = p.Afecto === 1 || p.Afecto === true;
-            const precioConIgv = redondear2(precioBase * factorIgv(esAfecto));
+            const precioConIgv = precioFinalUnitario(precioBase, esAfecto);
             const priceFormatted = precioConIgv.toFixed(2);
 
             card.innerHTML = `
@@ -1518,6 +1518,7 @@ function bindCartDelegation(container) {
 }
 
 function updateCartUI() {
+    renderOrderCode();
     const container = document.getElementById('pos-cart-items');
     if (!container) return;
     bindCartDelegation(container);

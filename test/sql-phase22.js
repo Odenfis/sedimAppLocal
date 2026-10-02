@@ -133,7 +133,7 @@ async function main() {
         assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Impresion_trabajos')).recordset[0].n,1);
         saved = await get(2); assert.equal(saved.cocina.pendientes,0);
         const grouped = (await pool.request().input('nro',nro).query('SELECT * FROM Ticket_d WHERE NroTicket=@nro')).recordset;
-        assert.equal(grouped.length,1); assert.equal(grouped[0].Cantidad,2); assert.equal(grouped[0].Precio,44.2); assert.equal(grouped[0].Importe,44.2);
+        assert.equal(grouped.length,1); assert.equal(grouped[0].Cantidad,2); assert.equal(grouped[0].Precio,22.1); assert.equal(grouped[0].Importe,44.2);
         for (const [count, mesa] of [[10,5],[30,6]]) {
             const many = Array.from({ length: count }, (_, index) => ({ ...base, lineaId: randomUUID(), cantidad: 1,
                 notasRapidas: index % 2 ? ['Sin cebolla'] : [], nota: `Línea ${index + 1}` }));
@@ -147,7 +147,7 @@ async function main() {
             await call('delete','/api/pos/comanda/:nro',{version:bulkSent.version,clave:randomUUID()},{nro:bulkSaved.nroTicket},{empresa:2});
         }
         passed++; console.log('✓ batch save and send preserve 10-line and 30-line orders');
-        passed++; console.log('✓ duplicate send is idempotent; new commercial rows store Precio = Importe with IGV');
+        passed++; console.log('✓ duplicate send is idempotent; new commercial rows store final unit Precio and extended Importe');
         const previousBarEnabled = process.env.BAR_PRINTER_ENABLED, previousBarHost = process.env.BAR_PRINTER_HOST;
         try {
             process.env.BAR_PRINTER_ENABLED = 'true'; process.env.BAR_PRINTER_HOST = '192.168.1.180';
@@ -405,6 +405,83 @@ async function main() {
         assert.equal(repeatedPurge.status,200); assert.equal(repeatedPurge.idempotente,true);
         if(previousPin===undefined) delete process.env.MAINTENANCE_PIN_HASH; else process.env.MAINTENANCE_PIN_HASH=previousPin;
         passed++; console.log('✓ kitchen state 4 is visible; shift archive, lock, retention purge and idempotency preserve commercial/legacy tables');
+        await pool.request().query('INSERT Mesas VALUES(201,2,1)');
+        const codeItems = [{ ...base, lineaId:randomUUID() }];
+        const codeSave = (version, nroTicket, extra = {}) => call('post','/api/pos/pedido',
+            {empresa:2,mesa:201,mozo:1,turno:1,items:codeItems,version,nroTicket,...extra});
+        let codeOrder = await codeSave(); assert.equal(codeOrder.status,200,JSON.stringify(codeOrder));
+        const codeNro = codeOrder.nroTicket, codeKey = randomUUID();
+        let codeSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:codeOrder.version,clave:codeKey},{nro:codeNro});
+        assert.equal(codeSend.status,400); assert.equal(codeSend.errorCode,'ORDER_CODE_REQUIRED');
+        assert.equal((await pool.request().input('nro',codeNro).query('SELECT COUNT(*) n FROM Cocina_envios WHERE NroTicket=@nro')).recordset[0].n,0);
+        const invalidCode = await codeSave(codeOrder.version,codeNro,{codigoPedido:'a b'});
+        assert.equal(invalidCode.errorCode,'INVALID_ORDER_CODE');
+        codeOrder = await codeSave(codeOrder.version,codeNro,{codigoPedido:'  ab-001_X  '});
+        assert.equal(codeOrder.pedido.CodigoPedido,'ab-001_X');
+        codeOrder = await codeSave(codeOrder.version,codeNro);
+        assert.equal(codeOrder.pedido.CodigoPedido,'ab-001_X');
+        codeSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:codeOrder.version,clave:codeKey},{nro:codeNro});
+        assert.equal(codeSend.status,200,JSON.stringify(codeSend));
+        codeOrder = await codeSave(codeSend.version,codeNro,{codigoPedido:'nuevo-002'});
+        const codeDoc = (await pool.request().input('id',codeSend.envioId).query('SELECT Cabecera,Documento FROM Cocina_envios WHERE Id=@id')).recordset[0];
+        assert.equal(JSON.parse(codeDoc.Cabecera).codigoPedido,'ab-001_X');
+        assert.match(codeDoc.Documento,/Código: ab-001_X/);
+        const repeatedCodeSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:0,clave:codeKey},{nro:codeNro});
+        assert.equal(repeatedCodeSend.envioId,codeSend.envioId);
+        codeOrder = await codeSave(codeOrder.version,codeNro,{codigoPedido:null});
+        assert.equal(codeOrder.pedido.CodigoPedido,null);
+        const deletedCodeOrder = await call('delete','/api/pos/comanda/:nro',
+            {empresa:2,version:codeOrder.version,clave:randomUUID()},{nro:codeNro},{empresa:2});
+        assert.equal(deletedCodeOrder.status,200,JSON.stringify(deletedCodeOrder));
+        passed++; console.log('✓ reference code persists, validates, captures immutable sends and allows deletion without code');
+        await pool.request().query(`INSERT Mesas VALUES(202,2,1);
+            INSERT Productos VALUES('02055','Unitario afecto',11.82,1,0,1,3),('02056','Unitario exento',13.06,0,0,1,3),('02057','Cero',0,1,0,1,3);`);
+        const unitLine = {...base,lineaId:randomUUID(),codPro:'02055',nombre:'Unitario afecto',notasRapidas:[],nota:''};
+        let unitOrder;
+        const saveUnits = (items) => call('post','/api/pos/pedido',{empresa:2,mesa:202,mozo:1,turno:1,
+            items,nroTicket:unitOrder?.nroTicket,version:unitOrder?.version});
+        const readUnits = () => pool.request().input('nro',unitOrder.nroTicket).query('SELECT Cantidad,Precio,Importe FROM Ticket_d WHERE NroTicket=@nro ORDER BY Codpro');
+        for (const quantity of [1,2,3,1]) {
+            unitOrder = await saveUnits([{...unitLine,cantidad:quantity}]);
+            assert.equal(unitOrder.status,200,JSON.stringify(unitOrder));
+            const row = (await readUnits()).recordset[0];
+            assert.deepEqual(row,{Cantidad:quantity,Precio:13.06,Importe:Math.round(13.06*quantity*100)/100});
+            const reloaded = await get(202);
+            assert.equal(reloaded.items[0].Precio,11.82); assert.equal(reloaded.conciliacionComercial.status,'ok');
+            assert.equal(reloaded.pedido.Total,row.Importe);
+        }
+        unitOrder = await saveUnits([{...unitLine,cantidad:2}]);
+        // An intact phase-27 draft retains its original snapshot until saved.
+        await pool.request().input('nro',unitOrder.nroTicket).query(`UPDATE Ticket_d SET Precio=Importe WHERE NroTicket=@nro;
+            DECLARE @old NVARCHAR(MAX)=(SELECT RTRIM(Codpro) codPro,RTRIM(Descripcion) nombre,Cantidad cantidad,Precio precio,Descuento descuento,Importe importe
+                FROM Ticket_d WHERE NroTicket=@nro FOR JSON PATH);
+            UPDATE Pedido_control SET SnapshotComercial=@old WHERE NroTicket=@nro;`);
+        const untouched = await get(202); assert.equal(untouched.conciliacionComercial.status,'ok');
+        assert.equal((await readUnits()).recordset[0].Precio,26.12);
+        unitOrder = await saveUnits([{...unitLine,cantidad:2}]);
+        assert.equal(unitOrder.status,200); assert.equal((await readUnits()).recordset[0].Precio,13.06);
+        assert.equal(unitOrder.pedido.Total,26.12);
+        unitOrder = await saveUnits([{...unitLine,cantidad:.01}, {...unitLine,lineaId:randomUUID(),cantidad:.01,nota:'Otra nota'},
+            {...unitLine,lineaId:randomUUID(),codPro:'02056',cantidad:2}, {...unitLine,lineaId:randomUUID(),codPro:'02057',cantidad:3}]);
+        assert.equal(unitOrder.status,200,JSON.stringify(unitOrder));
+        assert.deepEqual((await readUnits()).recordset,[{Cantidad:.02,Precio:13.06,Importe:.26},{Cantidad:2,Precio:13.06,Importe:26.12},{Cantidad:3,Precio:0,Importe:0}]);
+        await pool.request().query("UPDATE Valores SET n_valor=18 WHERE c_valor='Igvv'");
+        unitOrder = await saveUnits([{...unitLine,cantidad:2}]);
+        assert.equal((await readUnits()).recordset[0].Precio,13.95);
+        const beforeFailure = (await readUnits()).recordset;
+        await pool.request().query(`CREATE TRIGGER fail_unit_write ON Ticket_d AFTER INSERT AS BEGIN THROW 51000, 'Injected detail failure', 1; END`);
+        const failedUnitSave = await saveUnits([{...unitLine,cantidad:3}]);
+        assert.equal(failedUnitSave.status,500); assert.deepEqual((await readUnits()).recordset,beforeFailure);
+        await pool.request().query(`DROP TRIGGER [${schema}].fail_unit_write`);
+        assert.equal((await get(202)).version,unitOrder.version);
+        await pool.request().input('nro',unitOrder.nroTicket).query('UPDATE Ticket_d SET Precio=999 WHERE NroTicket=@nro');
+        const rejectedUnitSave = await saveUnits([{...unitLine,cantidad:3}]);
+        assert.equal(rejectedUnitSave.errorCode,'COMMERCIAL_CONFLICT');
+        await pool.request().query("UPDATE Valores SET n_valor=10.5 WHERE c_valor='Igvv'");
+        passed++; console.log('✓ final unit prices survive quantity changes, old snapshots, note fractions, tax changes, rollback and commercial conflicts');
         console.log(`${passed} SQL integration scenarios passed.`);
     } finally {
         if (suitePrinterEnabled === undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED = suitePrinterEnabled;
