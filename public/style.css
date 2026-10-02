@@ -2670,3 +2670,9 @@ form label {
 .feature-disabled { display: none !important; }
 .load-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0; padding:12px 14px; border:1px solid #f59e0b; border-radius:10px; background:#fff7df; color:#633c00; font-weight:650; }
 .load-notice button { min-height:40px; padding:8px 12px; border:0; border-radius:8px; background:#1f4aa8; color:#fff; font-weight:700; cursor:pointer; }
+
+/* Fase 53: confirmación breve, sobre cualquier drawer del pedido. */
+.order-remove-dialog { width: min(440px, 92vw); overflow-wrap: anywhere; }
+.order-remove-dialog #order-remove-product { font-weight: 700; }
+.order-remove-dialog #order-remove-confirm { background: #b42318; border-color: #b42318; color: #fff; }
+.order-remove-dialog button:focus-visible { outline: 3px solid #667eea; outline-offset: 3px; }

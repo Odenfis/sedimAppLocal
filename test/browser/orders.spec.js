@@ -749,6 +749,7 @@ test('vaciar el último producto elimina el ticket y vuelve al mapa con la mesa 
     await page.locator('.pos-product-card').first().click();
     await expect.poll(() => state.items.length).toBe(1);
     await page.locator('[data-action="del"]').click();
+    await page.locator('#order-remove-confirm').click();
     await expect.poll(() => state.deletes).toBe(1);
     await expect(page.locator('#view-pos-tables')).toBeVisible();
     expect(state.ticket).toBeNull();
@@ -863,6 +864,7 @@ test('vaciar una línea enviada elimina el pedido sin esperar reconocimiento de 
     await page.locator('#btn-enviar-cocina').click();
     await expect(page.locator('#order-kitchen-status')).toHaveText('Enviado a cocina');
     await page.locator('[data-action="del"]').click();
+    await page.locator('#order-remove-confirm').click();
     await expect.poll(() => state.deletes).toBe(1);
     await expect(page.locator('#view-pos-tables')).toBeVisible();
     expect(state.ticket).toBeNull();
@@ -1254,4 +1256,132 @@ test('@android tablet táctil de 1340px usa detalle amplio y menú bajo demanda'
     expect(await page.locator('.pos-cart-scroll-region').evaluate(element => element.clientHeight)).toBeGreaterThan(400);
     await expect(page.locator('#pos-totals-details')).not.toHaveAttribute('open', '');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('confirmación: cancelar, Escape y cerrar conservan cantidad y foco', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    const saves = state.saves;
+    for (const action of ['cancel', 'escape', 'close']) {
+        await page.locator('[data-action="dec"]').click();
+        await expect(page.locator('#order-remove-cancel')).toBeFocused();
+        await expect(page.locator('#order-remove-product')).toContainText(product.Nombre);
+        if (action === 'cancel') await page.locator('#order-remove-cancel').click();
+        else if (action === 'escape') await page.keyboard.press('Escape');
+        else await page.locator('#order-remove-dialog [aria-label="Cerrar confirmación"]').click();
+        await expect(page.locator('#order-remove-dialog')).not.toBeVisible();
+        await expect(page.locator('[data-action="dec"]')).toBeFocused();
+        expect(state.items[0].cantidad).toBe(1);
+        expect(state.saves).toBe(saves);
+        expect(state.deletes).toBe(0);
+    }
+});
+
+test('confirmación agrupada, reducción inmediata y fallo del último producto', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.locator('[data-action="inc"]').click();
+    await expect.poll(() => state.items[0].cantidad).toBe(2);
+    await page.locator('[data-action="del"]').click();
+    await expect(page.locator('#order-remove-description')).toContainText('2 unidades');
+    await page.locator('#order-remove-cancel').click();
+    await page.locator('[data-action="dec"]').click();
+    await expect(page.locator('#order-remove-dialog')).not.toBeVisible();
+    await expect.poll(() => state.items[0].cantidad).toBe(1);
+    state.deleteError = true;
+    await page.locator('[data-action="dec"]').click();
+    await page.locator('#order-remove-confirm').click();
+    await expect(page.locator('#order-retry-save')).toBeVisible();
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    expect(state.items[0].cantidad).toBe(1);
+    state.deleteError = false;
+    await page.locator('#order-retry-save').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+});
+
+test('confirmación invalida selección modificada y elimina solo líneas elegidas', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.locator('[data-action="del"]').click();
+    await page.evaluate(() => { posCart[0].cantidad = 0.5; });
+    await page.locator('#order-remove-confirm').click();
+    expect(state.deletes).toBe(0);
+    await expect(page.locator('#order-save-message')).toContainText('Vuelva a seleccionar');
+    await page.evaluate(() => {
+        posCart.push({ ...posCart[0], lineaId: newOrderId(), nota: 'Otra nota', cantidad: 2 });
+        updateCartUI(); scheduleAutoSave();
+    });
+    await expect.poll(() => state.items.length).toBe(2);
+    await page.locator('[data-action="dec"]').first().click();
+    await expect(page.locator('#order-remove-description')).toContainText('0.5 unidades');
+    await page.locator('#order-remove-confirm').click();
+    await expect.poll(() => state.items.length).toBe(1);
+    expect(state.items[0].nota).toBe('Otra nota');
+});
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 1340, height: 800 }, { width: 1280, height: 720 }]) {
+    test(`confirmación adaptable ${viewport.width}`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await fixture(page);
+        await page.locator('.pos-product-card').first().click();
+        await page.evaluate(() => {
+            posCart[0].nombre = '<Producto> ' + 'Nombre largo '.repeat(30);
+            updateCartUI();
+            requestProductRemoval([posCart[0].lineaId]);
+        });
+        const dialog = page.locator('#order-remove-dialog');
+        await expect(dialog).toBeVisible();
+        expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+        const box = await dialog.boundingBox();
+        expect(box.width).toBeLessThanOrEqual(440);
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        await expect(page.locator('#order-remove-product')).toContainText('<Producto>');
+        const button = await page.locator('#order-remove-confirm').boundingBox();
+        expect(button.height).toBeGreaterThanOrEqual(44);
+    });
+}
+
+test('X elimina grupo enviado y nuevo, conserva otra nota y no duplica guardado', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect(page.locator('#order-kitchen-status')).toHaveText('Enviado a cocina');
+    await page.locator('[data-action="inc"]').click();
+    await page.evaluate(() => {
+        posCart.push({ ...posCart[1], lineaId: newOrderId(), nota: 'Sin sal', cantidad: 1 });
+        updateCartUI(); scheduleAutoSave();
+    });
+    await expect.poll(() => state.items.length).toBe(3);
+    await page.locator('[data-action="del"]').first().click();
+    await expect(page.locator('#order-remove-sent')).toBeVisible();
+    const saves = state.saves;
+    await page.evaluate(() => { confirmProductRemoval(); confirmProductRemoval(); });
+    await expect.poll(() => state.items.length).toBe(1);
+    expect(state.items[0].nota).toBe('Sin sal');
+    expect(state.saves).toBe(saves + 1);
+    expect(state.deletes).toBe(0);
+});
+
+test('confirmación rechaza cambio de mesa y solo lectura', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    for (const change of ['table', 'readonly']) {
+        await page.locator('[data-action="del"]').click();
+        await page.evaluate(change => {
+            if (change === 'table') posCurrentTable = 999;
+            else posIsReadOnly = true;
+        }, change);
+        await page.locator('#order-remove-confirm').click();
+        expect(state.deletes).toBe(0);
+        await expect(page.locator('.cart-item')).toHaveCount(1);
+        await page.evaluate(() => { posCurrentTable = 1; posIsReadOnly = false; });
+    }
+    await page.locator('[data-action="del"]').click();
+    await page.evaluate(() => orderReset());
+    await expect(page.locator('#order-remove-dialog')).not.toBeVisible();
 });

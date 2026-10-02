@@ -72,6 +72,7 @@ async function orderRequest(url, method = 'GET', body) {
     return data;
 }
 function orderReset() {
+    closeProductRemoval(false);
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
@@ -93,6 +94,7 @@ function orderAccept(data) {
     renderOrderStatus();
 }
 function orderFinishDeletion() {
+    closeProductRemoval(false);
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
     orderCompanyContextError = false; orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };

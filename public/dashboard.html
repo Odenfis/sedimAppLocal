@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=52">
+    <link rel="stylesheet" href="style.css?v=53">
     <link rel="stylesheet" href="responsive.css?v=52">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -356,6 +356,14 @@
         </div>
     </div>
 
+    <dialog id="order-remove-dialog" class="order-dialog order-remove-dialog" aria-labelledby="order-remove-title" aria-describedby="order-remove-product order-remove-description order-remove-empty order-remove-sent" oncancel="closeProductRemoval()" onclose="if (!this.open) closeProductRemoval()">
+        <div class="order-dialog-heading"><h2 id="order-remove-title">Eliminar producto</h2><button type="button" aria-label="Cerrar confirmación" onclick="closeProductRemoval()">×</button></div>
+        <p id="order-remove-product"></p>
+        <p id="order-remove-description"></p>
+        <p id="order-remove-empty" hidden>El pedido quedará vacío y se eliminará. La mesa se liberará si no tiene otro pedido activo.</p>
+        <p id="order-remove-sent" hidden>Se conserva el flujo de anulaciones y el historial de Cocina.</p>
+        <div class="order-dialog-actions"><button type="button" id="order-remove-cancel" autofocus onclick="closeProductRemoval()">Cancelar</button><button type="button" id="order-remove-confirm" onclick="confirmProductRemoval()">Eliminar</button></div>
+    </dialog>
     <dialog id="order-notes-dialog" class="order-dialog" aria-labelledby="order-notes-title">
         <div class="order-dialog-heading"><h2 id="order-notes-title">Instrucciones de Cocina</h2><button aria-label="Cerrar" onclick="closeOrderNotes()">×</button></div>
         <h3 id="order-note-product"></h3><hr>
@@ -376,8 +384,8 @@
         <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
     </dialog>
     <script src="order-math.js"></script>
-    <script src="orders-ui.js"></script>
-    <script src="script.js"></script>
+    <script src="orders-ui.js?v=53"></script>
+    <script src="script.js?v=53"></script>
 </body>
 
 </html>

@@ -1538,3 +1538,17 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - No se modifican backend, API, migraciones, persistencia, lógica comercial, autoguardado, Cocina ni impresión en esta fase. Se respetan los cambios locales anteriores de la Fase 51.
 - Validación: comprobación de sintaxis, 60/60 pruebas unitarias y 55/55 pruebas Playwright aprobadas. Playwright cubre foco/texto durante reducción y recuperación de altura, rotación real, tablet táctil de 1340 px, amplitud/altura útil del detalle y regresiones existentes de celular/escritorio y operaciones del pedido.
 - Pendiente física: comprobar en la Tab A11 Chrome y acceso tipo app, vertical/horizontal, teclado Samsung, pedidos largos, notas, envío explícito y Preventa antes de dar por validada la fase en el cliente. La emulación del navegador no reproduce el teclado Android físico.
+
+---
+
+## Fase 53: Confirmación al eliminar productos del pedido (Implementada en código; validación física pendiente)
+
+- La X solicita confirmación con nombre y cantidad antes de eliminar toda la fila agrupada. El botón “−” confirma cuando su reducción eliminaría una línea, incluidas cantidades fraccionarias; las demás reducciones son inmediatas.
+- El diálogo nativo muestra Cancelar / Eliminar, enfoca Cancelar, admite Escape y cierre sin cambios y restaura el foco. Tiene ancho máximo de 440 px, texto ajustable y controles de al menos 44 px sobre los paneles de computadora, tablet y celular.
+- Si el pedido queda vacío, advierte su eliminación y la liberación de mesa conforme a las reglas existentes. Los productos enviados explican la conservación del flujo de anulaciones e historial de Cocina.
+- La selección conserva los identificadores de línea y el contexto de empresa/mesa. Antes de ejecutar comprueba cantidades, notas, estado enviado, restricciones y contexto; una selección desactualizada se cancela y solicita volver a seleccionar.
+- Abrir o cancelar no modifica el carrito ni programa guardados de eliminación. El último producto persistido utiliza el borrado transaccional existente, conserva el carrito ante fallo y permite el reintento habitual; las eliminaciones parciales mantienen el autoguardado.
+- Se mantienen las confirmaciones de Limpiar y Borrar Comanda. No hay cambios de backend, API, dependencias ni migraciones. Los recursos modificados usan versión 53.
+- Validación automatizada: cancelación, Escape, cierre, foco, filas agrupadas enviadas/nuevas, notas diferentes, cantidades fraccionarias, invalidación de contexto/solo lectura, doble ejecución, fallo y reintento del último producto, texto literal y tamaños de computadora/tablet/celular.
+- Verificación: 60/60 pruebas unitarias y 63/63 pruebas Playwright aprobadas; `npm run check` y `git diff --check` sin errores.
+- Validación física pendiente: Galaxy Tab A11 y celular en vertical/horizontal con el detalle abierto; teclado, lectura del mensaje y alcance cómodo de ambos botones.

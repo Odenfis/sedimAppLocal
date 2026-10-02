@@ -1566,7 +1566,7 @@ function updateCartUI() {
                     <button type="button" class="qty-btn" data-action="dec" data-cod="${item.lineaId}">-</button>
                     <span>${cantidad}</span>
                     <button type="button" class="qty-btn" data-action="inc" data-cod="${item.lineaId}">+</button>
-                    <button type="button" class="qty-btn" style="color:red" data-action="del" data-cod="${item.lineaId}"><i class="fas fa-times"></i></button>
+                    <button type="button" class="qty-btn" style="color:red" data-action="del" aria-label="Eliminar ${escapeOrderText(item.nombre)} del pedido" data-cod="${item.lineaId}"><i class="fas fa-times"></i></button>
                 </div>
                 <div style="font-weight:bold; margin-left:10px;">S/ ${importe.toFixed(2)}</div>`;
 
@@ -1640,13 +1640,60 @@ function updateCartUI() {
     renderOrderStatus();
 }
 
-function removeCartGroup(memberIds) {
-    if (posIsReadOnly || orderBusy) return;
-    const ids = new Set(memberIds);
-    if (posCart.some(line => ids.has(line.lineaId) && line.pendienteId)) return;
+let pendingProductRemoval = null;
+function removalFingerprint(lines) {
+    return JSON.stringify(lines.map(line => [line.lineaId, line.cantidad, line.nombre, line.nota, line.notasRapidas, line.enviada, line.pendienteId]));
+}
+function closeProductRemoval(restoreFocus = true) {
+    const pending = pendingProductRemoval;
+    pendingProductRemoval = null;
+    const dialog = document.getElementById('order-remove-dialog');
+    if (dialog?.open) dialog.close();
+    if (restoreFocus && pending) {
+        const control = pending.trigger?.isConnected ? pending.trigger : document.querySelector('#pos-cart-items button') || document.getElementById('pos-order-sidebar');
+        control?.focus();
+    }
+}
+function requestProductRemoval(memberIds) {
+    if (pendingProductRemoval || posIsReadOnly || orderBusy || orderConflict || orderCompanyContextError || orderLoadError) return;
+    const lines = posCart.filter(line => memberIds.includes(line.lineaId));
+    if (!lines.length || lines.some(line => line.pendienteId)) return;
+    pendingProductRemoval = {
+        ids: lines.map(line => line.lineaId), fingerprint: removalFingerprint(lines),
+        company: posCurrentTableEmpresa, table: posCurrentTable, generation: posOrderLoadGeneration,
+        trigger: document.activeElement
+    };
+    const quantity = redondear2(lines.reduce((sum, line) => sum + line.cantidad, 0));
+    document.getElementById('order-remove-product').textContent = `¿Eliminar “${lines[0].nombre}” del pedido?`;
+    document.getElementById('order-remove-description').textContent = `Se eliminarán ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'} de esta fila.`;
+    document.getElementById('order-remove-empty').hidden = lines.length !== posCart.length;
+    document.getElementById('order-remove-sent').hidden = !lines.some(line => line.enviada);
+    document.getElementById('order-remove-dialog').showModal();
+    document.getElementById('order-remove-cancel').focus();
+}
+async function confirmProductRemoval() {
+    const pending = pendingProductRemoval;
+    if (!pending) return;
+    const lines = posCart.filter(line => pending.ids.includes(line.lineaId));
+    const valid = pending.company === posCurrentTableEmpresa && pending.table === posCurrentTable
+        && pending.generation === posOrderLoadGeneration && !posIsReadOnly && !orderBusy
+        && !orderConflict && !orderCompanyContextError && !orderLoadError
+        && lines.length === pending.ids.length && !lines.some(line => line.pendienteId)
+        && pending.fingerprint === removalFingerprint(lines);
+    closeProductRemoval();
+    if (!valid) {
+        orderNavigationMessage = 'El pedido cambió. Vuelva a seleccionar el producto que desea eliminar.';
+        renderOrderStatus(); return;
+    }
+    if (lines.length === posCart.length && posCurrentNroTicket) {
+        await deleteCurrentOrder({ ask: false }); return;
+    }
+    const ids = new Set(pending.ids);
     posCart = posCart.filter(line => !ids.has(line.lineaId));
     updateCartUI(); scheduleAutoSave();
+    document.querySelector('#pos-cart-items button')?.focus();
 }
+function removeCartGroup(memberIds) { requestProductRemoval(memberIds); }
 
 function changeQty(index, delta) {
     if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
@@ -1654,21 +1701,18 @@ function changeQty(index, delta) {
         const l = posCart[index]; posCart.push({ ...l, lineaId: newOrderId(), cantidad: delta, enviada: null, pendienteId: null, pendienteEnvio: true });
         updateCartUI(); scheduleAutoSave(); return;
     }
-    posCart[index].cantidad += delta;
-    if (posCart[index].cantidad <= 0) {
+    if (posCart[index].cantidad + delta <= 0) {
         removeFromCart(index);
     } else {
+        posCart[index].cantidad += delta;
         updateCartUI();
         scheduleAutoSave();
     }
 }
 
 function removeFromCart(index) {
-    if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
-    if (posCart.length === 1 && posCurrentNroTicket) { deleteCurrentOrder({ ask: false }); return; }
-    posCart.splice(index, 1);
-    updateCartUI();
-    scheduleAutoSave();
+    const line = posCart[index];
+    if (line) requestProductRemoval([line.lineaId]);
 }
 
 function clearCurrentOrder() {
