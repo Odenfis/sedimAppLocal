@@ -98,6 +98,7 @@ async function orderRequest(url, method = 'GET', body) {
 function orderReset() {
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
+    closePOSEmployeeSearch(false);
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
@@ -124,6 +125,7 @@ function orderAccept(data, codeRevision = null) {
 function orderFinishDeletion() {
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
+    closePOSEmployeeSearch(false);
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
     orderCompanyContextError = false; orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
@@ -131,6 +133,11 @@ function orderFinishDeletion() {
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
 }
 function orderPayload() {
+    if (posWaiterLoading || posWaiterError) {
+        orderSaveError = posWaiterError || 'Espere a que termine la carga del mesero.';
+        renderOrderStatus();
+        throw new Error(orderSaveError);
+    }
     const company = normalizePOSCompany(posCurrentTableEmpresa);
     if (!company) {
         invalidatePOSCompanyContext();
@@ -178,9 +185,9 @@ function renderOrderStatus() {
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
     const msg = document.getElementById('order-save-message');
-    msg.textContent = orderLoadError || orderNavigationMessage || orderSaveError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
+    msg.textContent = orderLoadError || orderNavigationMessage || orderSaveError || posWaiterError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
     msg.classList.toggle('is-confirmation', !orderLoadError && !orderNavigationMessage && !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
-    document.getElementById('order-retry-load').hidden = !orderLoadError;
+    document.getElementById('order-retry-load').hidden = !orderLoadError && !(posWaiterError && !posMozosList.length);
     const retrySave = document.getElementById('order-retry-save');
     retrySave.hidden = !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage);
     retrySave.textContent = orderDeleteRetry ? 'Reintentar eliminación' : 'Reintentar guardado';
@@ -193,9 +200,9 @@ function renderOrderStatus() {
         const state = item.estado || item.Estado, error = item.error || item.Error;
         return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
     }).join(' · ');
-    document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || orderBusy || orderConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
+    document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
     const pay = document.querySelector('.btn-pay-now');
-    if (pay) pay.disabled = posIsReadOnly || orderBusy || orderConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
+    if (pay) pay.disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
     document.getElementById('order-envios').disabled = !posCurrentNroTicket || orderBusy;
 }
 async function orderBeforeOpen() {

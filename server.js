@@ -277,8 +277,8 @@ app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
         const result = await request.query(`
             SELECT Codemp, Nombre 
             FROM Empleados 
-            WHERE ${employeeEligibilitySql(company, mesa)} AND Empresa = @empresa AND FecCese IS NULL
-            ORDER BY Nombre
+            WHERE ${employeeEligibilitySql(company, mesa)}
+            ORDER BY Nombre, Codemp
         `);
 
         res.json(result.recordset);

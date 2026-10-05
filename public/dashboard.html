@@ -12,8 +12,8 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=54">
-    <link rel="stylesheet" href="responsive.css?v=52">
+    <link rel="stylesheet" href="style.css?v=57">
+    <link rel="stylesheet" href="responsive.css?v=57">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
 
@@ -135,7 +135,7 @@
                             <div class="pos-header-divider"></div>
                             <div class="pos-header-row bottom">
                                 <div class="pos-header-info">
-                                    <div class="pos-mojo-badge has-mozos" onclick="openMozoModal()">
+                                    <div class="pos-mojo-badge has-mozos" role="button" tabindex="0" aria-label="Seleccionar mesero" onclick="openMozoModal()" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openMozoModal(); }">
                                         <i class="fas fa-user"></i>
                                         <span id="pos-mojo-name">Sin asignar</span>
                                         <i class="fas fa-caret-down"></i>
@@ -345,6 +345,24 @@
                 </div>
             </section>
 
+            <dialog id="employee-search-dialog" class="employee-search-dialog" aria-labelledby="employee-search-title">
+                <header class="employee-search-header">
+                    <h2 id="employee-search-title">Seleccionar empleado</h2>
+                    <button type="button" aria-label="Cerrar buscador de empleados" onclick="closePOSEmployeeSearch()">×</button>
+                </header>
+                <form class="employee-search-form" onsubmit="event.preventDefault(); selectFirstPOSEmployeeResult();">
+                    <label for="employee-search-input">Código o nombre</label>
+                    <div class="employee-search-input-row">
+                        <input id="employee-search-input" type="search" placeholder="Código o nombre" autocomplete="off" oninput="renderPOSEmployeeResults()">
+                        <button id="employee-search-clear" type="button" aria-label="Limpiar búsqueda de empleados" onclick="clearPOSEmployeeSearch()">Limpiar</button>
+                    </div>
+                </form>
+                <p id="employee-search-status" class="employee-search-status" role="status" aria-live="polite"></p>
+                <button id="employee-search-retry" type="button" onclick="retryPOSWaiterLoad()" hidden>Reintentar carga</button>
+                <div id="employee-search-results" class="employee-search-results" aria-label="Empleados disponibles"></div>
+                <footer class="employee-search-footer"><button type="button" onclick="closePOSEmployeeSearch()">Cancelar</button></footer>
+            </dialog>
+
             <!-- MODAL MOZO -->
             <div id="modal-mozo" class="modal">
                 <div class="modal-content">
@@ -389,8 +407,8 @@
         <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
     </dialog>
     <script src="order-math.js?v=55"></script>
-    <script src="orders-ui.js?v=54"></script>
-    <script src="script.js?v=55"></script>
+    <script src="orders-ui.js?v=57"></script>
+    <script src="script.js?v=58"></script>
 </body>
 
 </html>

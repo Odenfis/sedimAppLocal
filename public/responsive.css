@@ -1231,3 +1231,9 @@ button,
     .pos-order-actions { padding: 8px 14px; }
     .order-primary-actions > button { min-height: 44px; }
 }
+
+@media (max-width: 480px) {
+    .employee-search-dialog { padding: 12px; border-radius: 14px; }
+    .employee-search-dialog[open] { gap: 8px; }
+    .employee-search-header h2 { font-size: 1.05rem; }
+}

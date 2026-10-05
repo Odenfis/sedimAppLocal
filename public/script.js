@@ -282,7 +282,8 @@ window.addEventListener('resize', () => {
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('mobile-overlay').classList.remove('active');
     }
-    if (!tableMapCompact || layoutChanged) closeCartSheet();
+    if (!tableMapCompact) closeCartSheet();
+    else syncCartSheetAccessibility();
     if (layoutChanged) {
         resetMobilePOSSearch();
         resetMobilePOSHeader();
@@ -305,6 +306,7 @@ async function logout() { await fetch('/api/logout', { method: 'POST' }); window
 let posCurrentTable = null;
 let posCart = [];
 let posProducts = [];
+let posCatalogReady = false;
 let posAllTables = [];
 let posCurrentTableGroup = 'all';
 let posTableGroupsExpanded = false;
@@ -502,6 +504,14 @@ function resetPOSAddFeedback() {
     posCardFeedbackTimers.clear();
 }
 
+const posFeedbackAnimations = new WeakMap();
+function restartPOSFeedback(element) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    posFeedbackAnimations.get(element)?.cancel();
+    const animation = element.animate([{ opacity: 0.65 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
+    posFeedbackAnimations.set(element, animation);
+}
+
 function showPOSAddFeedback(product, card) {
     const codPro = String(product.CodPro || '').trim();
     const quantity = posCart.reduce((total, item) => total + (String(item.codPro || '').trim() === codPro ? Number(item.cantidad) || 0 : 0), 0);
@@ -510,9 +520,8 @@ function showPOSAddFeedback(product, card) {
         clearTimeout(posAddFeedbackTimer);
         feedback.textContent = `Agregado al pedido: ${String(product.Nombre || 'Producto').trim()} · Cantidad ${quantity}`;
         feedback.hidden = false;
-        feedback.classList.remove('is-visible');
-        void feedback.offsetWidth;
         feedback.classList.add('is-visible');
+        restartPOSFeedback(feedback);
         posAddFeedbackTimer = setTimeout(() => {
             feedback.hidden = true;
             feedback.classList.remove('is-visible');
@@ -521,9 +530,8 @@ function showPOSAddFeedback(product, card) {
 
     if (card?.isConnected) {
         clearTimeout(posCardFeedbackTimers.get(card));
-        card.classList.remove('is-added');
-        void card.offsetWidth;
         card.classList.add('is-added');
+        restartPOSFeedback(card);
         posCardFeedbackTimers.set(card, setTimeout(() => {
             card.classList.remove('is-added');
             posCardFeedbackTimers.delete(card);
@@ -533,9 +541,8 @@ function showPOSAddFeedback(product, card) {
     const cart = document.getElementById('pos-cart-fab');
     if (cart) {
         clearTimeout(posCartFeedbackTimer);
-        cart.classList.remove('is-bumping');
-        void cart.offsetWidth;
         cart.classList.add('is-bumping');
+        restartPOSFeedback(cart);
         posCartFeedbackTimer = setTimeout(() => cart.classList.remove('is-bumping'), 450);
     }
 }
@@ -919,7 +926,7 @@ function cancelPOSOrderLoad() {
     posOrderAbortController = null;
 }
 
-async function openPOSOrder(tableNum, tableEmpresa = null) {
+async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false } = {}) {
     const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
     const rowCompany = tableEmpresa == null ? selectedCompany : normalizePOSCompany(tableEmpresa);
     const tableGrid = document.getElementById('pos-tables-grid');
@@ -932,37 +939,44 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
         return;
     }
     if (!await orderBeforeOpen()) return;
+    preserveUI = preserveUI && Number(posCurrentTable) === Number(tableNum) && posCurrentTableEmpresa === selectedCompany && isViewVisible('view-pos-order');
+    const refreshCatalog = !preserveUI || posIsReadOnly || !posCatalogReady;
     posOrderAbortController?.abort();
     const generation = ++posOrderLoadGeneration;
-    resetMobilePOSSearch();
-    resetMobilePOSHeader();
-    resetPOSAddFeedback();
+    if (!preserveUI) { resetMobilePOSSearch(); resetMobilePOSHeader(); resetPOSAddFeedback(); }
+    closePOSEmployeeSearch(false);
     orderReset();
-    posIsReadOnly = false;
+    posIsReadOnly = true;
     posCurrentTable = tableNum;
     posCurrentTableEmpresa = selectedCompany;
     document.getElementById('pos-current-table').innerText = tableNum;
     showView('pos-order');
-    closeCartSheet();
-    
-    posCart = [];
-    posCurrentNroTicket = null;
-    updateCartUI();
+    if (!preserveUI) {
+        closeCartSheet();
+        posCart = [];
+        posCurrentNroTicket = null;
+    }
+    if (refreshCatalog) {
+        posProducts = []; posCatalogReady = false; posProductCards.clear();
+        document.getElementById('pos-products-grid').textContent = 'Cargando productos…';
+        document.getElementById('pos-categories-container').replaceChildren();
+    }
+    if (!preserveUI) updateCartUI();
     updateStateButtons();
     
-    posSearchTerm = '';
-    posCurrentCategory = null;
-    const searchInput = document.getElementById('pos-product-search');
-    if (searchInput) searchInput.value = '';
-    updatePOSSearchClear();
-    document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
-    
-    document.getElementById('pos-mojo-select').value = '';
-    document.getElementById('pos-mojo-name').innerText = 'Sin asignar';
+    if (!preserveUI) {
+        posSearchTerm = '';
+        posCurrentCategory = null;
+        const searchInput = document.getElementById('pos-product-search');
+        if (searchInput) searchInput.value = '';
+        updatePOSSearchClear();
+        document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+    }
+    setPOSWaiterLoading();
     
     const empresa = selectedCompany;
     if (empresa) {
-        await loadMozos(empresa, tableNum);
+        const employeesLoaded = await loadMozos(empresa, tableNum, generation);
         if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         const controller = new AbortController();
         posOrderAbortController = controller;
@@ -981,14 +995,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                 posCurrentNroTicket = data.pedido.NroTicket;
                 document.getElementById('pos-guests').value = data.pedido.Comensales || 1;
                 
-                if (data.pedido.Mozo) {
-                    const mozoActual = posMozosList.find(m => Number(m.Codemp) === Number(data.pedido.Mozo));
-                    if (mozoActual) {
-                        document.getElementById('pos-mojo-select').value = mozoActual.Codemp;
-                        document.getElementById('pos-mojo-name').innerText = mozoActual.Nombre;
-                    }
-                }
-                
+                resolvePOSWaiter(data.pedido.Mozo, true, employeesLoaded);
+
                 posCart = (data.items || []).map(item => ({
                     lineaId: item.lineaId, codPro: item.Codpro.trim(), nombre: item.Descripcion.trim(),
                     precioBase: Number(item.Precio), precio: precioFinalUnitario(Number(item.Precio), item.Afecto),
@@ -998,11 +1006,12 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
                     anulada: item.anulada
                 }));
                 orderAccept(data);
-                updateCartUI();
                 posIsReadOnly = data.pedido.Estado === 2 || data.conciliacionComercial?.status === 'conflict';
                 document.getElementById('btn-guardar-mesa').classList.add('active-state');
                 updatePOSViewMode();
             } else {
+                resolvePOSWaiter(null, false, employeesLoaded);
+                posCart = []; posCurrentNroTicket = null;
                 posIsReadOnly = false;
                 updatePOSViewMode();
             }
@@ -1021,9 +1030,11 @@ async function openPOSOrder(tableNum, tableEmpresa = null) {
     }
     
     renderOrderStatus();
-    if (!posIsReadOnly) {
-        await loadPOSCategories();
-        await loadPOSProducts();
+    if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+    if (!posIsReadOnly && refreshCatalog) {
+        await loadPOSCategories(generation);
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        await loadPOSProducts(generation);
     }
 }
 
@@ -1045,7 +1056,9 @@ function updatePOSViewMode() {
     const badge = document.getElementById('pos-preventa-badge');
     const reabrirBtn = document.getElementById('btn-reabrir-pedido');
 
+    document.querySelector('.pos-mojo-badge')?.setAttribute('aria-disabled', String(posIsReadOnly || posWaiterLoading));
     if (posIsReadOnly) {
+        closePOSEmployeeSearch(false);
         resetMobilePOSSearch();
         syncMobilePOSHeaderReadOnly(true);
         if (payBtn) {
@@ -1100,50 +1113,165 @@ function updatePOSViewMode() {
     updateCartUI();
 }
 
-async function loadMozos(empresa, mesa) {
-    const select = document.getElementById('pos-mojo-select');
-    if (!select) return;
-    select.value = '';
-    posMozosList = [];
-    const badge = document.querySelector('.pos-mojo-badge');
-    badge?.classList.remove('has-mozos');
-    
-    if (!empresa) {
-        select.innerHTML = '<option value="">Seleccione empresa</option>';
-        return;
+function isPOSDiscardGiftsTable() {
+    return [2, 4, 6].includes(Number(posCurrentTableEmpresa)) && Number.isInteger(Number(posCurrentTable)) && Number(posCurrentTable) >= 231 && Number(posCurrentTable) <= 235;
+}
+
+let employeeSearchContext = null;
+let employeeSearchReturnFocus = null;
+let employeeSearchRestoreFocus = true;
+function normalizeEmployeeSearch(value) {
+    return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+function employeeSearchContextValid() {
+    return employeeSearchContext && employeeSearchContext.generation === posOrderLoadGeneration
+        && employeeSearchContext.empresa === posCurrentTableEmpresa && employeeSearchContext.mesa === posCurrentTable
+        && isViewVisible('view-pos-order') && isPOSDiscardGiftsTable();
+}
+function openPOSEmployeeSearch() {
+    if (posWaiterLoading || posIsReadOnly || orderBusy || orderConflict || !isPOSDiscardGiftsTable()) return;
+    const dialog = document.getElementById('employee-search-dialog');
+    if (dialog.open) return;
+    employeeSearchContext = { generation: posOrderLoadGeneration, empresa: posCurrentTableEmpresa, mesa: posCurrentTable };
+    employeeSearchReturnFocus = document.querySelector('.pos-mojo-badge');
+    employeeSearchRestoreFocus = true;
+    document.getElementById('employee-search-input').value = '';
+    renderPOSEmployeeResults();
+    dialog.showModal();
+    document.getElementById('employee-search-input').focus({ preventScroll: true });
+}
+function closePOSEmployeeSearch(restoreFocus = true) {
+    employeeSearchRestoreFocus = restoreFocus;
+    employeeSearchContext = null;
+    const dialog = document.getElementById('employee-search-dialog');
+    if (dialog?.open) dialog.close();
+}
+function clearPOSEmployeeSearch() {
+    const input = document.getElementById('employee-search-input');
+    input.value = ''; renderPOSEmployeeResults(); input.focus({ preventScroll: true });
+}
+function selectPOSEmployeeResult(code) {
+    if (!employeeSearchContextValid() || posWaiterLoading || posIsReadOnly || orderBusy || orderConflict) return closePOSEmployeeSearch(false);
+    const employee = posMozosList.find(item => Number(item.Codemp) === Number(code));
+    if (!employee) return renderPOSEmployeeResults();
+    selectMozo(employee.Codemp, employee.Nombre);
+    closePOSEmployeeSearch();
+}
+function selectFirstPOSEmployeeResult() {
+    const result = document.querySelector('#employee-search-results button');
+    if (result) selectPOSEmployeeResult(result.dataset.employeeCode);
+}
+function renderPOSEmployeeResults() {
+    const container = document.getElementById('employee-search-results');
+    const input = document.getElementById('employee-search-input');
+    const term = normalizeEmployeeSearch(input.value);
+    const employees = posMozosList.filter(item => String(item.Codemp).includes(term) || normalizeEmployeeSearch(item.Nombre).includes(term));
+    employees.sort((a, b) => Number(String(b.Codemp) === term) - Number(String(a.Codemp) === term));
+    const status = document.getElementById('employee-search-status');
+    const unavailable = !posWaiterLoading && !posMozosList.length;
+    document.getElementById('employee-search-retry').hidden = !unavailable;
+    document.getElementById('employee-search-clear').disabled = !input.value;
+    input.disabled = posWaiterLoading;
+    status.textContent = posWaiterLoading ? 'Cargando empleados…' : unavailable ? posWaiterError || 'No hay empleados disponibles.'
+        : !employees.length ? 'No se encontraron empleados.' : `${employees.length} empleado${employees.length === 1 ? '' : 's'} disponible${employees.length === 1 ? '' : 's'}`;
+    const fragment = document.createDocumentFragment();
+    if (!posWaiterLoading) for (const employee of employees) {
+        const button = document.createElement('button'); button.type = 'button';
+        button.className = 'employee-search-result'; button.dataset.employeeCode = employee.Codemp;
+        button.setAttribute('aria-pressed', String(String(employee.Codemp) === document.getElementById('pos-mojo-select').value));
+        button.setAttribute('aria-label', `Código ${employee.Codemp}: ${String(employee.Nombre || '').trim()}`);
+        const code = document.createElement('strong'); code.textContent = employee.Codemp;
+        const name = document.createElement('span'); name.textContent = String(employee.Nombre || '').trim();
+        button.append(code, name); fragment.appendChild(button);
     }
-    
+    container.replaceChildren(fragment); container.scrollTop = 0;
+}
+const employeeSearchDialog = document.getElementById('employee-search-dialog');
+employeeSearchDialog.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePOSEmployeeSearch(); }
+}, true);
+employeeSearchDialog.addEventListener('cancel', event => { event.preventDefault(); closePOSEmployeeSearch(); });
+employeeSearchDialog.addEventListener('close', () => {
+    if (employeeSearchRestoreFocus && employeeSearchReturnFocus?.isConnected) employeeSearchReturnFocus.focus({ preventScroll: true });
+    employeeSearchReturnFocus = null; employeeSearchContext = null;
+});
+employeeSearchDialog.addEventListener('click', event => {
+    if (event.target !== employeeSearchDialog) return;
+    const bounds = employeeSearchDialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closePOSEmployeeSearch();
+});
+document.getElementById('employee-search-results').addEventListener('click', event => {
+    const button = event.target.closest('button[data-employee-code]');
+    if (button) selectPOSEmployeeResult(button.dataset.employeeCode);
+});
+
+let posWaiterLoading = false;
+let posWaiterError = '';
+let posSavedWaiterCode = null;
+function setPOSWaiterLoading() {
+    posWaiterLoading = true; posWaiterError = '';
+    document.getElementById('pos-mojo-select').value = '';
+    document.getElementById('pos-mojo-select').disabled = true;
+    const badge = document.querySelector('.pos-mojo-badge');
+    badge.setAttribute('aria-disabled', 'true');
+    badge.setAttribute('aria-label', isPOSDiscardGiftsTable() ? 'Seleccionar empleado' : 'Seleccionar mesero');
+    document.getElementById('pos-mojo-name').textContent = isPOSDiscardGiftsTable() ? 'Cargando empleado…' : 'Cargando mesero…';
+    if (employeeSearchDialog.open) renderPOSEmployeeResults();
+}
+function resolvePOSWaiter(savedCode, existingOrder, employeesLoaded) {
+    posSavedWaiterCode = existingOrder ? savedCode : null;
+    const select = document.getElementById('pos-mojo-select');
+    const marketplace = Number(posCurrentTableEmpresa) === 2 && getPOSTableVisual(posCurrentTable, posCurrentTableEmpresa).key === 'marketplaces';
+    const special = isPOSDiscardGiftsTable();
+    const employee = existingOrder ? posMozosList.find(m => Number(m.Codemp) === Number(savedCode)) : marketplace || special ? null : posMozosList[0];
+    posWaiterLoading = false; select.disabled = false;
+    document.querySelector('.pos-mojo-badge').setAttribute('aria-disabled', 'false');
+    select.value = employee ? employee.Codemp : '';
+    posWaiterError = '';
+    if (!employee) {
+        if (!employeesLoaded) posWaiterError = 'Empleados no disponibles. Reintente la carga del pedido.';
+        else if (existingOrder) posWaiterError = special ? 'Empleado asignado no disponible. Seleccione un empleado válido.' : 'Mesero asignado no disponible. Seleccione un mesero válido.';
+        else if (!posMozosList.length) posWaiterError = special ? 'No hay empleados disponibles. Reintente la carga del pedido.' : 'No hay meseros disponibles. Reintente la carga del pedido.';
+        else if (special) posWaiterError = 'Seleccione un empleado antes de guardar.';
+    }
+    document.getElementById('pos-mojo-name').textContent = employee ? employee.Nombre : special ? 'Seleccione empleado' : posWaiterError || (marketplace ? 'Seleccione plataforma' : 'Sin mozos');
+    if (employeeSearchDialog.open) renderPOSEmployeeResults();
+}
+async function retryPOSWaiterLoad() {
+    if (posWaiterLoading || orderBusy) return;
+    const generation = posOrderLoadGeneration;
+    const savedCode = posSavedWaiterCode;
+    const existingOrder = Boolean(posCurrentNroTicket);
+    setPOSWaiterLoading(); renderOrderStatus();
+    const loaded = await loadMozos(posCurrentTableEmpresa, posCurrentTable, generation);
+    if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+    resolvePOSWaiter(savedCode, existingOrder, loaded);
+    renderOrderStatus();
+    if (orderDirty && !posWaiterError) scheduleAutoSave();
+}
+
+async function loadMozos(empresa, mesa, generation = posOrderLoadGeneration) {
+    const current = () => generation === posOrderLoadGeneration && isViewVisible('view-pos-order') && Number(posCurrentTable) === Number(mesa) && Number(posCurrentTableEmpresa) === Number(empresa);
     try {
-        const res = await fetch(`/api/pos/mozos?empresa=${encodeURIComponent(empresa)}&mesa=${encodeURIComponent(mesa)}`);
+        const res = await fetch(`/api/pos/mozos?empresa=${encodeURIComponent(empresa)}&mesa=${encodeURIComponent(mesa)}`, { cache: 'no-store' });
         if (!res.ok) throw new Error('No se pudo cargar la lista de empleados');
         const mozos = await res.json();
-        if (Number(posCurrentTable) !== Number(mesa) || Number(posCurrentTableEmpresa) !== Number(empresa)) return;
-        
-        select.innerHTML = '<option value="">Seleccione mozo</option>';
+        if (!current()) return false;
         posMozosList = mozos;
-        
-        if (mozos.length > 0) {
-            if (!(Number(empresa) === 2 && getPOSTableVisual(mesa, empresa).key === 'marketplaces')) {
-                select.value = mozos[0].Codemp;
-                document.getElementById('pos-mojo-name').innerText = mozos[0].Nombre;
-            } else {
-                document.getElementById('pos-mojo-name').innerText = 'Seleccione plataforma';
-            }
-            if (badge) badge.classList.add('has-mozos');
-        } else {
-            document.getElementById('pos-mojo-name').innerText = 'Sin mozos';
-        }
+        document.querySelector('.pos-mojo-badge').classList.toggle('has-mozos', mozos.length > 0);
+        return true;
     } catch (e) {
         console.error('Error al cargar mozos:', e);
-        if (Number(posCurrentTable) === Number(mesa) && Number(posCurrentTableEmpresa) === Number(empresa)) {
-            document.getElementById('pos-mojo-name').innerText = 'Empleados no disponibles';
-        }
+        if (current()) posMozosList = [];
+        return false;
     }
 }
 
 let posMozosList = [];
 
 function openMozoModal() {
+    if (posWaiterLoading || posIsReadOnly || orderBusy) return;
+    if (isPOSDiscardGiftsTable()) return openPOSEmployeeSearch();
     const container = document.getElementById('mozo-list');
     container.innerHTML = '';
     
@@ -1169,12 +1297,14 @@ function openMozoModal() {
 }
 
 function selectMozo(codemp, nombre) {
-    if (orderBusy || posIsReadOnly) return;
+    if (orderBusy || posIsReadOnly || posWaiterLoading || (isPOSDiscardGiftsTable() && orderConflict) || !posMozosList.some(m => Number(m.Codemp) === Number(codemp))) return;
+    posWaiterError = '';
     document.getElementById('pos-mojo-select').value = codemp;
     document.getElementById('pos-mojo-name').innerText = nombre;
     document.querySelector('.pos-mojo-badge').classList.add('has-mozos');
     closeModal('modal-mozo');
     if (posCurrentNroTicket || posCart.length) scheduleAutoSave();
+    else renderOrderStatus();
 }
 
 function updateStateButtons() {
@@ -1256,7 +1386,7 @@ async function liberarMesa() {
 
 async function borrarComanda() { return orderDelete(); }
 
-async function loadPOSCategories() {
+async function loadPOSCategories(generation = posOrderLoadGeneration) {
     console.log("POS: Cargando categorías...");
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
@@ -1277,10 +1407,12 @@ async function loadPOSCategories() {
         if (!res.ok) throw new Error(`Error servidor: ${res.status}`);
         
         const categories = await res.json();
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         console.log(`POS: Categorías recibidas: ${categories.length}`, categories);
         
         renderPOSCategories(categories);
     } catch (e) {
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         console.error("POS: Error cargando categorías:", e);
         container.innerHTML = `<div style="color:red; padding:10px;">Error: ${e.message}</div>`;
     }
@@ -1293,7 +1425,8 @@ function renderPOSCategories(categories) {
     container.innerHTML = '';
     
     const btnTodos = document.createElement('button');
-    btnTodos.className = 'cat-btn active';
+    if (posCurrentCategory && !categories?.includes(posCurrentCategory)) posCurrentCategory = null;
+    btnTodos.className = `cat-btn${posCurrentCategory ? '' : ' active'}`;
     btnTodos.innerText = 'Todos';
     btnTodos.onclick = (e) => {
         document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
@@ -1309,7 +1442,7 @@ function renderPOSCategories(categories) {
     
     categories.forEach((cat) => {
         const btn = document.createElement('button');
-        btn.className = 'cat-btn';
+        btn.className = `cat-btn${posCurrentCategory === cat ? ' active' : ''}`;
         btn.innerText = cat;
         btn.onclick = (e) => {
             document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
@@ -1320,12 +1453,10 @@ function renderPOSCategories(categories) {
         container.appendChild(btn);
     });
     
-    // Mostrar todos los productos al inicio
-    posCurrentCategory = null;
     searchPOSProducts();
 }
 
-async function loadPOSProducts() {
+async function loadPOSProducts(generation = posOrderLoadGeneration) {
     console.log("POS: Iniciando carga de productos...");
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
@@ -1352,18 +1483,47 @@ async function loadPOSProducts() {
             throw new Error(`Error servidor (${res.status}): ${errText}`);
         }
         
-        posProducts = await res.json();
+        const products = await res.json();
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        posProducts = products;
+        posCatalogReady = true;
+        posProductCards.clear();
         console.log(`POS: Productos recibidos: ${posProducts.length} ítems`);
         
         // No renderizamos aquí, deixe que renderPOSCategories defina qué mostrar
-        renderPOSProducts(posProducts);
+        searchPOSProducts();
     } catch (e) {
+        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         console.error("POS: Error detallando la carga de productos:", e);
         grid.innerHTML = `<div style="color:red; text-align:center; width:100%; padding:20px;">
             <strong>Error al cargar productos</strong><br>
             ${e.message}
         </div>`;
     }
+}
+
+const posProductCards = new Map();
+const posCardProducts = new WeakMap();
+let posProductDelegationBound = false;
+function bindPOSProductDelegation(grid) {
+    if (posProductDelegationBound) return;
+    posProductDelegationBound = true;
+    let pointerCard = null;
+    grid.addEventListener('pointerdown', event => { pointerCard = event.target.closest('.pos-product-card'); });
+    grid.addEventListener('pointercancel', () => { pointerCard = null; });
+    grid.addEventListener('click', event => {
+        const card = event.target.closest('.pos-product-card');
+        const allowed = event.detail === 0 || pointerCard === card;
+        pointerCard = null;
+        if (!card || !grid.contains(card) || !allowed || performance.now() < posSearchSuppressProductClickUntil) return;
+        const product = posCardProducts.get(card);
+        if (product) addToCart(product, card);
+    });
+    grid.addEventListener('keydown', event => {
+        const card = event.target.closest('.pos-product-card');
+        if (!card || (event.key !== 'Enter' && event.key !== ' ')) return;
+        event.preventDefault(); card.click();
+    });
 }
 
 function renderPOSProducts(products) {
@@ -1373,7 +1533,7 @@ function renderPOSProducts(products) {
         console.error("POS: Error - No se encontró el grid para renderizar productos");
         return;
     }
-    grid.innerHTML = '';
+    bindPOSProductDelegation(grid);
     
     if (!products || products.length === 0) {
         console.log("POS: No hay productos para renderizar");
@@ -1382,7 +1542,11 @@ function renderPOSProducts(products) {
     }
 
     try {
-        products.forEach((p, index) => {
+        const cards = [];
+        products.forEach(p => {
+            const key = String(p.CodPro || '').trim();
+            const cached = posProductCards.get(key);
+            if (cached && posCardProducts.get(cached) === p) { cards.push(cached); return; }
             const card = document.createElement('div');
             card.className = 'pos-product-card';
             card.tabIndex = 0;
@@ -1415,23 +1579,15 @@ function renderPOSProducts(products) {
                     ${esAfecto ? '<div class="pos-product-igv">(inc. IGV)</div>' : ''}
                 </div>
             `;
-            let pointerStartedOnCard = false;
-            card.addEventListener('pointerdown', () => { pointerStartedOnCard = true; });
-            card.addEventListener('pointercancel', () => { pointerStartedOnCard = false; });
-            card.addEventListener('click', event => {
-                const keyboardActivation = event.detail === 0;
-                const gestureAllowed = keyboardActivation || pointerStartedOnCard;
-                pointerStartedOnCard = false;
-                if (!gestureAllowed || performance.now() < posSearchSuppressProductClickUntil) return;
-                addToCart(p, card);
-            });
-            card.addEventListener('keydown', event => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                card.click();
-            });
-            grid.appendChild(card);
+            posCardProducts.set(card, p);
+            posProductCards.set(key, card);
+            cards.push(card);
         });
+        if (cards.length !== grid.children.length || cards.some((card, index) => grid.children[index] !== card)) {
+            const fragment = document.createDocumentFragment();
+            cards.forEach(card => fragment.appendChild(card));
+            grid.replaceChildren(fragment);
+        }
     } catch (err) {
         console.error("POS: Error durante el bucle de renderizado:", err);
         grid.innerHTML = `<div style="color:red; text-align:center; width:100%;">Error al renderizar la lista de productos.</div>`;
@@ -1489,9 +1645,8 @@ function addToCart(product, card = null) {
             afecto: esAfecto
         });
     }
-    updateCartUI();
-    showPOSAddFeedback(product, card);
     scheduleAutoSave();
+    showPOSAddFeedback(product, card);
     retainMobilePOSSearchFocus();
 }
 
@@ -1515,6 +1670,12 @@ function bindCartDelegation(container) {
         else if (btn.dataset.action === 'dec') changeQty(idx, -1);
         else if (btn.dataset.action === 'del') removeCartGroup(memberIds);
     });
+}
+
+function setPOSTotalText(id, amount) {
+    const element = document.getElementById(id);
+    const text = `S/ ${amount.toFixed(2)}`;
+    if (element.textContent !== text) element.textContent = text;
 }
 
 function updateCartUI() {
@@ -1595,7 +1756,7 @@ function updateCartUI() {
 
     const scrollPrevio = container.scrollTop;
 
-    filas.forEach(f => {
+    filas.forEach((f, position) => {
         let el = previosPorCod[f.cod];
         if (!el) {
             el = document.createElement('div');
@@ -1607,7 +1768,6 @@ function updateCartUI() {
         }
         if (el.className !== claseEsperada) el.className = claseEsperada;
         el.dataset.sig = f.html;
-        const position = filas.indexOf(f);
         if (container.children[position] !== el) container.insertBefore(el, container.children[position] || null);
     });
 
@@ -1634,9 +1794,9 @@ function updateCartUI() {
     const emptyState = document.getElementById('pos-cart-empty');
     if (emptyState) emptyState.hidden = filas.length > 0 || orderPendingCancellations.length > 0;
 
-    document.getElementById('pos-subtotal').innerText = `S/ ${subtotal.toFixed(2)}`;
-    document.getElementById('pos-igv').innerText = `S/ ${totalIgv.toFixed(2)}`;
-    document.getElementById('pos-total').innerText = `S/ ${total.toFixed(2)}`;
+    setPOSTotalText('pos-subtotal', subtotal);
+    setPOSTotalText('pos-igv', totalIgv);
+    setPOSTotalText('pos-total', total);
     updateCartFab();
     renderOrderStatus();
 }
@@ -1777,6 +1937,7 @@ function retryPOSOrderLoad() {
         return invalidatePOSCompanyContext('La empresa seleccionada cambió mientras el pedido estaba abierto. Regrese al mapa y descarte el borrador únicamente si corresponde.');
     }
     posCurrentTableEmpresa = currentCompany || selectedCompany;
+    if (posWaiterError && !orderLoadError && !posMozosList.length) return retryPOSWaiterLoad();
     orderCompanyContextError = false;
     posIsReadOnly = false;
     orderLoadError = '';
@@ -1822,7 +1983,7 @@ async function leavePOSOrder(viewName = 'pos-tables') {
     }
 
     cancelPOSOrderLoad();
-    for (const id of ['order-notes-dialog', 'order-conflict-dialog', 'order-history-dialog']) {
+    for (const id of ['order-notes-dialog', 'order-conflict-dialog', 'order-history-dialog', 'employee-search-dialog']) {
         const dialog = document.getElementById(id);
         if (dialog?.open) dialog.close();
     }
@@ -2038,7 +2199,7 @@ async function reconcileActiveOrder() {
     if (!posCurrentTable || !posCurrentTableEmpresa) return;
     const hasProtectedWork = orderDirty || orderSavePromise || orderBusy || document.querySelector('dialog[open]');
     if (!hasProtectedWork) {
-        await openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+        await openPOSOrder(posCurrentTable, posCurrentTableEmpresa, { preserveUI: true });
         return;
     }
 
@@ -2151,12 +2312,12 @@ function handleSSEEvent(data) {
                     console.log('SSE: Evento propio (eco del guardado), se omite recarga del pedido');
                     return;
                 }
-                if (orderDirty || orderSavePromise || orderBusy || document.getElementById('order-notes-dialog').open) {
+                if (orderDirty || orderSavePromise || orderBusy || document.querySelector('dialog[open]')) {
                     if (data.version !== orderVersion) { orderConflict = true; orderSaveError = 'El pedido cambió en otro dispositivo. Revise la versión actual.'; renderOrderStatus(); }
                     return;
                 }
                 console.log('SSE: Mesa asignada cambió, recargando pedido...');
-                if (!orderLoadError && !posOrderAbortController) openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+                if (!orderLoadError && !posOrderAbortController && !posWaiterLoading) openPOSOrder(posCurrentTable, posCurrentTableEmpresa, { preserveUI: true });
             }
         }
     }

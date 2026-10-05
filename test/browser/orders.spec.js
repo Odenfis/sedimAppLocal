@@ -25,13 +25,20 @@ async function fixture(page, options = {}) {
             };
         });
     }
+    function eligibleEmployees(empresa, mesa) {
+        const special = [2, 4, 6].includes(Number(empresa)) && Number(mesa) >= 231 && Number(mesa) <= 235;
+        const marketplace = Number(empresa) === 2 && Number(mesa) >= 220 && Number(mesa) <= 230;
+        return (options.employeeCatalog || []).filter(item => special || (Number(item.Empresa) === Number(empresa) && !item.FecCese
+            && (marketplace ? [195, 203].includes(Number(item.Codemp)) : Number(item.Tipo) === 3 && ![195, 203].includes(Number(item.Codemp)))))
+            .sort((a, b) => a.Nombre.localeCompare(b.Nombre) || a.Codemp - b.Codemp).map(({ Codemp, Nombre }) => ({ Codemp, Nombre }));
+    }
     function data() {
         const pending = state.items.some(l => JSON.stringify(l) !== state.sent.get(l.lineaId)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
         const cancellations = [...state.sent.entries()].filter(([id]) => !state.items.some(l => l.lineaId === id)).map(([,line]) => JSON.parse(line));
         return { success: true, nroTicket: state.ticket, version: state.version,
             conciliacionComercial: { status: state.commercialConflict ? 'conflict' : 'ok',
                 code: state.commercialConflict ? 'COMMERCIAL_CONFLICT' : null },
-            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: 1, CodigoPedido: state.codigoPedido || null } : null,
+            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: state.mozo ?? 1, CodigoPedido: state.codigoPedido || null } : null,
             items: state.items.map(l => ({ ...l, Codpro: l.codPro, Descripcion: l.nombre, Cantidad: l.cantidad, Precio: l.precio, Afecto: l.afecto,
                 enviada: state.sent.has(l.lineaId) ? JSON.parse(state.sent.get(l.lineaId)) : null, pendienteEnvio: !state.sent.has(l.lineaId),
                 estadoCocina: state.kitchenStates.get(l.lineaId) || null, pendienteId: null, anulada: false })),
@@ -60,13 +67,15 @@ async function fixture(page, options = {}) {
             return fulfill(tables || [{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 }]);
         }
         if (url.pathname === '/api/pos/mozos') {
+            if (options.employeeCatalog) return fulfill(eligibleEmployees(url.searchParams.get('empresa'), url.searchParams.get('mesa')));
             if (options.employeeScope && Number(url.searchParams.get('empresa')) === 2 && Number(url.searchParams.get('mesa')) >= 220 && Number(url.searchParams.get('mesa')) <= 230) {
                 return fulfill([{ Codemp: 195, Nombre: 'PEDIDOS YA' }, { Codemp: 203, Nombre: 'RAPPI' }]);
             }
-            return fulfill([{ Codemp: 1, Nombre: 'José' }]);
+            if (options.employeeDelay) await new Promise(resolve => setTimeout(resolve, options.employeeDelay));
+            return fulfill(options.employees || [{ Codemp: 1, Nombre: 'José' }]);
         }
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
-        if (url.pathname === '/api/pos/products') return fulfill([product]);
+        if (url.pathname === '/api/pos/products') return fulfill(options.products || [product]);
         if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') {
             state.orderLoads++;
             state.orderCompanies.push(url.searchParams.get('empresa'));
@@ -77,6 +86,8 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/pos/pedido' && req.method() === 'POST') {
             state.requestOrder.push('save');
             state.orderCompanies.push(body.empresa);
+            if (options.employeeCatalog && !eligibleEmployees(body.empresa, body.mesa).some(item => Number(item.Codemp) === Number(body.mozo)))
+                return fulfill({ success: false, message: 'Seleccione un empleado existente' }, 400);
             if (options.employeeScope) {
                 const marketplace = Number(body.empresa) === 2 && Number(body.mesa) >= 220 && Number(body.mesa) <= 230;
                 const allowed = marketplace ? [195, 203].includes(Number(body.mozo)) : Number(body.mozo) === 1;
@@ -89,8 +100,9 @@ async function fixture(page, options = {}) {
                 state.deletes++; state.version++; state.ticket = null; state.items = []; state.sent.clear();
                 return fulfill({ success:true,pedidoEliminado:true });
             }
-            state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
+            state.mozo = Number(body.mozo); state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
         }
+        if (url.pathname.endsWith('/reabrir')) { state.orderState = 1; state.version++; return fulfill(data()); }
         if (url.pathname.endsWith('/enviar-cocina')) {
             state.requestOrder.push('send'); state.sends++; state.version++;
             state.sent = new Map(state.items.map(l => [l.lineaId, JSON.stringify(l)]));
@@ -169,13 +181,13 @@ test('mesas 220 y 230 de Empresa 2 exigen elegir PEDIDOS YA o RAPPI', async ({ p
 
 test('plataformas no heredan mozos y mesas vecinas conservan mozos Tipo 3', async ({ page }) => {
     await fixture(page, { openTable: false, employeeScope: true,
-        tables: empresa => [219, 220, 231].map(Numero => ({ Numero, Empresa: Number(empresa), Ambiente: 1, Estado: 1 })) });
+        tables: empresa => [219, 220, 236].map(Numero => ({ Numero, Empresa: Number(empresa), Ambiente: 1, Estado: 1 })) });
     await page.locator('[data-table-number="219"]').click();
     await expect(page.locator('#pos-mojo-name')).toHaveText('José');
     await page.evaluate(() => openPOSOrder(220, 2));
     await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione plataforma');
     expect(await page.locator('#pos-mojo-select').inputValue()).toBe('');
-    await page.evaluate(() => openPOSOrder(231, 2));
+    await page.evaluate(() => openPOSOrder(236, 2));
     await expect(page.locator('#pos-mojo-name')).toHaveText('José');
     await page.evaluate(() => showView('pos-tables'));
     await page.selectOption('#pos-empresa-select', '04');
@@ -1170,7 +1182,8 @@ test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await page.setViewportSize({ width: 1194, height: 834 });
-    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+    await page.locator('#pos-cart-close').click();
     await expect(page.locator('.mobile-menu-btn')).toBeVisible();
     let sidebar = await page.locator('#sidebar').boundingBox();
     expect(sidebar.x).toBeLessThan(0);
@@ -1188,7 +1201,8 @@ test('tablet usa drawer lateral y desktop conserva el detalle en dos columnas', 
     expect(sheet.x).toBeGreaterThan(500);
 
     await page.setViewportSize({ width: 834, height: 1194 });
-    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+    await page.locator('#pos-cart-close').click();
     await expect(page.locator('#sidebar')).not.toHaveClass(/open/);
     await expect(page.locator('#cart-sheet-backdrop')).not.toHaveClass(/active/);
 
@@ -1483,3 +1497,517 @@ test('precio unitario visible permanece estable al aumentar cantidad y recargar'
     await expect(page.locator('#pos-total')).toHaveText('S/ 66.30');
     await expect(page.locator('.cart-item')).toContainText('S/ 22.10 x 3');
 });
+
+for (const size of [100, 500, 1000]) {
+    test(`Fase 56 rendimiento catálogo ${size}`, async ({ page }) => {
+        await page.setViewportSize({ width: 768, height: 1024 });
+        const products = Array.from({ length: size }, (_, i) => ({ ...product, CodPro: `02${String(i).padStart(5, '0')}`, Nombre: `Arroz ${i}` }));
+        const state = await fixture(page, { products });
+        const metrics = await page.evaluate(async () => {
+            const timed = fn => { const start = performance.now(); fn(); return performance.now() - start; };
+            const filtering = timed(() => posProducts.filter(p => p.Nombre.toLowerCase().includes('arroz')));
+            const rendering = timed(() => renderPOSProducts(posProducts));
+            const cart = [], feedback = [], interaction = [];
+            const originalCart = updateCartUI, originalFeedback = showPOSAddFeedback;
+            updateCartUI = (...args) => { const start = performance.now(); originalCart(...args); cart.push(performance.now() - start); };
+            showPOSAddFeedback = (...args) => { const start = performance.now(); originalFeedback(...args); feedback.push(performance.now() - start); };
+            for (let i = 0; i < 20; i++) {
+                const start = performance.now();
+                document.querySelectorAll('.pos-product-card')[i].click();
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                interaction.push(performance.now() - start);
+            }
+            updateCartUI = originalCart; showPOSAddFeedback = originalFeedback;
+            return { filtering, rendering, cart, feedback, interaction, quantity: posCart.reduce((sum, line) => sum + line.cantidad, 0) };
+        });
+        const median = samples => [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+        console.log('POS_BENCHMARK', JSON.stringify({ size, filtering: metrics.filtering, rendering: metrics.rendering,
+            cartMedian: median(metrics.cart), feedbackMedian: median(metrics.feedback),
+            interactionP95: [...metrics.interaction].sort((a, b) => a - b)[18], under100: metrics.interaction.filter(ms => ms < 100).length }));
+        expect(metrics.quantity).toBe(20);
+        expect(metrics.interaction.filter(ms => ms < 100).length).toBeGreaterThanOrEqual(19);
+        await expect.poll(() => state.items.reduce((sum, line) => sum + line.cantidad, 0)).toBe(20);
+        await expect(page.locator('#pos-total')).toHaveText('S/ 442.00');
+    });
+}
+
+test('Fase 56 mesero guardado se resuelve una sola vez tras carga lenta', async ({ page }) => {
+    const state = await fixture(page, { openTable: false, employees: [{ Codemp: 1, Nombre: 'José' }, { Codemp: 2, Nombre: 'Ana' }] });
+    state.ticket = 'T001-1'; state.mozo = 2; state.orderLoadDelay = 400;
+    await page.evaluate(() => {
+        window.waiterLabels = [];
+        new MutationObserver(() => window.waiterLabels.push(document.getElementById('pos-mojo-name').textContent))
+            .observe(document.getElementById('pos-mojo-name'), { childList: true, subtree: true, characterData: true });
+    });
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Cargando mesero…');
+    await expect(page.locator('.pos-mojo-badge')).toHaveAttribute('aria-disabled', 'true');
+    // Dispatch during loading; normal Playwright clicks wait until aria-disabled becomes false.
+    await page.locator('.pos-mojo-badge').dispatchEvent('click');
+    await expect(page.locator('#modal-mozo')).not.toBeVisible();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Ana');
+    expect(await page.locator('#pos-mojo-select').inputValue()).toBe('2');
+    expect(await page.evaluate(() => window.waiterLabels)).not.toContain('José');
+    await page.locator('.pos-product-card').click();
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(2);
+});
+
+test('Fase 56 mesero no disponible conserva asignación hasta selección válida', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.ticket = 'T001-1'; state.mozo = 99;
+    await page.locator('.pos-table-card').click();
+    await expect(page.locator('#pos-mojo-name')).toContainText('no disponible');
+    await page.locator('.pos-product-card').click();
+    await expect(page.locator('#order-save-message')).toContainText('Seleccione un mesero válido');
+    await page.waitForTimeout(850);
+    expect(state.saves).toBe(0); expect(state.mozo).toBe(99);
+    await page.locator('.pos-mojo-badge').click();
+    await page.locator('.mozo-option').click();
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(1);
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+});
+
+test('Fase 56 respuesta tardía de empleados no cruza mesas', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/pos/mozos?**', async route => {
+        const mesa = new URL(route.request().url()).searchParams.get('mesa');
+        if (mesa === '1') await gate;
+        await route.fulfill({ json: [{ Codemp: Number(mesa), Nombre: `Mesero ${mesa}` }] });
+    });
+    await page.evaluate(() => { window.firstOpen = openPOSOrder(1, 2); });
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Cargando mesero…');
+    await page.evaluate(() => openPOSOrder(2, 2));
+    release();
+    await page.evaluate(() => window.firstOpen);
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Mesero 2');
+    expect(await page.locator('#pos-mojo-select').inputValue()).toBe('2');
+});
+
+for (const width of [390, 800]) {
+    for (const clear of ['manual', 'X']) {
+        test(`Fase 56 detalle conserva apertura tras búsqueda ${clear} a ${width}px`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 1000 });
+            await fixture(page);
+            const trace = [];
+            page.on('console', message => { if (message.text().startsWith('POS_TRACE')) trace.push(message.text()); });
+            await page.evaluate(() => {
+                for (const type of ['resize', 'focusin', 'focusout']) window.addEventListener(type, () => console.log('POS_TRACE', type, innerWidth, innerHeight, document.activeElement?.id));
+                new MutationObserver(() => console.log('POS_TRACE detail', document.getElementById('pos-order-sidebar').className))
+                    .observe(document.getElementById('pos-order-sidebar'), { attributes: true, attributeFilter: ['class'] });
+            });
+            const search = page.locator('#pos-product-search');
+            await search.fill('Arroz');
+            if (clear === 'X') await page.locator('#pos-search-clear').click();
+            else await search.fill('');
+            await page.evaluate(() => toggleCartSheet(true));
+            await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+            for (const size of [{ width, height: 600 }, { width: width + 1, height: 1000 }, { width: 1000, height: width }]) {
+                await page.setViewportSize(size);
+                await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+                await expect(page.locator('#pos-cart-fab')).toHaveAttribute('aria-expanded', 'true');
+            }
+            await page.waitForTimeout(400);
+            await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+            console.log('POS_TRACE_RESULT', JSON.stringify(trace));
+            await page.locator('#pos-cart-close').click();
+            await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+        });
+    }
+}
+
+test('Fase 56 SSE conserva detalle, búsqueda, categoría, foco y desplazamiento', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 1000 });
+    const products = Array.from({ length: 30 }, (_, i) => ({ ...product, CodPro: `0200${i}`, Nombre: `Arroz ${i}` }));
+    const state = await fixture(page, { products, stubEventSource: true });
+    for (let i = 0; i < 20; i++) await page.evaluate(i => addToCart(posProducts[i]), i);
+    await expect.poll(() => state.items.length).toBe(20);
+    await page.locator('.cat-btn').filter({ hasText: /^Platos$/ }).click();
+    await page.locator('#pos-product-search').fill('Arroz 1');
+    await page.evaluate(() => toggleCartSheet(true));
+    await page.waitForTimeout(350);
+    await page.locator('#pos-cart-close').focus();
+    let scroll = await page.evaluate(() => {
+        const container = document.getElementById('pos-cart-items'); container.scrollTop = 150;
+        document.getElementById('pos-products-grid').scrollTop = 100;
+        return container.scrollTop;
+    });
+    state.orderLoadDelay = 400;
+    const loads = state.orderLoads;
+    await page.evaluate(() => handleSSEEvent({ type: 'mesa_updated', empresa: 2, numero: 1, version: orderVersion + 1, operacionId: 'external' }));
+    await expect.poll(() => state.orderLoads).toBe(loads + 1);
+    scroll = await page.locator('#pos-cart-items').evaluate(el => { el.scrollTop = 220; return el.scrollTop; });
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José');
+    await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+    await expect(page.locator('#pos-product-search')).toHaveValue('Arroz 1');
+    await expect(page.locator('.cat-btn.active')).toHaveText('Platos');
+    await expect(page.locator('#pos-cart-close')).toBeFocused();
+    expect(await page.locator('#pos-cart-items').evaluate(el => el.scrollTop)).toBe(scroll);
+    expect(await page.evaluate(() => posCurrentCategory)).toBe('Platos');
+});
+
+test('Fase 56 catálogo reutiliza tarjetas y conserva activación por teclado', async ({ page }) => {
+    await fixture(page, { products: [product, { ...product, CodPro: '02002', Nombre: 'Bebida', Linea: 'Bebidas' }] });
+    await page.evaluate(() => { window.originalCard = document.querySelector('.pos-product-card'); });
+    await page.locator('#pos-product-search').fill('Bebida');
+    await page.locator('#pos-product-search').fill('');
+    expect(await page.evaluate(() => window.originalCard === document.querySelector('.pos-product-card'))).toBe(true);
+    await page.locator('.pos-product-card').first().focus();
+    await page.keyboard.press('Enter'); await page.keyboard.press('Space');
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 2');
+    await page.evaluate(() => {
+        const card = document.querySelector('.pos-product-card');
+        card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        card.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+        card.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    });
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 2');
+});
+
+test('Fase 56 reintentar empleados conserva borrador y mesero guardado', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.ticket = 'T001-1'; state.mozo = 2;
+    let available = false;
+    await page.route('**/api/pos/mozos?**', route => available
+        ? route.fulfill({ json: [{ Codemp: 1, Nombre: 'José' }, { Codemp: 2, Nombre: 'Ana' }] })
+        : route.fulfill({ status: 503, json: { message: 'No disponible' } }));
+    await page.locator('.pos-table-card').click();
+    await expect(page.locator('#pos-mojo-name')).toContainText('Empleados no disponibles');
+    await page.locator('.pos-product-card').click();
+    await expect(page.locator('#order-retry-load')).toBeVisible();
+    available = true;
+    await page.locator('#order-retry-load').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Ana');
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(2); expect(state.items[0].cantidad).toBe(1);
+});
+
+test('@android Fase 56 detalle estable y selección táctil tras limpiar búsqueda', async ({ page }) => {
+    const state = await fixture(page, { products: [product, { ...product, CodPro: '02002', Nombre: 'Bebida' }] });
+    await page.locator('#pos-product-search').fill('Arroz');
+    await page.locator('#pos-search-clear').tap();
+    await page.locator('.pos-product-card').first().tap();
+    await page.locator('.pos-product-card').first().tap();
+    await page.locator('#pos-search-done').tap();
+    await page.locator('#pos-cart-fab').tap();
+    await page.setViewportSize({ width: 394, height: 520 });
+    await page.waitForTimeout(400);
+    await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 2');
+    await expect.poll(() => state.items[0]?.cantidad).toBe(2);
+    await page.locator('#pos-cart-close').tap();
+    await expect(page.locator('#pos-order-sidebar')).not.toHaveClass(/open/);
+});
+
+test('Fase 56 SSE durante carga de catálogo conserva la respuesta vigente', async ({ page }) => {
+    await fixture(page, { openTable: false, stubEventSource: true });
+    let calls = 0, release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/pos/products?**', async route => {
+        const first = ++calls === 1;
+        if (first) await gate;
+        await route.fulfill({ json: [{ ...product, Nombre: first ? 'Arroz obsoleto' : 'Arroz vigente' }] });
+    });
+    await page.evaluate(() => { window.initialOpen = openPOSOrder(1, 2); });
+    await expect.poll(() => calls).toBe(1);
+    await page.evaluate(() => handleSSEEvent({ type: 'mesa_updated', empresa: 2, numero: 1, operacionId: 'external' }));
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await expect(page.locator('.pos-product-name')).toHaveText('Arroz vigente');
+    release();
+    await page.evaluate(() => window.initialOpen);
+    await expect(page.locator('.pos-product-name')).toHaveText('Arroz vigente');
+    expect(calls).toBe(2);
+});
+
+const phase57Employees = [
+    { Codemp: 11, Nombre: 'José Pérez', Empresa: 2, Tipo: 1 },
+    { Codemp: 111, Nombre: 'José Pérez', Empresa: 2, Tipo: 2 },
+    { Codemp: 32, Nombre: 'María Ramos', Empresa: 2, Tipo: 4 },
+    { Codemp: 44, Nombre: '<Empleado & especial>', Empresa: 2, Tipo: 1 },
+    { Codemp: 55, Nombre: 'Empleado cesado', Empresa: 2, Tipo: 1, FecCese: '2026-01-01' },
+    { Codemp: 66, Nombre: 'Empleado otra empresa', Empresa: 4, Tipo: 1 },
+    { Codemp: 68, Nombre: 'Empleado sin empresa', Empresa: null, Tipo: 2 },
+    { Codemp: 67, Nombre: 'Empleado Abruzzo', Empresa: 6, Tipo: 2 },
+    { Codemp: 1, Nombre: 'Mozo normal', Empresa: 2, Tipo: 3 },
+    { Codemp: 2, Nombre: 'Mozo normal 4', Empresa: 4, Tipo: 3 },
+    { Codemp: 3, Nombre: 'Mozo normal 6', Empresa: 6, Tipo: 3 },
+    { Codemp: 195, Nombre: 'PEDIDOS YA', Empresa: 2, Tipo: 3 },
+    { Codemp: 203, Nombre: 'RAPPI', Empresa: 2, Tipo: 3 }
+];
+async function phase57Fixture(page, options = {}) {
+    return fixture(page, { openTable: false, employeeCatalog: phase57Employees,
+        tables: empresa => [230, 231, 235, 236].map(Numero => ({ Numero, Empresa: Number(empresa), Ambiente: 1, Estado: 1 })), ...options });
+}
+
+test('Fase 57 selección obligatoria busca códigos y nombres, distingue repetidos y conserva borrador', async ({ page }) => {
+    const state = await phase57Fixture(page);
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    expect(await page.locator('#pos-mojo-select').inputValue()).toBe('');
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.locator('.pos-product-card').click();
+    await expect(page.locator('#order-save-message')).toContainText('Seleccione un empleado');
+    await page.waitForTimeout(850);
+    expect(state.saves).toBe(0); expect(state.ticket).toBeNull();
+    await page.locator('.pos-mojo-badge').click();
+    const search = page.locator('#employee-search-input');
+    await expect(search).toBeFocused();
+    await expect(page.locator('#employee-search-results')).toContainText('cesado');
+    await expect(page.locator('#employee-search-results')).toContainText('otra empresa');
+    await search.fill('jOsE');
+    await expect(page.locator('.employee-search-result')).toHaveCount(2);
+    await search.fill('11');
+    await expect(page.locator('.employee-search-result')).toHaveCount(2);
+    await expect(page.locator('.employee-search-result').first()).toContainText('11');
+    expect(await page.locator('.employee-search-result').first().getAttribute('data-employee-code')).toBe('11');
+    await search.fill('no existe');
+    await expect(page.locator('#employee-search-status')).toHaveText('No se encontraron empleados.');
+    await page.locator('#employee-search-clear').click();
+    await expect(search).toHaveValue(''); await expect(search).toBeFocused();
+    await search.fill('MARIA');
+    await search.press('Enter');
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+    await expect(page.locator('.pos-mojo-badge')).toBeFocused();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('María Ramos');
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(32); expect(state.items[0].cantidad).toBe(1);
+    await page.evaluate(() => openPOSOrder(231, 2));
+    await expect(page.locator('#pos-mojo-name')).toHaveText('María Ramos');
+    expect(await page.locator('#pos-mojo-select').inputValue()).toBe('32');
+});
+
+test('Fase 57 seleccionar sin productos no crea ticket, cancelar y Escape conservan empleado', async ({ page }) => {
+    const state = await phase57Fixture(page);
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    await page.locator('.pos-mojo-badge').focus(); await page.keyboard.press('Enter');
+    await page.locator('#employee-search-input').fill('11');
+    await page.locator('[data-employee-code="11"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José Pérez');
+    await expect(page.locator('#order-save-message')).not.toContainText('Seleccione un empleado');
+    await page.waitForTimeout(800); expect(state.saves).toBe(0); expect(state.ticket).toBeNull();
+    for (const action of ['cancel', 'Escape', 'close']) {
+        await page.locator('.pos-mojo-badge').click();
+        await page.locator('#employee-search-input').fill('María');
+        if (action === 'cancel') await page.locator('#employee-search-dialog').getByRole('button', { name: 'Cancelar', exact: true }).click();
+        else if (action === 'Escape') await page.keyboard.press('Escape');
+        else await page.getByRole('button', { name: 'Cerrar buscador de empleados' }).click();
+        await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+        await expect(page.locator('.pos-mojo-badge')).toBeFocused();
+        expect(await page.locator('#pos-mojo-select').inputValue()).toBe('11');
+    }
+});
+
+test('Fase 57 límites 231–235 aplican en las tres empresas y preservan reglas vecinas', async ({ page }) => {
+    await phase57Fixture(page);
+    for (const [empresa, code] of [['02', 11], ['04', 66], ['06', 67]]) {
+        await page.selectOption('#pos-empresa-select', empresa);
+        for (const mesa of [231, 235]) {
+            await page.evaluate(({ mesa, empresa }) => openPOSOrder(mesa, empresa), { mesa, empresa });
+            await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+            await page.locator('.pos-mojo-badge').click();
+            await expect(page.locator(`[data-employee-code="${code}"]`)).toBeVisible();
+            await page.keyboard.press('Escape');
+        }
+        await page.evaluate(empresa => openPOSOrder(236, empresa), empresa);
+        await expect(page.locator('#pos-mojo-name')).toContainText('Mozo normal');
+        await page.locator('.pos-mojo-badge').click();
+        await expect(page.locator('#modal-mozo')).toBeVisible();
+        await page.evaluate(() => closeModal('modal-mozo'));
+        await page.evaluate(() => showView('pos-tables'));
+    }
+    await page.selectOption('#pos-empresa-select', '02');
+    await page.evaluate(() => openPOSOrder(230, 2));
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione plataforma');
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('.mozo-option')).toHaveCount(2);
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+});
+
+for (const width of [390, 800, 1280]) {
+    test(`Fase 57 buscador adaptable y teclado a ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await phase57Fixture(page, { employeeCatalog: [...phase57Employees, ...Array.from({ length: 60 }, (_, i) => ({ Codemp: 1000 + i, Nombre: `Empleado ${i}`, Empresa: 2, Tipo: 1 }))] });
+        await page.locator('[data-table-number="231"]').click();
+        await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+        await page.locator('.pos-mojo-badge').click();
+        const dialog = page.locator('#employee-search-dialog');
+        const box = await dialog.boundingBox();
+        expect(box.width).toBeLessThanOrEqual(Math.min(560, width * .96) + 1);
+        const search = page.locator('#employee-search-input');
+        await search.fill('Empleado');
+        await page.setViewportSize({ width, height: 420 });
+        await expect(search).toBeFocused(); await expect(search).toHaveValue('Empleado');
+        await expect(dialog).toBeVisible();
+        const inputBox = await search.boundingBox();
+        expect(inputBox.y).toBeGreaterThanOrEqual(0); expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(420);
+        expect(inputBox.height).toBeGreaterThanOrEqual(44);
+        expect(await page.locator('#employee-search-results').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+        for (let i = 0; i < 8; i++) {
+            await page.keyboard.press('Tab');
+            expect(await page.evaluate(() => document.getElementById('employee-search-dialog').contains(document.activeElement))).toBe(true);
+        }
+        await search.fill('especial');
+        await expect(page.locator('.employee-search-result')).toHaveText('44<Empleado & especial>');
+        expect(await page.locator('.employee-search-result img, .employee-search-result script').count()).toBe(0);
+        await page.screenshot({ path: `/private/tmp/pos57-${width}.png` });
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.pos-mojo-badge')).toBeFocused();
+    });
+}
+
+test('Fase 57 empleado ausente, fallo y reintento conservan borrador y asignación', async ({ page }) => {
+    const employeeCatalog = phase57Employees.map(item => ({ ...item }));
+    const state = await phase57Fixture(page, { employeeCatalog });
+    state.ticket = 'T001-57'; state.mozo = 99999;
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#order-save-message')).toContainText('Empleado asignado no disponible');
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('[data-employee-code="99999"]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    let available = false;
+    await page.route('**/api/pos/mozos?**', route => available
+        ? route.fulfill({ json: [{ Codemp: 55, Nombre: 'Empleado reincorporado' }] })
+        : route.fulfill({ status: 503, json: { message: 'No disponible' } }));
+    await page.evaluate(() => openPOSOrder(231, 2));
+    await expect(page.locator('#order-save-message')).toContainText('Empleados no disponibles');
+    await page.locator('.pos-product-card').click();
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('#employee-search-status')).toContainText('Empleados no disponibles');
+    available = true;
+    await page.locator('#employee-search-retry').click();
+    await expect(page.locator('#employee-search-results button')).toHaveCount(1);
+    await page.locator('[data-employee-code="55"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Empleado reincorporado');
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(55); expect(state.items[0].cantidad).toBe(1);
+    await page.keyboard.press('Escape');
+});
+
+test('Fase 57 cambiar contexto o entrar en Preventa invalida la selección del diálogo', async ({ page }) => {
+    page.on('dialog', dialog => dialog.accept());
+    const state = await phase57Fixture(page);
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    await page.locator('.pos-mojo-badge').click();
+    await page.evaluate(() => { window.staleResult = document.querySelector('[data-employee-code="11"]'); });
+    await page.evaluate(() => openPOSOrder(236, 2));
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+    await page.evaluate(() => window.staleResult.click());
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Mozo normal');
+    state.ticket = 'T001-57'; state.mozo = 32; state.orderState = 2;
+    state.items = [{ lineaId: '77777777-7777-4777-8777-777777777777', codPro: product.CodPro, nombre: product.Nombre, precio: 20, afecto: 1, cantidad: 1, notasRapidas: [], nota: '' }];
+    await page.evaluate(() => openPOSOrder(231, 2));
+    await expect(page.locator('#pos-mojo-name')).toHaveText('María Ramos');
+    await page.evaluate(() => openMozoModal());
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+    await page.getByRole('button', { name: /Reabrir Pedido/i }).click();
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('#employee-search-dialog')).toBeVisible();
+    await page.locator('[data-employee-code="11"]').click();
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.mozo).toBe(11);
+});
+
+test('@android Fase 57 teclado táctil conserva búsqueda y aplica el empleado', async ({ page }) => {
+    await phase57Fixture(page);
+    await page.locator('[data-table-number="231"]').tap();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    await page.locator('.pos-mojo-badge').tap();
+    const search = page.locator('#employee-search-input');
+    await search.fill('maria');
+    await page.setViewportSize({ width: 393, height: 430 });
+    await expect(search).toBeFocused(); await expect(search).toHaveValue('maria');
+    await page.locator('[data-employee-code="32"]').tap();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('María Ramos');
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+});
+
+test('Fase 57 lista vacía, cierre por fondo y reintento tardío no cruzan mesas', async ({ page }) => {
+    const state = await phase57Fixture(page, { employeeCatalog: [] });
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#order-save-message')).toContainText('No hay empleados');
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('#employee-search-status')).toContainText('No hay empleados');
+    await expect(page.locator('.employee-search-result')).toHaveCount(0);
+    await page.mouse.click(10, 10);
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+    expect(state.saves).toBe(0);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/pos/mozos?**', async route => {
+        const mesa = new URL(route.request().url()).searchParams.get('mesa');
+        if (mesa === '231') await gate;
+        await route.fulfill({ json: [{ Codemp: mesa === '231' ? 11 : 32, Nombre: mesa === '231' ? 'José Pérez' : 'María Ramos' }] });
+    });
+    await page.locator('.pos-mojo-badge').click();
+    await page.locator('#employee-search-retry').click();
+    await expect(page.locator('#employee-search-status')).toHaveText('Cargando empleados…');
+    await expect(page.locator('#employee-search-input')).toBeDisabled();
+    await page.evaluate(() => openPOSOrder(235, 2));
+    await expect(page.locator('#employee-search-dialog')).not.toBeVisible();
+    release();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    await page.locator('.pos-mojo-badge').click();
+    await expect(page.locator('[data-employee-code="32"]')).toBeVisible();
+    await expect(page.locator('[data-employee-code="11"]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    expect(state.saves).toBe(0);
+});
+
+test('Fase 57 buscador respeta el tema oscuro y mantiene legible la selección', async ({ page }) => {
+    await phase57Fixture(page);
+    await page.locator('[data-table-number="231"]').click();
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+    await page.locator('.pos-mojo-badge').click();
+    await page.locator('[data-employee-code="11"]').click();
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.locator('.pos-mojo-badge').click();
+    const colors = await page.evaluate(() => {
+        const style = id => { const s = getComputedStyle(document.querySelector(id)); return { color: s.color, background: s.backgroundColor }; };
+        return { dialog: style('#employee-search-dialog'), input: style('#employee-search-input'), selected: style('[data-employee-code="11"]') };
+    });
+    expect(colors.dialog.color).toBe('rgb(249, 250, 251)');
+    expect(colors.dialog.background).toBe('rgb(31, 41, 55)');
+    expect(colors.input.color).toBe(colors.dialog.color);
+    expect(colors.selected.background).toBe('rgb(55, 65, 81)');
+    expect(colors.selected.color).toBe(colors.dialog.color);
+    await page.screenshot({ path: '/private/tmp/pos57-dark.png' });
+    await page.keyboard.press('Escape');
+});
+
+for (const empresa of [2, 4, 6]) {
+    test(`Fase 58 todos los empleados se guardan y recargan en empresa ${empresa}`, async ({ page }) => {
+        const employeeCatalog = phase57Employees.map(item => ({ ...item }));
+        const state = await phase57Fixture(page, { employeeCatalog, products: [{ ...product, CodPro: `${String(empresa).padStart(2, '0')}001` }] });
+        await page.selectOption('#pos-empresa-select', String(empresa).padStart(2, '0'));
+        await page.locator('[data-table-number="235"]').click();
+        await expect(page.locator('#pos-mojo-name')).toHaveText('Seleccione empleado');
+        let saves = 0;
+        for (const code of [55, 66, 68]) {
+            await page.locator('.pos-mojo-badge').click();
+            await expect(page.locator('.employee-search-result')).toHaveCount(employeeCatalog.length);
+            await page.locator('#employee-search-input').fill(String(code));
+            await page.locator(`[data-employee-code="${code}"]`).click();
+            if (!saves) await page.locator('.pos-product-card').click();
+            await expect.poll(() => state.saves).toBe(++saves);
+            expect(state.mozo).toBe(code);
+            expect(state.items[0].codPro.startsWith(String(empresa).padStart(2, '0'))).toBe(true);
+            await page.evaluate(empresa => openPOSOrder(235, empresa), empresa);
+            expect(await page.locator('#pos-mojo-select').inputValue()).toBe(String(code));
+            await expect(page.locator('#pos-mojo-name')).toHaveText(employeeCatalog.find(item => item.Codemp === code).Nombre);
+            await expect(page.locator('#order-save-message')).not.toContainText('no disponible');
+        }
+        employeeCatalog.find(item => item.Codemp === 68).Empresa = 4;
+        employeeCatalog.find(item => item.Codemp === 68).FecCese = '2026-10-01';
+        await page.evaluate(empresa => openPOSOrder(235, empresa), empresa);
+        expect(await page.locator('#pos-mojo-select').inputValue()).toBe('68');
+        await expect(page.locator('#pos-mojo-name')).toHaveText('Empleado sin empresa');
+        expect(state.orderCompanies.filter(value => typeof value === 'number')).toEqual([empresa, empresa, empresa]);
+        expect(await page.evaluate(() => posCurrentTableEmpresa)).toBe(empresa);
+        expect(state.items[0].cantidad).toBe(1);
+    });
+}

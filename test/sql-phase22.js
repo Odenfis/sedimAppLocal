@@ -482,6 +482,102 @@ async function main() {
         assert.equal(rejectedUnitSave.errorCode,'COMMERCIAL_CONFLICT');
         await pool.request().query("UPDATE Valores SET n_valor=10.5 WHERE c_valor='Igvv'");
         passed++; console.log('✓ final unit prices survive quantity changes, old snapshots, note fractions, tax changes, rollback and commercial conflicts');
+
+        // Fase 57: only fixture rows in this isolated schema, including all three companies.
+        await pool.request().query(`
+            INSERT Mesas SELECT n.Numero,e.Empresa,1 FROM (VALUES(230),(231),(232),(235),(236)) n(Numero) CROSS JOIN (VALUES(2),(4),(6)) e(Empresa);
+            INSERT Empleados VALUES(0,'Empleado código cero',2,1,NULL),(571,'Empleado tipo 1',2,1,NULL),(572,'Empleado tipo 2',2,2,NULL),
+                (573,'Empleado cesado',2,1,GETDATE()),(574,'Empleado empresa 4',4,1,NULL),
+                (575,'Segundo empleado 4',4,2,NULL),(576,'Empleado empresa 6',6,1,NULL),
+                (577,'Segundo empleado 6',6,2,NULL),(578,'Mozo empresa 6',6,3,NULL),
+                (579,'Empleado sin empresa',NULL,4,NULL),(195,'Plataforma otra empresa',4,3,NULL),(203,'Plataforma cesada',2,3,GETDATE());
+            INSERT Productos VALUES('06001','Producto Abruzzo',30,1,0,1,3);
+        `);
+        let discardOrder;
+        for (const [empresa, firstCode, secondCode, codPro] of [[2,574,573,'02001'],[4,579,576,'04001'],[6,573,574,'06001']]) {
+            const { employeeEligibilitySql } = require('../lib/employee-scope');
+            const employees = (await pool.request().input('empresa',sql.Int,empresa).query(`SELECT Codemp FROM Empleados
+                WHERE ${employeeEligibilitySql(empresa,231)}`)).recordset.map(row=>row.Codemp);
+            assert.ok(employees.includes(firstCode)); assert.ok(employees.includes(secondCode));
+            for (const code of [573,574,579,195,203]) assert.ok(employees.includes(code));
+            for (const mesa of [231,235]) {
+                const employeeLine={lineaId:randomUUID(),codPro,nombre:'Producto de prueba',cantidad:1,precio:30,afecto:1,notasRapidas:[],nota:''};
+                let order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:firstCode,turno:1,items:[employeeLine]});
+                assert.equal(order.status,200,JSON.stringify(order));
+                assert.equal((await pool.request().input('nro',order.nroTicket).query('SELECT Mozo FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Mozo,firstCode);
+                order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:secondCode,turno:1,items:[employeeLine],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order));
+                assert.equal(order.pedido.Mozo,secondCode);
+                assert.equal((await pool.request().input('nro',order.nroTicket).query('SELECT Mozo FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Mozo,secondCode);
+                const reloaded=await call('get','/api/pos/pedido',{}, {}, {empresa,mesa});
+                assert.equal(reloaded.pedido.Mozo,secondCode);
+                if(empresa===2 && mesa===231) discardOrder={...order,line:employeeLine};
+            }
+            passed++; console.log(`✓ discard/gifts tables 231 and 235 persist and reload any employee, regardless of company, type or termination in company ${empresa}`);
+        }
+        const discardSnapshot=async()=> (await pool.request().input('nro',discardOrder.nroTicket).query(`SELECT t.Mozo,t.Total,pc.Version,
+            (SELECT COUNT(*) FROM Ticket_d WHERE NroTicket=@nro) DetailCount FROM Ticket_c t JOIN Pedido_control pc ON pc.NroTicket=t.NroTicket WHERE t.NroTicket=@nro`)).recordset;
+        const originalDiscard=await discardSnapshot();
+        for(const mozo of [999999,null,'']) {
+            const rejected=await call('post','/api/pos/pedido',{empresa:2,mesa:231,mozo,turno:1,items:[discardOrder.line],nroTicket:discardOrder.nroTicket,version:discardOrder.version});
+            assert.equal(rejected.status,400,JSON.stringify(rejected));
+            assert.match(rejected.message,/empleado existente/);
+            assert.deepEqual(await discardSnapshot(),originalDiscard);
+        }
+        await pool.request().query('UPDATE Empleados SET Empresa=NULL,FecCese=GETDATE() WHERE Codemp=573');
+        const stillEligible=await call('post','/api/pos/pedido',{empresa:2,mesa:231,mozo:573,turno:1,items:[discardOrder.line],nroTicket:discardOrder.nroTicket,version:discardOrder.version});
+        assert.equal(stillEligible.status,200,JSON.stringify(stillEligible));
+        discardOrder={...stillEligible,line:discardOrder.line};
+        assert.equal((await call('get','/api/pos/pedido',{}, {}, {empresa:2,mesa:231})).pedido.Mozo,573);
+        assert.equal((await discardSnapshot())[0].Total,originalDiscard[0].Total);
+        const sequenceBefore=(await pool.request().query('SELECT c_describe FROM Tablas WHERE n_codtabla=23 AND n_numero=1')).recordset[0].c_describe;
+        for(const [mesa,mozo] of [[232,999999],[232,null],[232,''],[236,571],[236,2],[230,571],[230,195],[230,203]]) {
+            const rejected=await call('post','/api/pos/pedido',{empresa:2,mesa,mozo,turno:1,items:[{...discardOrder.line,lineaId:randomUUID()}]});
+            assert.equal(rejected.status,400,JSON.stringify(rejected));
+        }
+        assert.equal((await pool.request().query('SELECT c_describe FROM Tablas WHERE n_codtabla=23 AND n_numero=1')).recordset[0].c_describe,sequenceBefore);
+        assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Ticket_c WHERE NroMesa IN(232,236,230)')).recordset[0].n,0);
+        passed++; console.log('✓ nonexistent or absent codes are rejected; company/termination changes remain eligible in discard/gifts while neighboring tables stay restricted');
+        const zeroLine={...discardOrder.line,lineaId:randomUUID()};
+        let zeroOrder=await call('post','/api/pos/pedido',{empresa:2,mesa:232,mozo:0,turno:1,items:[zeroLine]});
+        assert.equal(zeroOrder.status,200,JSON.stringify(zeroOrder));
+        assert.equal(zeroOrder.pedido.Mozo,0);
+        assert.equal((await pool.request().input('nro',zeroOrder.nroTicket).query('SELECT Mozo FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Mozo,0);
+        zeroOrder=await call('post','/api/pos/pedido',{empresa:2,mesa:232,mozo:571,turno:1,items:[zeroLine],nroTicket:zeroOrder.nroTicket,version:zeroOrder.version});
+        assert.equal(zeroOrder.status,200); assert.equal(zeroOrder.pedido.Mozo,571);
+        passed++; console.log('✓ explicit Codemp is persisted without default substitution, including a valid zero code and the update response');
+
+        const expectedName='Empleado sin empresa';
+        let crossOrder=await call('post','/api/pos/pedido',{empresa:2,mesa:231,mozo:579,turno:1,items:[discardOrder.line],nroTicket:discardOrder.nroTicket,version:discardOrder.version});
+        assert.equal(crossOrder.status,200,JSON.stringify(crossOrder));
+        const crossSend=await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:crossOrder.version,clave:randomUUID()},{nro:crossOrder.nroTicket});
+        assert.equal(crossSend.status,200,JSON.stringify(crossSend));
+        const captured=(await pool.request().input('envio',crossSend.envioId).query('SELECT Documento,Cabecera FROM Cocina_envios WHERE Id=@envio')).recordset[0];
+        const header=JSON.parse(captured.Cabecera);
+        assert.equal(header.mozo,expectedName); assert.equal(header.empresa,2); assert.equal(header.mesa,231); assert.equal(header.turno,1);
+        assert.ok(captured.Documento.includes(expectedName));
+        const originalPrinterDoc=(await pool.request().input('envio',crossSend.envioId).query('SELECT Documento FROM Impresion_trabajos WHERE EnvioId=@envio')).recordset[0].Documento;
+        let board=await call('get','/api/cocina/pedidos',{}, {}, {empresa:2});
+        assert.equal(board.status,200);
+        assert.equal(board.pedidos.find(p=>p.nroTicket===crossOrder.nroTicket).mozo,expectedName);
+        // A renamed/reassigned employee must never rewrite the captured send or its reprint.
+        await pool.request().query("UPDATE Empleados SET Nombre='Nombre posterior',Empresa=6,FecCese=GETDATE() WHERE Codemp=579");
+        await pool.request().input('envio',crossSend.envioId).query("UPDATE Impresion_trabajos SET Estado='enviado' WHERE EnvioId=@envio");
+        const copy=await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',{empresa:2,clave:randomUUID()},{nro:crossOrder.nroTicket,envio:crossSend.envioId});
+        assert.equal(copy.status,200,JSON.stringify(copy));
+        const copyDoc=(await pool.request().input('job',copy.trabajoId).query('SELECT Documento FROM Impresion_trabajos WHERE Id=@job')).recordset[0].Documento;
+        assert.equal(copyDoc,'*** REIMPRESIÓN ***\n'+originalPrinterDoc);
+        assert.deepEqual((await pool.request().input('envio',crossSend.envioId).query('SELECT Documento,Cabecera FROM Cocina_envios WHERE Id=@envio')).recordset[0],captured);
+        // New sends resolve the current name by code, including another company and a termination date.
+        crossOrder=await call('post','/api/pos/pedido',{empresa:2,mesa:231,mozo:579,turno:1,items:[discardOrder.line,{...discardOrder.line,lineaId:randomUUID()}],nroTicket:crossOrder.nroTicket,version:crossSend.version});
+        assert.equal(crossOrder.status,200,JSON.stringify(crossOrder));
+        const nextSend=await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:crossOrder.version,clave:randomUUID()},{nro:crossOrder.nroTicket});
+        assert.equal(nextSend.status,200,JSON.stringify(nextSend));
+        const nextHeader=(await pool.request().input('envio',nextSend.envioId).query('SELECT Cabecera FROM Cocina_envios WHERE Id=@envio')).recordset[0];
+        assert.equal(JSON.parse(nextHeader.Cabecera).mozo,'Nombre posterior');
+        board=await call('get','/api/cocina/pedidos',{}, {}, {empresa:2});
+        assert.equal(board.pedidos.find(p=>p.nroTicket===crossOrder.nroTicket).mozo,'Nombre posterior');
+        passed++; console.log('✓ names resolve by code for null/foreign/ceased employees in new sends and KDS; captured historical documents and reprints remain immutable');
         console.log(`${passed} SQL integration scenarios passed.`);
     } finally {
         if (suitePrinterEnabled === undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED = suitePrinterEnabled;

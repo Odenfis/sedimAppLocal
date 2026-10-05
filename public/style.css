@@ -2689,3 +2689,50 @@ form label {
 @media (max-width: 1200px), (max-width: 1400px) and (pointer: coarse) {
     .order-code-group { flex-basis: 100%; width: 100%; margin: 8px 0; }
 }
+
+/* Fase 57: búsqueda de empleados en Descarte y obsequios. */
+.employee-search-dialog {
+    --employee-search-control-bg: #eef2ff;
+    width: min(560px, 96vw);
+    max-width: 96vw;
+    max-height: min(88dvh, calc(var(--pos-visual-viewport-height, 100dvh) - 24px));
+    box-sizing: border-box;
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 18px;
+    background: var(--card-bg, #fff);
+    color: var(--text-color, #111827);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .25);
+    overflow: hidden;
+    margin: 0;
+    position: fixed;
+    left: 50%;
+    top: calc(var(--pos-visual-viewport-offset-top, 0px) + var(--pos-visual-viewport-height, 100dvh) / 2);
+    transform: translate(-50%, -50%);
+}
+.employee-search-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
+.employee-search-dialog::backdrop { background: rgba(15, 23, 42, .5); }
+.employee-search-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.employee-search-header h2 { margin: 0; font-size: 1.2rem; }
+.employee-search-dialog button { min-height: 44px; cursor: pointer; font: inherit; color: inherit; }
+.employee-search-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.employee-search-dialog button:focus-visible,
+.employee-search-dialog input:focus-visible { outline: 3px solid #667eea; outline-offset: 2px; }
+.employee-search-header button { min-width: 44px; border: 0; border-radius: 8px; background: var(--employee-search-control-bg); font-size: 1.5rem; }
+.employee-search-form { margin: 0; padding: 0; gap: 0; }
+.employee-search-form label { display: block; margin-bottom: 6px; font-weight: 600; }
+.employee-search-input-row { display: flex; gap: 8px; }
+.employee-search-input-row input { flex: 1; min-width: 0; min-height: 44px; font-size: 16px; padding: 8px 10px; border: 1px solid var(--input-border, #9ca3af); border-radius: 8px; background: var(--input-bg, #fff); color: inherit; }
+.employee-search-input-row button,
+.employee-search-footer button,
+#employee-search-retry { padding: 8px 14px; border: 1px solid #c7d2fe; border-radius: 8px; background: var(--employee-search-control-bg); }
+.employee-search-header, .employee-search-form, .employee-search-status, .employee-search-footer { flex-shrink: 0; }
+.employee-search-status { margin: 0; font-size: .9rem; }
+.employee-search-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.employee-search-result { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px; margin-bottom: 6px; text-align: left; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; background: var(--card-bg, #fff); color: inherit; }
+.employee-search-result strong { flex: 0 0 auto; min-width: 3ch; }
+.employee-search-result span { overflow-wrap: anywhere; }
+.employee-search-result[aria-pressed="true"] { border-color: #667eea; background: var(--employee-search-control-bg); }
+.employee-search-footer { display: flex; justify-content: flex-end; }
+
+[data-theme="dark"] .employee-search-dialog { --employee-search-control-bg: #374151; }
