@@ -34,8 +34,8 @@ function factorIgv(afecto) {
     return (afecto === 1 || afecto === true) ? (1 + GLOBAL_IGVV_PCT / 100) : 1;
 }
 
-function precioFinalUnitario(precioBase, afecto) {
-    return orderUnitPrice(precioBase, afecto, GLOBAL_IGVV_PCT);
+function precioFinalUnitario(precioBase, afecto, manualFinal = null) {
+    return orderUnitPrice(precioBase, afecto, GLOBAL_IGVV_PCT, manualFinal);
 }
 
 //variables reporte cargos caja
@@ -999,7 +999,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
 
                 posCart = (data.items || []).map(item => ({
                     lineaId: item.lineaId, codPro: item.Codpro.trim(), nombre: item.Descripcion.trim(),
-                    precioBase: Number(item.Precio), precio: precioFinalUnitario(Number(item.Precio), item.Afecto),
+                    precioManualFinal: item.precioManualFinal ?? null,
+                    precioBase: Number(item.Precio), precio: precioFinalUnitario(Number(item.Precio), item.Afecto, item.precioManualFinal),
                     cantidad: Number(item.Cantidad), afecto: item.Afecto, descuento: 0,
                     notasRapidas: item.notasRapidas || [], nota: item.nota || '', enviada: item.enviada,
                     pendienteId: item.pendienteId, pendienteEnvio: item.pendienteEnvio, estadoCocina: item.estadoCocina,
@@ -1629,7 +1630,7 @@ function searchPOSProducts() {
 
 function addToCart(product, card = null) {
     if (posIsReadOnly || orderBusy) return;
-    const existing = posCart.find(item => item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item));
+    const existing = posCart.find(item => item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item) && item.precioManualFinal == null);
     const precioBase = typeof product.PventaMa === 'number' ? product.PventaMa : (parseFloat(product.PventaMa) || 0);
     const esAfecto = product.Afecto === 1 || product.Afecto === true;
     if (existing) {
@@ -1660,6 +1661,7 @@ function bindCartDelegation(container) {
         const memberIds = posCartGroupMembers.get(btn.dataset.cod) || [btn.dataset.cod];
         const indexes = memberIds.map(id => posCart.findIndex(i => i.lineaId === id)).filter(i => i >= 0);
         if (!indexes.length) return;
+        if (btn.dataset.action === 'price') return openManualPrice(memberIds);
         const editable = indexes.filter(i => !posCart[i].pendienteId);
         if (!editable.length) return;
         const pending = editable.find(i => !posCart[i].enviada);
@@ -1692,7 +1694,7 @@ function updateCartUI() {
     const grouped = new Map();
     posCart.forEach((item, index) => {
         const precioBase = item.precioBase != null ? item.precioBase : item.precio;
-        const key = JSON.stringify([item.codPro, precioBase, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
+        const key = JSON.stringify([item.codPro, precioBase, item.precioManualFinal ?? null, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
         if (!grouped.has(key)) grouped.set(key, { item, indexes: [], cod: item.lineaId });
         grouped.get(key).indexes.push(index);
     });
@@ -1706,7 +1708,7 @@ function updateCartUI() {
         const importe = redondear2(group.indexes.reduce((sum, index) => sum + allocatedAmounts[index], 0));
         const subtotalLinea = redondear2(group.indexes.reduce((sum, index) => {
             const line = posCart[index], base = line.precioBase != null ? line.precioBase : precioBaseUnit;
-            return sum + redondear2(base * line.cantidad);
+            return sum + redondear2((line.precioManualFinal != null ? line.precioManualFinal / factorIgv(esAfecto) : base) * line.cantidad);
         }, 0));
         const igvLinea = importe - subtotalLinea;
         subtotal += subtotalLinea;
@@ -1742,6 +1744,7 @@ function updateCartUI() {
                     <span class="order-line-notes">${escapeOrderText(orderNotes(item))}</span>
                     <small class="order-kitchen-line-status">${escapeOrderText(lineStatus)}</small>
                     ${!posIsReadOnly ? `<span class="order-line-tools"><button type="button" data-action="notes" data-cod="${group.cod}" ${pendingRecognition ? 'disabled' : ''}>✎ Notas</button>
+                    ${orderCodeEligible() ? `<button type="button" data-action="price" data-cod="${group.cod}" ${manualPriceEditable() ? '' : 'disabled'}>Precio</button>` : ''}
                     ${canSplit ? `<button type="button" data-action="split" data-cod="${group.cod}">Separar</button>` : ''}</span>` : ''}
                 </div>${controles}`
         };
@@ -1983,7 +1986,7 @@ async function leavePOSOrder(viewName = 'pos-tables') {
     }
 
     cancelPOSOrderLoad();
-    for (const id of ['order-notes-dialog', 'order-conflict-dialog', 'order-history-dialog', 'employee-search-dialog']) {
+    for (const id of ['order-notes-dialog', 'order-conflict-dialog', 'order-history-dialog', 'employee-search-dialog', 'order-price-dialog']) {
         const dialog = document.getElementById(id);
         if (dialog?.open) dialog.close();
     }

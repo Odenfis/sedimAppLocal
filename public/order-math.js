@@ -1,14 +1,15 @@
 /* Allocate commercial cents across note variants without changing the product total. */
 (function(root) {
-    function unitPrice(basePrice, affected, taxPercent) {
+    function unitPrice(basePrice, affected, taxPercent, manualFinal = null) {
+        if (manualFinal != null) return Number(manualFinal);
         return Math.round((Number(basePrice) * (affected === 1 || affected === true ? 1 + taxPercent / 100 : 1) + Number.EPSILON) * 100) / 100;
     }
     function amounts(items, taxPercent) {
         const result = items.map(() => 0), groups = new Map();
         items.forEach((l, index) => {
             const price = Number(l.precioBase ?? l.precio), affected = l.afecto === 1 || l.afecto === true;
-            const key = `${l.codPro}:${price}:${affected}`;
-            if (!groups.has(key)) groups.set(key, { unitCents: Math.round(unitPrice(price, affected, taxPercent) * 100), entries: [] });
+            const key = `${l.codPro}:${price}:${affected}:${l.precioManualFinal ?? "catalog"}`;
+            if (!groups.has(key)) groups.set(key, { unitCents: Math.round(unitPrice(price, affected, taxPercent, l.precioManualFinal) * 100), entries: [] });
             groups.get(key).entries.push({ index, quantity: Number(l.cantidad) });
         });
         for (const group of groups.values()) {

@@ -98,12 +98,13 @@ async function orderRequest(url, method = 'GET', body) {
 function orderReset() {
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
+    closeManualPrice(false);
     closePOSEmployeeSearch(false);
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
-function orderAccept(data, codeRevision = null) {
+function orderAccept(data, codeRevision = null, savedGeneration = null) {
     if (!data.pedido) return;
     if (codeRevision === orderCodeRevision || (codeRevision === null && !orderDirty)) {
         orderCode = data.pedido.CodigoPedido || ''; orderCodeError = '';
@@ -118,13 +119,20 @@ function orderAccept(data, codeRevision = null) {
     if (data.nroTicket) posCurrentNroTicket = data.nroTicket;
     for (const l of posCart) {
         const saved = data.items?.find(i => i.lineaId === l.lineaId);
-        if (saved) { l.nombre = saved.Descripcion; l.precioBase = Number(saved.Precio); l.afecto = saved.Afecto; l.precio = precioFinalUnitario(l.precioBase, l.afecto); l.enviada = saved.enviada; l.pendienteId = saved.pendienteId; l.estadoCocina = saved.estadoCocina; l.pendienteEnvio = saved.pendienteEnvio; }
+        if (saved) {
+            l.nombre = saved.Descripcion; l.precioBase = Number(saved.Precio); l.afecto = saved.Afecto;
+            // A response to an earlier save must not replace a newer local adjustment.
+            if (savedGeneration === null || savedGeneration === orderGeneration) l.precioManualFinal = saved.precioManualFinal ?? null;
+            l.precio = precioFinalUnitario(l.precioBase, l.afecto, l.precioManualFinal);
+            l.enviada = saved.enviada; l.pendienteId = saved.pendienteId; l.estadoCocina = saved.estadoCocina; l.pendienteEnvio = saved.pendienteEnvio;
+        }
     }
     renderOrderStatus();
 }
 function orderFinishDeletion() {
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
+    closeManualPrice(false);
     closePOSEmployeeSearch(false);
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
@@ -149,6 +157,7 @@ function orderPayload() {
         mozo: document.getElementById('pos-mojo-select').value || null, nroTicket: posCurrentNroTicket,
         version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
             lineaId: i.lineaId, codPro: i.codPro,
+            precioManualFinal: i.precioManualFinal ?? null,
             nombre: i.nombre, precio: i.precioBase ?? i.precio, cantidad: i.cantidad, afecto: i.afecto,
             notasRapidas: i.notasRapidas || [], nota: i.nota || ''
         }))
@@ -172,7 +181,7 @@ async function orderFlush() {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
-            orderAccept(data, codeRevision); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
+            orderAccept(data, codeRevision, generation); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
             orderDeleteRetry = false; orderSaveError = e.message; if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
@@ -182,6 +191,7 @@ async function orderFlush() {
 }
 function renderOrderStatus() {
     renderOrderCode();
+    document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => { button.disabled = !manualPriceEditable(); });
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
     const msg = document.getElementById('order-save-message');
@@ -351,3 +361,60 @@ async function acknowledgeKitchenLine(nroTicket, lineaId) {
 if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if (orderDirty || orderSavePromise || orderBusy) { e.preventDefault(); e.returnValue = ''; } });
 
 if (typeof module !== 'undefined') module.exports = { orderKitchenStatus, orderKitchenHeadline };
+
+/* Fase 59: commercial-only price adjustment; kitchen snapshots stay unchanged. */
+let pendingManualPrice = null;
+function manualPriceEditable() {
+    return orderCodeEligible() && !posIsReadOnly && !orderBusy && !orderConflict && !orderLoadError && !orderCompanyContextError;
+}
+function manualPriceFingerprint(lines) {
+    return JSON.stringify(lines.map(l => [l.lineaId, l.codPro, l.cantidad, l.precioBase, l.precioManualFinal ?? null,
+        l.afecto, l.nota, l.notasRapidas, l.enviada, l.pendienteId]));
+}
+function restoreManualPriceFocus(pending) {
+    if (!pending) return;
+    if (pending.trigger?.isConnected) { pending.trigger.focus(); return; }
+    const group = [...posCartGroupMembers.entries()].find(([, ids]) => ids.some(id => pending.ids.includes(id)));
+    const control = group && document.querySelector(`.cart-item[data-cod="${group[0]}"] button[data-action="price"]`);
+    (control || document.getElementById('pos-order-sidebar'))?.focus();
+}
+function closeManualPrice(restoreFocus = true) {
+    const pending = pendingManualPrice;
+    pendingManualPrice = null;
+    const dialog = document.getElementById('order-price-dialog');
+    if (dialog?.open) dialog.close();
+    if (restoreFocus) restoreManualPriceFocus(pending);
+}
+function openManualPrice(ids) {
+    if (!manualPriceEditable() || pendingManualPrice) return;
+    const lines = posCart.filter(l => ids.includes(l.lineaId));
+    if (!lines.length) return;
+    pendingManualPrice = { ids: lines.map(l => l.lineaId), fingerprint: manualPriceFingerprint(lines),
+        company: posCurrentTableEmpresa, table: posCurrentTable, generation: posOrderLoadGeneration, trigger: document.activeElement };
+    const quantity = redondear2(lines.reduce((sum, l) => sum + l.cantidad, 0));
+    document.getElementById('order-price-product').textContent = `${lines[0].nombre} · ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}`;
+    document.getElementById('order-price-current').textContent = `Precio actual: S/ ${lines[0].precio.toFixed(2)}`;
+    const input = document.getElementById('order-price-input');
+    input.value = lines[0].precio.toFixed(2); input.setAttribute('aria-invalid', 'false');
+    document.getElementById('order-price-error').textContent = '';
+    document.getElementById('order-price-dialog').showModal(); input.focus(); input.select();
+}
+function applyManualPrice() {
+    const pending = pendingManualPrice;
+    if (!pending) return;
+    const lines = posCart.filter(l => pending.ids.includes(l.lineaId));
+    if (!manualPriceEditable() || pending.company !== posCurrentTableEmpresa || pending.table !== posCurrentTable
+        || pending.generation !== posOrderLoadGeneration || lines.length !== pending.ids.length
+        || pending.fingerprint !== manualPriceFingerprint(lines)) {
+        closeManualPrice(); orderNavigationMessage = 'El pedido cambió. Vuelva a seleccionar el producto.'; renderOrderStatus(); return;
+    }
+    const input = document.getElementById('order-price-input'), text = input.value.trim();
+    const value = Number(text.replace(',', '.'));
+    if (!/^\d+(?:[.,]\d{1,2})?$/.test(text) || !Number.isFinite(value) || value > 999999999) {
+        input.setAttribute('aria-invalid', 'true');
+        document.getElementById('order-price-error').textContent = 'Ingrese un precio entre S/0.00 y S/999,999,999.00, con hasta dos decimales.';
+        input.focus(); return;
+    }
+    for (const line of lines) { line.precioManualFinal = value; line.precio = value; }
+    closeManualPrice(false); orderSchedule(); restoreManualPriceFocus(pending);
+}

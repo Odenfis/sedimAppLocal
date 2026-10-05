@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=57">
+    <link rel="stylesheet" href="style.css?v=59">
     <link rel="stylesheet" href="responsive.css?v=57">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -379,6 +379,16 @@
         </div>
     </div>
 
+    <dialog id="order-price-dialog" class="order-dialog order-price-dialog" aria-labelledby="order-price-title" oncancel="closeManualPrice()" onclose="if (!this.open) closeManualPrice()">
+        <form onsubmit="event.preventDefault(); applyManualPrice()">
+            <div class="order-dialog-heading"><h2 id="order-price-title">Modificar precio</h2><button type="button" aria-label="Cerrar precio" onclick="closeManualPrice()">×</button></div>
+            <p id="order-price-product"></p><p id="order-price-current"></p>
+            <label for="order-price-input">Nuevo precio unitario — IGV incluido</label>
+            <input id="order-price-input" type="text" inputmode="decimal" autocomplete="off" maxlength="12" aria-describedby="order-price-error">
+            <p id="order-price-error" role="alert"></p>
+            <div class="order-dialog-actions"><button type="button" onclick="closeManualPrice()">Cancelar</button><button type="submit">Aplicar</button></div>
+        </form>
+    </dialog>
     <dialog id="order-remove-dialog" class="order-dialog order-remove-dialog" aria-labelledby="order-remove-title" aria-describedby="order-remove-product order-remove-description order-remove-empty order-remove-sent" oncancel="closeProductRemoval()" onclose="if (!this.open) closeProductRemoval()">
         <div class="order-dialog-heading"><h2 id="order-remove-title">Eliminar producto</h2><button type="button" aria-label="Cerrar confirmación" onclick="closeProductRemoval()">×</button></div>
         <p id="order-remove-product"></p>
@@ -406,9 +416,9 @@
         <button onclick="document.getElementById('order-conflict-dialog').close()">Conservar borrador</button>
         <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
     </dialog>
-    <script src="order-math.js?v=55"></script>
-    <script src="orders-ui.js?v=57"></script>
-    <script src="script.js?v=58"></script>
+    <script src="order-math.js?v=59"></script>
+    <script src="orders-ui.js?v=59"></script>
+    <script src="script.js?v=59"></script>
 </body>
 
 </html>

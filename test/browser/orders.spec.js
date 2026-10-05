@@ -33,7 +33,8 @@ async function fixture(page, options = {}) {
             .sort((a, b) => a.Nombre.localeCompare(b.Nombre) || a.Codemp - b.Codemp).map(({ Codemp, Nombre }) => ({ Codemp, Nombre }));
     }
     function data() {
-        const pending = state.items.some(l => JSON.stringify(l) !== state.sent.get(l.lineaId)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
+        const kitchenSnapshot = l => JSON.stringify(require('../../lib/order-domain').snapshot(l));
+        const pending = state.items.some(l => kitchenSnapshot(l) !== (state.sent.has(l.lineaId) ? kitchenSnapshot(JSON.parse(state.sent.get(l.lineaId))) : null)) || [...state.sent.keys()].some(id => !state.items.some(l => l.lineaId === id));
         const cancellations = [...state.sent.entries()].filter(([id]) => !state.items.some(l => l.lineaId === id)).map(([,line]) => JSON.parse(line));
         return { success: true, nroTicket: state.ticket, version: state.version,
             conciliacionComercial: { status: state.commercialConflict ? 'conflict' : 'ok',
@@ -102,6 +103,7 @@ async function fixture(page, options = {}) {
             }
             state.mozo = Number(body.mozo); state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
         }
+        if (url.pathname.endsWith('/pagar')) { state.orderState = 2; state.version++; return fulfill(data()); }
         if (url.pathname.endsWith('/reabrir')) { state.orderState = 1; state.version++; return fulfill(data()); }
         if (url.pathname.endsWith('/enviar-cocina')) {
             state.requestOrder.push('send'); state.sends++; state.version++;
@@ -2011,3 +2013,145 @@ for (const empresa of [2, 4, 6]) {
         expect(state.items[0].cantidad).toBe(1);
     });
 }
+
+
+test('manual price validates, cancels, persists and separates catalog selections', async ({ page }) => {
+    const state=await fixture(page,{tables:[{Numero:201,Empresa:2,Estado:1}]});
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(()=>state.saves).toBe(1);
+    const price=page.getByRole('button',{name:'Precio',exact:true}).first();
+    await price.click();
+    await page.locator('#order-price-input').fill('15,00');
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    expect(state.saves).toBe(1);
+    await expect(price).toBeFocused();
+    await price.click();
+    for(const value of ['', '-1', '15.001', '1000000000']) {
+        await page.locator('#order-price-input').fill(value);
+        await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+        await expect(page.locator('#order-price-input')).toHaveAttribute('aria-invalid','true');
+    }
+    await page.locator('#order-price-input').fill('15,00');
+    await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect.poll(()=>state.items[0]?.precioManualFinal).toBe(15);
+    await expect(page.getByRole('button',{name:'Precio',exact:true})).toBeFocused();
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 15.00 x 1');
+    await page.locator('.cart-item button[data-action="inc"]').click();
+    await expect.poll(()=>state.items[0]?.cantidad).toBe(2);
+    await expect(page.locator('#pos-total')).toContainText('30.00');
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('.cart-item')).toHaveCount(2);
+    await expect.poll(()=>state.items.length).toBe(2);
+    await page.evaluate(()=>openPOSOrder(201,2));
+    await expect(page.locator('.cart-item-details').first()).toHaveText('S/ 15.00 x 2');
+});
+
+test('manual price preserves newer edits during slow saves and does not send kitchen changes', async ({ page }) => {
+    const state=await fixture(page,{tables:[{Numero:201,Empresa:2,Estado:1}]});
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(()=>state.saves).toBe(1);
+    await page.locator('#order-code').fill('REF');
+    await page.evaluate(()=>sendOrderKitchen());
+    expect(state.sends).toBe(1);
+    state.delaySave=600;
+    async function edit(value) {
+        await page.getByRole('button',{name:'Precio',exact:true}).click();
+        await page.locator('#order-price-input').fill(value);
+        await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    }
+    await edit('15');
+    await expect.poll(()=>state.requestOrder.filter(v=>v==='save').length).toBe(3);
+    await edit('17');
+    await expect.poll(()=>state.items[0]?.precioManualFinal).toBe(17);
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 17.00 x 1');
+    expect(state.sends).toBe(1);
+    await page.evaluate(()=>orderPay());
+    await expect(page.getByRole('button',{name:'Precio',exact:true})).toHaveCount(0);
+});
+
+test('manual price unavailable on normal and discard tables; zero and stale selection are safe', async ({ page }) => {
+    const state=await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(()=>state.saves).toBe(1);
+    await expect(page.getByRole('button',{name:'Precio',exact:true})).toHaveCount(0);
+    await page.evaluate(()=>{posCurrentTable=231;updateCartUI();});
+    await expect(page.getByRole('button',{name:'Precio',exact:true})).toHaveCount(0);
+    await page.evaluate(()=>{posCurrentTable=201;updateCartUI();});
+    await page.getByRole('button',{name:'Precio',exact:true}).click();
+    await page.locator('#order-price-input').fill('0');
+    await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect.poll(()=>state.items[0]?.precioManualFinal).toBe(0);
+    await page.getByRole('button',{name:'Precio',exact:true}).click();
+    await page.evaluate(()=>{posCart[0].cantidad++;});
+    await page.locator('#order-price-input').fill('10');
+    await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect(page.locator('#order-price-dialog')).not.toBeVisible();
+    expect(state.items[0].precioManualFinal).toBe(0);
+});
+
+for (const width of [390,768,1280]) test(`manual price dialog fits ${width}px and restores focus on Escape`,async({page})=>{
+    await page.setViewportSize({width,height:900});
+    await fixture(page,{tables:[{Numero:210,Empresa:2,Estado:1}]});
+    await page.locator('.pos-product-card').first().click();
+    if(width<=1200) await page.locator('#pos-cart-fab').click();
+    const trigger=page.getByRole('button',{name:'Precio',exact:true});
+    await trigger.click();
+    await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
+    const dialog=page.locator('#order-price-dialog');
+    const box=await dialog.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);
+    for(const control of await dialog.locator('button,input').all()) expect((await control.boundingBox()).height).toBeGreaterThanOrEqual(44);
+    await page.screenshot({path:`test-results/phase59-price-${width}.png`});
+    await page.keyboard.press('Escape');await expect(dialog).not.toBeVisible();await expect(trigger).toBeFocused();
+});
+
+test('manual price updates grouped sent/new lines only and survives split, conflict and reopen',async({page})=>{
+    const state=await fixture(page,{tables:[{Numero:220,Empresa:2,Estado:1}]});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);
+    // Use independent note variants and a group mixing sent and new units.
+    await page.evaluate(()=>{
+        const line=posCart[0];line.enviada={lineaId:line.lineaId,codPro:line.codPro,nombre:line.nombre,cantidad:1,notasRapidas:[],nota:''};
+        posCart.push({...line,lineaId:newOrderId(),enviada:null});
+        posCart.push({...line,lineaId:newOrderId(),enviada:null,nota:'Otra nota'});
+        updateCartUI();
+    });
+    await page.getByRole('button',{name:'Precio',exact:true}).first().click();
+    await page.locator('#order-price-input').fill('15');await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect.poll(()=>state.items.length).toBe(3);
+    expect(state.items.map(l=>l.precioManualFinal)).toEqual([15,15,null]);
+    await page.evaluate(()=>{posCart[0].pendienteId=newOrderId();updateCartUI();});
+    await page.getByRole('button',{name:'Precio',exact:true}).first().click();
+    await page.locator('#order-price-input').fill('16');await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect.poll(()=>state.items[0].precioManualFinal).toBe(16);
+    state.conflict=true;
+    await page.getByRole('button',{name:'Precio',exact:true}).first().click();
+    await page.locator('#order-price-input').fill('17');await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect(page.locator('#order-save-message')).toContainText('Pedido cambiado');
+    expect(await page.evaluate(()=>posCart[0].precioManualFinal)).toBe(17);
+    await expect(page.getByRole('button',{name:'Precio',exact:true}).first()).toBeDisabled();
+    state.conflict=false;await page.evaluate(()=>{orderConflict=false;return orderFlush();});
+    await expect.poll(()=>state.items[0].precioManualFinal).toBe(17);
+    state.orderState=2;await page.evaluate(()=>openPOSOrder(220,2));
+    await expect(page.getByRole('button',{name:'Precio',exact:true})).toHaveCount(0);
+    page.once('dialog',dialog=>dialog.accept());await page.evaluate(()=>reabrirPedido());
+    await expect(page.getByRole('button',{name:'Precio',exact:true}).first()).toBeVisible();
+    // Split a single unsent manual line using the existing notes workflow.
+    await page.evaluate(()=>{posCart=[{...posCart[2],cantidad:3,precioManualFinal:12,precio:12,nota:''}];updateCartUI();});
+    page.once('dialog',dialog=>dialog.accept('1'));
+    await page.evaluate(()=>splitOrderLine(0));
+    expect(await page.evaluate(()=>posCart.map(l=>l.precioManualFinal))).toEqual([12,12]);
+});
+
+test('manual price preserves draft after save failure and retries without kitchen sends',async({page})=>{
+    const state=await fixture(page,{tables:[{Numero:201,Empresa:2,Estado:1}]});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);
+    await page.route('**/api/pos/pedido',route=>route.request().method()==='POST'
+        ? route.fulfill({status:500,json:{message:'Fallo de guardado'}}) : route.fallback());
+    await page.getByRole('button',{name:'Precio',exact:true}).click();
+    await page.locator('#order-price-input').fill('15');await page.getByRole('button',{name:'Aplicar',exact:true}).click();
+    await expect(page.locator('#order-save-message')).toContainText('Fallo de guardado');
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 15.00 x 1');
+    expect(state.items[0].precioManualFinal).toBeNull();
+    await page.unroute('**/api/pos/pedido');await page.evaluate(()=>orderFlush());
+    expect(state.items[0].precioManualFinal).toBe(15);expect(state.sends).toBe(0);
+});

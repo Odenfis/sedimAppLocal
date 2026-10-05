@@ -578,6 +578,80 @@ async function main() {
         board=await call('get','/api/cocina/pedidos',{}, {}, {empresa:2});
         assert.equal(board.pedidos.find(p=>p.nroTicket===crossOrder.nroTicket).mozo,'Nombre posterior');
         passed++; console.log('✓ names resolve by code for null/foreign/ceased employees in new sends and KDS; captured historical documents and reprints remain immutable');
+
+        // Fase 59: manual final price lives only in line JSON and uses the existing commercial transaction.
+        await pool.request().query('UPDATE Empleados SET Empresa=2,FecCese=NULL WHERE Codemp=195');
+        for (const empresa of [2,4,6]) {
+            const codPro=String(empresa).padStart(2,'0')+'001';
+            const mozo=590+empresa;
+            await pool.request().query(`INSERT Empleados VALUES(${mozo},'Precio QA',${empresa},3,NULL)`);
+            for (const mesa of [209,219,229]) {
+                await pool.request().query(`INSERT Mesas VALUES(${mesa},${empresa},1)`);
+                const selectedMozo=empresa===2 && mesa===229 ? 195 : mozo;
+                const line={lineaId:randomUUID(),codPro,nombre:'Producto',precio:20,afecto:1,cantidad:1,precioManualFinal:15};
+                let order;
+                for (const cantidad of [1,2,3]) {
+                    line.cantidad=cantidad;
+                    order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,codigoPedido:'PRICE-QA',items:[line],
+                        nroTicket:order?.nroTicket,version:order?.version});
+                    assert.equal(order.status,200,JSON.stringify(order));
+                    const detail=(await pool.request().input('nro',order.nroTicket).query('SELECT Precio,Importe FROM Ticket_d WHERE NroTicket=@nro')).recordset;
+                    assert.deepEqual(detail,[{Precio:15,Importe:15*cantidad}]);
+                    assert.equal(order.items[0].precioManualFinal,15);
+                    assert.equal((await pool.request().input('nro',order.nroTicket).query('SELECT Total FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Total,15*cantidad);
+                }
+                if (empresa===2 && mesa===209) {
+                    const saved=async()=> (await pool.request().input('nro',order.nroTicket).query(`SELECT
+                        (SELECT Datos FROM Pedido_lineas WHERE NroTicket=@nro FOR JSON PATH) LineData,
+                        (SELECT Precio,Importe FROM Ticket_d WHERE NroTicket=@nro FOR JSON PATH) DetailData,
+                        (SELECT Version,SnapshotComercial FROM Pedido_control WHERE NroTicket=@nro FOR JSON PATH) ControlData,
+                        (SELECT Total FROM Ticket_c WHERE NroTicket=@nro) OrderTotal`)).recordset[0];
+                    const original=await saved();
+                    await pool.request().query(`CREATE TRIGGER fail_manual_write ON Ticket_d AFTER INSERT AS BEGIN THROW 51000, 'Injected manual detail failure', 1; END`);
+                    const failed=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[{...line,precioManualFinal:17}],nroTicket:order.nroTicket,version:order.version});
+                    await pool.request().query(`DROP TRIGGER [${schema}].fail_manual_write`);
+                    assert.equal(failed.status,500);assert.deepEqual(await saved(),original);
+                    await pool.request().input('nro',order.nroTicket).query('UPDATE Ticket_d SET Precio=99 WHERE NroTicket=@nro');
+                    const conflict=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[{...line,precioManualFinal:17}],nroTicket:order.nroTicket,version:order.version});
+                    assert.equal(conflict.errorCode,'COMMERCIAL_CONFLICT');
+                    const restored=await require('../lib/orders').reconcileCommercialOrder({empresa,nroTicket:order.nroTicket,version:order.version,usuario:'QA'});
+                    order.version=restored.version;
+                    assert.equal((await pool.request().input('nro',order.nroTicket).query('SELECT Precio FROM Ticket_d WHERE NroTicket=@nro')).recordset[0].Precio,15);
+                }
+                const sent=await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa,version:order.version,clave:randomUUID()},{nro:order.nroTicket});
+                assert.equal(sent.status,200,JSON.stringify(sent));
+                const kitchen=async()=> (await pool.request().input('nro',order.nroTicket).query(`SELECT
+                    (SELECT COUNT(*) FROM Cocina_envios WHERE NroTicket=@nro) Envios,
+                    (SELECT COUNT(*) FROM Impresion_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro) Jobs,
+                    (SELECT LineaId,Estado,PendienteId FROM Cocina_estados WHERE NroTicket=@nro FOR JSON PATH) Estados,
+                    (SELECT Documento,Cabecera FROM Cocina_envios WHERE NroTicket=@nro FOR JSON PATH) Documentos`)).recordset[0];
+                const before=await kitchen();
+                const omitted={...line};delete omitted.precioManualFinal;
+                order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[omitted],nroTicket:order.nroTicket,version:sent.version});
+                assert.equal(order.status,200,JSON.stringify(order));assert.equal(order.items[0].precioManualFinal,15);
+                line.precioManualFinal=0;
+                order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[line],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order));assert.equal((await pool.request().input('nro',order.nroTicket).query('SELECT Total FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Total,0);
+                assert.equal(order.cocina.pendientes,0);assert.deepEqual(await kitchen(),before);
+                const loaded=await call('get','/api/pos/pedido',{}, {}, {empresa,mesa});
+                assert.equal(loaded.items[0].precioManualFinal,0);
+                line.precioManualFinal=null;
+                order=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[line],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order));
+                assert.equal(order.items[0].precioManualFinal,null);
+                for(const invalid of [-1,15.001,'15',1000000000]) {
+                    const rejected=await call('post','/api/pos/pedido',{empresa,mesa,mozo:selectedMozo,turno:1,items:[{...line,precioManualFinal:invalid}],nroTicket:order.nroTicket,version:order.version});
+                    assert.equal(rejected.errorCode,'INVALID_MANUAL_PRICE');
+                }
+                const unchanged=await call('get','/api/pos/pedido',{}, {}, {empresa,mesa});assert.equal(unchanged.version,order.version);
+            }
+        }
+        const deniedPrice=await call('post','/api/pos/pedido',{empresa:2,mesa:231,mozo:579,turno:1,
+            items:[{...discardOrder.line,precioManualFinal:15}],nroTicket:crossOrder.nroTicket,version:nextSend.version});
+        assert.equal(deniedPrice.errorCode,'MANUAL_PRICE_NOT_ALLOWED');
+        const unchangedPrice=await call('get','/api/pos/pedido',{}, {}, {empresa:2,mesa:231});
+        assert.equal(unchangedPrice.version,nextSend.version);
+        passed++; console.log('✓ manual prices in all three groups/companies: quantities, reload, omitted/null/zero, server restrictions and immutable kitchen documents');
         console.log(`${passed} SQL integration scenarios passed.`);
     } finally {
         if (suitePrinterEnabled === undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED = suitePrinterEnabled;

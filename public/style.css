@@ -2736,3 +2736,17 @@ form label {
 .employee-search-footer { display: flex; justify-content: flex-end; }
 
 [data-theme="dark"] .employee-search-dialog { --employee-search-control-bg: #374151; }
+
+/* Fase 59: price dialog follows the visual viewport when the keyboard opens. */
+.order-price-dialog {
+    width: min(440px, 94vw); box-sizing: border-box; overflow-wrap: anywhere;
+    max-height: calc(var(--pos-visual-viewport-height, 100dvh) - 24px); overflow-y: auto;
+    margin: 0; position: fixed; left: 50%;
+    top: calc(var(--pos-visual-viewport-offset-top, 0px) + var(--pos-visual-viewport-height, 100dvh) / 2);
+    transform: translate(-50%, -50%);
+}
+.order-price-dialog input { width: 100%; box-sizing: border-box; min-height: 44px; font: inherit; padding: 8px;
+    color: var(--text-color); background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; }
+.order-price-dialog button, .order-line-tools button[data-action="price"] { min-height: 44px; }
+.order-price-dialog #order-price-error { color: var(--danger-color, #d14343); }
+.order-price-dialog input:focus-visible { outline: 3px solid #667eea; outline-offset: 2px; }
