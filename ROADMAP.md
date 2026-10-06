@@ -1644,3 +1644,15 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Pendiente en cliente: publicar e instalar mediante el procedimiento habitual; verificar tablet/celular, teclado físico, filas agrupadas, edición posterior a envío, guardado/recarga, Preventa/reapertura y lectura de `Ticket_d` en el POS contable. La fase no se declara desplegada ni validada físicamente/contablemente; se conservan las pendientes anteriores.
 
 ---
+
+## Fase 60: Alerta de Cocina más duradera (Implementada en código; validación física pendiente)
+
+- Se incorpora íntegramente `public/sounds/universfield-ringtone-072-496297.mp3`, elegido por el cliente, con duración aproximada de 8,33 segundos frente a los 1,2 segundos anteriores. El SHA-256 coincide con el adjunto original; se conserva `universe_bell.mp3` para facilitar una reversión.
+- Cocina reproduce el MP3 completo al detectar novedades, con el volumen elegido y activación manual mediante gesto del usuario. Se mantienen Activar sonido, Probar sonido, los mensajes de bloqueo/carga y la alarma breve de respaldo ante fallo de descarga o decodificación.
+- Existe una reproducción activa y como máximo un aviso pendiente. Los avisos recibidos durante el audio se agrupan; al terminar se reproduce una vez adicional si corresponde. La misma regla se aplica durante esa reproducción, sin cola ilimitada ni superposición de MP3.
+- Desactivar detiene el MP3 o todos los osciladores de respaldo y elimina el aviso pendiente. Las pruebas asíncronas iniciadas antes de desactivar no pueden reproducirse tras una descarga tardía, incluso si se reactiva el sonido. Volumen cero no inicia avisos.
+- La detección por envío conserva sus reglas: carga inicial, envíos vistos, cambios de empresa sin novedades y respuestas desactualizadas no generan avisos. No se modifican API, SQL, estados de Cocina, impresión ni flujos comerciales; no hay migraciones, dependencias ni variables nuevas. El script del dashboard usa versión 60 y el MP3 tiene una ruta nueva para evitar caché del audio anterior.
+- Verificación: `npm run check`, `git diff --check` y 70/70 pruebas unitarias aprobadas. La suite completa Playwright ejecutó 111 casos: 109 aprobaron inicialmente; se corrigieron dos esperas asíncronas de las pruebas nuevas y se repitieron los 18 casos de Cocina, todos aprobados, incluidos ambos fallos iniciales. Se verificaron MIME, duración decodificada, volumen, agrupación, desactivación/reactivación, descarga tardía, fallo 404/decodificación, bloqueo de audio y detección sin avisos duplicados entre empresas. No se ejecutaron pruebas SQL por tratarse de un cambio de audio/frontend.
+- Pendiente en cliente: instalar mediante `ACTUALIZACION_CLIENTE.md`, recargar Cocina, activar/probar sonido y validar duración y audibilidad con los parlantes y ruido habituales. Probar varios envíos consecutivos, desactivación durante reproducción, reactivación sin avisos antiguos y funcionamiento habitual de impresión. Registrar aceptación del personal; esta fase no se declara desplegada ni validada físicamente y conserva las pendientes anteriores.
+
+---

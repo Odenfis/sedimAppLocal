@@ -134,3 +134,12 @@ Si solamente se eliminaron las imágenes o el contenedor, vuelva a ejecutar `act
 - El log `orphaned_draft_archived` confirma la recuperación e incluye ticket, identificador de archivo, cantidad de líneas y hash, pero no el contenido del pedido.
 - Si existe `Ticket_c`, `Ticket_d`, un envío o un estado de Cocina, la aplicación responderá `409 TICKET_SEQUENCE_CONFLICT` y no modificará el residuo ni `Tablas`; entregue la referencia a soporte para revisión individual.
 - Para el caso confirmado del cliente, el resultado esperado es crear `T001-251595`, conservar el residuo anterior en `Pedido_residuos_archivo` y dejar `Tablas.c_describe` en `T001-251595`.
+
+## Fase 60 — alerta de Cocina más duradera
+
+- Actualice mediante `actualizar.bat`, recargue el navegador de Cocina y toque **Activar sonido**. No se requieren variables nuevas, dependencias ni migraciones.
+- Use **Probar sonido** y ajuste el volumen con los parlantes habituales. El nuevo MP3 se reproduce completo durante aproximadamente 8,33 segundos. La activación sigue siendo manual tras recargar.
+- Envíe una comanda y después varias mientras suena: deben aparecer normalmente y generar como máximo una reproducción pendiente. Los envíos durante esa segunda reproducción pueden agruparse en otro aviso. No deben superponerse audios.
+- Desactive a mitad de reproducción: debe detenerse y cancelar el aviso pendiente. Reactive y confirme que no reproduce avisos antiguos. Compruebe también impresión y acceso desde los dispositivos habituales.
+- Valide con el ruido real de Cocina y registre la aceptación del personal antes de declarar la fase validada físicamente.
+- Ante un fallo del MP3 se mantiene la alarma breve de respaldo y se muestra un aviso. Para revertir el cambio, soporte debe restaurar la ruta y el comportamiento anterior, incrementar la versión del script e instalar otra actualización; el MP3 anterior permanece incluido.

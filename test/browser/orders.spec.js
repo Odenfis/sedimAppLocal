@@ -569,19 +569,27 @@ test('Cocina avisa una vez por envío, incluso al actualizar el mismo ticket', a
     expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(1);
     await page.evaluate(() => loadCocinaPedidos());
     expect(await page.evaluate(() => window.__kitchenAlarms)).toBe(2);
+    expect(await page.evaluate(() => {
+        const id = { envioId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+        return [observeCocinaEnvios('04', [id], false),
+            observeCocinaEnvios('02', [{ envioId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], false),
+            observeCocinaEnvios('04', [id], false)];
+    })).toEqual([false, false, false]);
 });
 
 test('Cocina carga el MP3 local y Probar sonido usa el nivel elegido', async ({ page }) => {
     await fixture(page, { openTable: false });
     await page.evaluate(() => showView('cocina'));
-    const response = await page.request.get('/sounds/universe_bell.mp3');
+    const response = await page.request.get('/sounds/universfield-ringtone-072-496297.mp3');
     expect(response.ok()).toBeTruthy();
     expect(response.headers()['content-type']).toContain('audio/mpeg');
 
     await page.locator('#cocina-volume').fill('35');
     await page.locator('#cocina-sound-test').click();
     await expect(page.locator('#cocina-sound-btn')).toHaveAttribute('aria-pressed', 'true');
-    await expect.poll(() => page.evaluate(() => cocinaBellBuffer?.duration || 0)).toBeGreaterThan(1);
+    await expect.poll(() => page.evaluate(() => cocinaBellBuffer?.duration || 0)).toBeGreaterThan(8);
+    expect(await page.evaluate(() => cocinaBellBuffer.duration)).toBeLessThan(8.5);
+    expect(await page.evaluate(() => [...cocinaBellSources][0].cocinaGain.gain.value)).toBeCloseTo(0.35);
     expect(await page.evaluate(() => cocinaBellFailed)).toBe(false);
     expect(await page.evaluate(() => cocinaBellSources.size)).toBe(1);
     expect(await page.locator('#cocina-volume').inputValue()).toBe('35');
@@ -589,12 +597,91 @@ test('Cocina carga el MP3 local y Probar sonido usa el nivel elegido', async ({ 
 
 test('Cocina informa el fallo del MP3 y conserva la alarma de respaldo', async ({ page }) => {
     await fixture(page, { openTable: false });
-    await page.route('**/sounds/universe_bell.mp3', route => route.fulfill({ status: 404, body: '' }));
+    await page.route('**/sounds/universfield-ringtone-072-496297.mp3', route => route.fulfill({ status: 404, body: '' }));
     await page.evaluate(() => showView('cocina'));
     await page.locator('#cocina-sound-test').click();
     await expect(page.locator('#cocina-sound-status')).toContainText('alarma de respaldo');
     expect(await page.evaluate(() => cocinaBellFailed)).toBe(true);
     await expect(page.locator('#cocina-sound-btn')).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('Cocina agrupa avisos, termina el audio completo y cancela la cola al desactivar', async ({ page }) => {
+    test.setTimeout(30000);
+    await fixture(page, { openTable: false });
+    await page.evaluate(() => showView('cocina'));
+    await page.locator('#cocina-sound-test').click();
+    await expect.poll(() => page.evaluate(() => cocinaBellSources.size)).toBe(1);
+    await page.evaluate(() => {
+        window.__firstBell = [...cocinaBellSources][0];
+        window.__bellEnded = false;
+        window.__firstBell.addEventListener('ended', () => { window.__bellEnded = true; });
+        for (let i = 0; i < 10; i++) playCocinaBeep();
+    });
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(1);
+    expect(await page.evaluate(() => cocinaBellPending)).toBe(true);
+    await page.waitForTimeout(7000);
+    expect(await page.evaluate(() => window.__bellEnded)).toBe(false);
+    await expect.poll(() => page.evaluate(() => window.__bellEnded), { timeout: 4000 }).toBe(true);
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(1);
+    expect(await page.evaluate(() => cocinaBellPending)).toBe(false);
+    await page.evaluate(() => { playCocinaBeep(); playCocinaBeep(); });
+    await page.locator('#cocina-sound-btn').click();
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
+    expect(await page.evaluate(() => cocinaBellPending)).toBe(false);
+    await page.locator('#cocina-sound-btn').click();
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
+    await page.locator('#cocina-volume').fill('0');
+    await page.locator('#cocina-sound-test').click();
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
+});
+
+for (const failure of ['404', 'decode']) {
+    test(`Cocina cancela también el respaldo cuando falla ${failure}`, async ({ page }) => {
+        await fixture(page, { openTable: false });
+        await page.route('**/sounds/universfield-ringtone-072-496297.mp3', route => route.fulfill({
+            status: failure === '404' ? 404 : 200, contentType: 'audio/mpeg', body: 'invalid audio'
+        }));
+        await page.evaluate(() => showView('cocina'));
+        await page.locator('#cocina-sound-test').click();
+        await expect.poll(() => page.evaluate(() => cocinaBellFailed)).toBe(true);
+        expect(await page.evaluate(() => cocinaBellSources.size)).toBeGreaterThan(0);
+        await page.evaluate(() => { playCocinaBeep(); playCocinaBeep(); });
+        expect(await page.evaluate(() => cocinaBellPending)).toBe(true);
+        await page.locator('#cocina-sound-btn').click();
+        await page.waitForTimeout(1500);
+        expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
+        expect(await page.evaluate(() => cocinaBellPending)).toBe(false);
+    });
+}
+
+test('Cocina no reproduce una prueba cuya descarga terminó después de desactivar y reactivar', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/sounds/universfield-ringtone-072-496297.mp3', async route => {
+        await gate;
+        await route.continue();
+    });
+    await page.evaluate(() => showView('cocina'));
+    await page.locator('#cocina-sound-test').click();
+    await expect(page.locator('#cocina-sound-status')).toContainText('Cargando');
+    await page.locator('#cocina-sound-btn').click();
+    await page.locator('#cocina-sound-btn').click();
+    release();
+    await expect.poll(() => page.evaluate(() => cocinaBellBuffer?.duration || 0)).toBeGreaterThan(8);
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
+});
+
+test('Cocina informa cuando el navegador bloquea la activación de audio', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    await page.evaluate(() => {
+        showView('cocina');
+        window.AudioContext = class { constructor() { throw new Error('blocked'); } };
+    });
+    await page.locator('#cocina-sound-test').click();
+    await expect(page.locator('#cocina-sound-status')).toContainText('Audio bloqueado');
+    await expect(page.locator('#cocina-sound-btn')).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(() => cocinaBellSources.size)).toBe(0);
 });
 
 test('Cocina identifica una instantánea desactualizada y se recupera automáticamente', async ({ page }) => {

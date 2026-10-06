@@ -2391,7 +2391,8 @@ let cocinaAudioCtx = null;
 let cocinaBellBuffer = null;
 let cocinaBellPromise = null;
 let cocinaBellFailed = false;
-let cocinaNextBellAt = 0;
+let cocinaBellPending = false;
+let cocinaSoundGeneration = 0;
 const cocinaBellSources = new Set();
 let cocinaLoadPromise = null;
 let cocinaRefreshPending = false;
@@ -2429,7 +2430,7 @@ function loadCocinaBell() {
     if (cocinaBellBuffer || cocinaBellFailed) return Promise.resolve();
     if (!cocinaBellPromise) {
         setCocinaSoundStatus('Cargando sonido…');
-        cocinaBellPromise = fetch('/sounds/universe_bell.mp3')
+        cocinaBellPromise = fetch('/sounds/universfield-ringtone-072-496297.mp3')
             .then(response => {
                 if (!response.ok) throw new Error('Archivo de sonido no disponible');
                 return response.arrayBuffer();
@@ -2459,9 +2460,15 @@ function renderCocinaSound() {
 async function toggleCocinaSound() {
     if (cocinaSoundOn) {
         cocinaSoundOn = false;
-        for (const source of cocinaBellSources) source.stop();
+        cocinaSoundGeneration++;
+        cocinaBellPending = false;
+        for (const source of cocinaBellSources) {
+            source.onended = null;
+            source.stop();
+            source.disconnect();
+            source.cocinaGain?.disconnect();
+        }
         cocinaBellSources.clear();
-        cocinaNextBellAt = 0;
     } else {
         cocinaSoundOn = await unlockCocinaAudio();
         if (cocinaSoundOn) void loadCocinaBell();
@@ -2470,9 +2477,23 @@ async function toggleCocinaSound() {
     renderCocinaSound();
 }
 
+// Both MP3 and fallback nodes share the same cancellable, bounded queue.
+function trackCocinaSource(source, gain) {
+    source.cocinaGain = gain;
+    cocinaBellSources.add(source);
+    source.onended = () => {
+        cocinaBellSources.delete(source);
+        source.disconnect();
+        gain.disconnect();
+        if (!cocinaBellSources.size && cocinaBellPending) {
+            cocinaBellPending = false;
+            playCocinaBeep();
+        }
+    };
+}
+
 function playTonoCocina(frecuencia, inicio, duracion, level) {
     const ctx = cocinaAudioCtx;
-    if (!ctx || ctx.state !== 'running') return;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -2483,16 +2504,15 @@ function playTonoCocina(frecuencia, inicio, duracion, level) {
     gain.gain.setValueAtTime(0.001, t0);
     gain.gain.linearRampToValueAtTime(level, t0 + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.001, t0 + duracion);
+    trackCocinaSource(osc, gain);
     osc.start(t0);
     osc.stop(t0 + duracion);
 }
 
 function playCocinaFallback(level) {
-    const offset = Math.max(0, cocinaNextBellAt - cocinaAudioCtx.currentTime);
-    cocinaNextBellAt = cocinaAudioCtx.currentTime + offset + 1.35;
     [0, 0.45, 0.9].forEach(start => {
-        playTonoCocina(1050, offset + start, 0.22, level * 0.18);
-        playTonoCocina(740, offset + start + 0.23, 0.2, level * 0.18);
+        playTonoCocina(1050, start, 0.22, level * 0.18);
+        playTonoCocina(740, start + 0.23, 0.2, level * 0.18);
     });
 }
 
@@ -2503,6 +2523,10 @@ function playCocinaBeep() {
         const level = Math.max(0, Math.min(1, volume));
         const ctx = cocinaAudioCtx;
         if (!level || ctx?.state !== 'running') return;
+        if (cocinaBellSources.size) {
+            cocinaBellPending = true;
+            return;
+        }
         if (!cocinaBellBuffer) return playCocinaFallback(level);
         const source = ctx.createBufferSource();
         const gain = ctx.createGain();
@@ -2510,11 +2534,8 @@ function playCocinaBeep() {
         gain.gain.value = level;
         source.connect(gain);
         gain.connect(ctx.destination);
-        source.onended = () => { cocinaBellSources.delete(source); source.disconnect(); gain.disconnect(); };
-        const startAt = Math.max(ctx.currentTime, cocinaNextBellAt);
-        cocinaNextBellAt = startAt + cocinaBellBuffer.duration;
-        cocinaBellSources.add(source);
-        source.start(startAt);
+        trackCocinaSource(source, gain);
+        source.start();
     } catch (e) { /* audio no disponible */ }
 }
 
@@ -2525,8 +2546,9 @@ async function testCocinaSound() {
         setCocinaSoundStatus('Audio bloqueado. Toque Probar sonido nuevamente.');
         return;
     }
+    const generation = cocinaSoundGeneration;
     await loadCocinaBell();
-    playCocinaBeep();
+    if (generation === cocinaSoundGeneration && cocinaSoundOn) playCocinaBeep();
 }
 
 function observeCocinaEnvios(empresa, pedidos, stale) {
