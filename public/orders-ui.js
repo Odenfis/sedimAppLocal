@@ -80,7 +80,7 @@ function orderOperation() {
     return id;
 }
 function isOrderConflict(error) {
-    return error.status === 409 && error.errorCode !== 'COMPANY_CONTEXT_MISMATCH';
+    return error.status === 409 && !['COMPANY_CONTEXT_MISMATCH', 'PRICE_CONFIG_CHANGED'].includes(error.errorCode);
 }
 async function orderRequest(url, method = 'GET', body) {
     const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -96,6 +96,7 @@ async function orderRequest(url, method = 'GET', body) {
     return data;
 }
 function orderReset() {
+    orderSavedPriceIds.clear(); orderPriceConflict = false; document.getElementById('holiday-review-dialog')?.close();
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
     closeManualPrice(false);
@@ -117,9 +118,11 @@ function orderAccept(data, codeRevision = null, savedGeneration = null) {
     orderPrintings = Array.isArray(data.impresiones) ? data.impresiones : (orderPrinting ? [{ ...orderPrinting, destino: 'cocina' }] : []);
     orderPendingCancellations = data.cocina?.anulaciones || [];
     if (data.nroTicket) posCurrentNroTicket = data.nroTicket;
+    for (const saved of data.items || []) orderSavedPriceIds.add(saved.lineaId);
     for (const l of posCart) {
         const saved = data.items?.find(i => i.lineaId === l.lineaId);
         if (saved) {
+            orderSavedPriceIds.add(l.lineaId); l.precioPersistido = true; delete l.precioDerivadaDe; l.precioOrigen = saved.precioOrigen || null; l.precioVersion = saved.precioVersion;
             l.nombre = saved.Descripcion; l.precioBase = Number(saved.Precio); l.afecto = saved.Afecto;
             // A response to an earlier save must not replace a newer local adjustment.
             if (savedGeneration === null || savedGeneration === orderGeneration) l.precioManualFinal = saved.precioManualFinal ?? null;
@@ -130,6 +133,7 @@ function orderAccept(data, codeRevision = null, savedGeneration = null) {
     renderOrderStatus();
 }
 function orderFinishDeletion() {
+    orderSavedPriceIds.clear(); orderPriceConflict = false; document.getElementById('holiday-review-dialog')?.close();
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
     closeManualPrice(false);
@@ -141,6 +145,7 @@ function orderFinishDeletion() {
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
 }
 function orderPayload() {
+    normalizePriceReferences();
     if (posWaiterLoading || posWaiterError) {
         orderSaveError = posWaiterError || 'Espere a que termine la carga del mesero.';
         renderOrderStatus();
@@ -156,7 +161,7 @@ function orderPayload() {
         mesa: posCurrentTable, empresa: company, turno: getTurnoValue(company, posCurrentTurnoLabel),
         mozo: document.getElementById('pos-mojo-select').value || null, nroTicket: posCurrentNroTicket,
         version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
-            lineaId: i.lineaId, codPro: i.codPro,
+            lineaId: i.lineaId, codPro: i.codPro, precioVersion: i.precioVersion, precioDerivadaDe: i.precioDerivadaDe,
             precioManualFinal: i.precioManualFinal ?? null,
             nombre: i.nombre, precio: i.precioBase ?? i.precio, cantidad: i.cantidad, afecto: i.afecto,
             notasRapidas: i.notasRapidas || [], nota: i.nota || ''
@@ -172,6 +177,7 @@ function orderSchedule() {
 async function orderFlush() {
     clearTimeout(posAutoSaveTimer);
     if (orderSavePromise) { await orderSavePromise; if (orderDirty) return orderFlush(); return; }
+    if (orderPriceConflict) throw new Error('Revise los precios actualizados antes de guardar. Su borrador se conserva.');
     if (orderConflict) throw new Error('Revise la versión actual antes de guardar. Su borrador se conserva.');
     if (!posCurrentNroTicket && !posCart.length) { orderDirty = false; return; }
     if (!orderDirty || posIsReadOnly) return;
@@ -183,7 +189,9 @@ async function orderFlush() {
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
             orderAccept(data, codeRevision, generation); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
-            orderDeleteRetry = false; orderSaveError = e.message; if (isOrderConflict(e)) orderConflict = true; throw e;
+            orderDeleteRetry = false; orderSaveError = e.message;
+            if (e.errorCode === 'PRICE_CONFIG_CHANGED') await handleHolidayPriceConflict();
+            if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
     })();
     await orderSavePromise;
@@ -191,6 +199,7 @@ async function orderFlush() {
 }
 function renderOrderStatus() {
     renderOrderCode();
+    document.getElementById('order-review-prices').hidden = !orderPriceConflict;
     document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => { button.disabled = !manualPriceEditable(); });
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
     status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
@@ -199,7 +208,7 @@ function renderOrderStatus() {
     msg.classList.toggle('is-confirmation', !orderLoadError && !orderNavigationMessage && !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
     document.getElementById('order-retry-load').hidden = !orderLoadError && !(posWaiterError && !posMozosList.length);
     const retrySave = document.getElementById('order-retry-save');
-    retrySave.hidden = !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage);
+    retrySave.hidden = orderPriceConflict || !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage);
     retrySave.textContent = orderDeleteRetry ? 'Reintentar eliminación' : 'Reintentar guardado';
     retrySave.onclick = orderDeleteRetry ? () => deleteCurrentOrder({ ask: false }) : () => guardarMesa();
     document.getElementById('order-review-conflict').hidden = !orderConflict;
@@ -210,9 +219,9 @@ function renderOrderStatus() {
         const state = item.estado || item.Estado, error = item.error || item.Error;
         return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
     }).join(' · ');
-    document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
+    document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
     const pay = document.querySelector('.btn-pay-now');
-    if (pay) pay.disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
+    if (pay) pay.disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
     document.getElementById('order-envios').disabled = !posCurrentNroTicket || orderBusy;
 }
 async function orderBeforeOpen() {
@@ -306,7 +315,7 @@ function splitOrderLine(index) {
     const amount = Number(prompt(`Cantidad que tendrá instrucciones distintas (menor que ${l.cantidad}):`, '1'));
     if (!Number.isFinite(amount) || amount <= 0 || amount >= l.cantidad || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return;
     l.cantidad = redondear2(l.cantidad - amount);
-    posCart.splice(index + 1, 0, { ...l, lineaId: newOrderId(), cantidad: amount, notasRapidas: [...(l.notasRapidas || [])] });
+    posCart.splice(index + 1, 0, { ...l, lineaId: newOrderId(), precioPersistido: false, precioDerivadaDe: l.lineaId, cantidad: amount, notasRapidas: [...(l.notasRapidas || [])] });
     updateCartUI(); orderSchedule(); openOrderNotes(index + 1);
 }
 async function showOrderHistory() {
@@ -365,7 +374,7 @@ if (typeof module !== 'undefined') module.exports = { orderKitchenStatus, orderK
 /* Fase 59: commercial-only price adjustment; kitchen snapshots stay unchanged. */
 let pendingManualPrice = null;
 function manualPriceEditable() {
-    return orderCodeEligible() && !posIsReadOnly && !orderBusy && !orderConflict && !orderLoadError && !orderCompanyContextError;
+    return orderCodeEligible() && !posIsReadOnly && !orderBusy && !orderConflict && !orderPriceConflict && !orderLoadError && !orderCompanyContextError;
 }
 function manualPriceFingerprint(lines) {
     return JSON.stringify(lines.map(l => [l.lineaId, l.codPro, l.cantidad, l.precioBase, l.precioManualFinal ?? null,

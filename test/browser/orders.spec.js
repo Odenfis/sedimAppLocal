@@ -6,7 +6,8 @@ async function fixture(page, options = {}) {
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
         orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false,
-        invalidCompanyError: false, orderLoads: 0, orderCompanies: [] };
+        invalidCompanyError: false, orderLoads: 0, orderCompanies: [], holidayError: false, pricesAvailable: true,
+        holiday: Object.fromEntries([2,4,6].map(empresa => [empresa, { empresa: String(empresa).padStart(2,'0'), activo: false, tarifa: 1, version: 0, usuario: null, fecha: null }])) };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
             window.__sseTest = { created: 0, live: 0, maxLive: 0 };
@@ -75,8 +76,25 @@ async function fixture(page, options = {}) {
             if (options.employeeDelay) await new Promise(resolve => setTimeout(resolve, options.employeeDelay));
             return fulfill(options.employees || [{ Codemp: 1, Nombre: 'José' }]);
         }
+        if (url.pathname.startsWith('/api/configuraciones/precios-feriado')) {
+            const empresa = Number(url.searchParams.get('empresa') || url.pathname.split('/').pop());
+            if (req.method() === 'PUT') {
+                if (state.holidayError) return fulfill({message:'Fallo de configuración'},500);
+                if (body.version !== state.holiday[empresa].version) return fulfill({message:'La configuración cambió',errorCode:'PRICE_CONFIG_CONFLICT'},409);
+                state.holiday[empresa] = {...state.holiday[empresa],...body,version:body.version+1,usuario:'QA',fecha:new Date().toISOString()};
+            }
+            const snapshot = {...state.holiday[empresa],disponible:state.pricesAvailable,cobertura:{total:2,conTarifa:1,precioNormal:1,productosPrecioNormal:[{CodPro:'02002',Nombre:'Agua'}]}};
+            const delay = options.holidayDelay?.(empresa) || 0;
+            if (delay) await new Promise(r => setTimeout(r,delay));
+            return fulfill(snapshot);
+        }
         if (url.pathname === '/api/pos/categories') return fulfill(['Platos']);
-        if (url.pathname === '/api/pos/products') return fulfill(options.products || [product]);
+        if (url.pathname === '/api/pos/products') {
+            const list = options.products || [product];
+            if (!options.holidayPrices) return fulfill(list);
+            const config = state.holiday[Number(url.searchParams.get('empresa'))];
+            return fulfill(list.map(p => ({...p,...require('../../lib/holiday-prices').resolvePrice({...p,PrecioTarifa:30+config.tarifa},config)})));
+        }
         if (url.pathname === '/api/pos/pedido' && req.method() === 'GET') {
             state.orderLoads++;
             state.orderCompanies.push(url.searchParams.get('empresa'));
@@ -97,6 +115,17 @@ async function fixture(page, options = {}) {
             if (state.invalidCompanyError) return fulfill({ success:false,message:'Empresa inválida',errorCode:'INVALID_COMPANY',diagnosticId:'diag-company',retryable:false },400);
             if (state.delaySave) await new Promise(r => setTimeout(r, state.delaySave));
             if (state.conflict) return fulfill({ message: 'Pedido cambiado por otro dispositivo' }, 409);
+            if (options.holidayPrices) {
+                const config = state.holiday[Number(body.empresa)];
+                if (body.items.some(l => !state.items.some(old => old.lineaId === l.lineaId) && !l.precioDerivadaDe && l.precioVersion !== config.version))
+                    return fulfill({message:'La tarifa cambió. Revise los precios.',errorCode:'PRICE_CONFIG_CHANGED'},409);
+                body.items = body.items.map(l => {
+                    const old = state.items.find(o => o.lineaId === l.lineaId) || state.items.find(o => o.lineaId === l.precioDerivadaDe) || body.items.find(o => o.lineaId === l.precioDerivadaDe);
+                    if (old) return {...l,precio:old.precio,precioOrigen:old.precioOrigen,precioVersion:old.precioVersion};
+                    const effective = require('../../lib/holiday-prices').resolvePrice({...product,PrecioTarifa:30+config.tarifa},config);
+                    return {...l,precio:effective.PrecioBaseEfectivo,precioOrigen:effective.precioOrigen,precioVersion:effective.precioVersion};
+                });
+            }
             if (state.ticket && body.items.length === 0) {
                 state.deletes++; state.version++; state.ticket = null; state.items = []; state.sent.clear();
                 return fulfill({ success:true,pedidoEliminado:true });
@@ -1054,6 +1083,10 @@ test('búsqueda móvil compacta aprovecha el viewport y conserva consulta y foco
     await expect(page.locator('#pos-search-clear')).toBeVisible();
 
     await page.setViewportSize({ width: 390, height: 520 });
+    // visualViewport resize is delivered asynchronously after the viewport command.
+    await expect.poll(() => page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue('--pos-visual-viewport-height').trim()
+    )).toBe('520px');
     const searchBox = await page.locator('#pos-search-container').boundingBox();
     const productsBox = await page.locator('#pos-products-grid').boundingBox();
     expect(searchBox.y).toBeGreaterThanOrEqual(0);
@@ -2241,4 +2274,332 @@ test('manual price preserves draft after save failure and retries without kitche
     expect(state.items[0].precioManualFinal).toBeNull();
     await page.unroute('**/api/pos/pedido');await page.evaluate(()=>orderFlush());
     expect(state.items[0].precioManualFinal).toBe(15);expect(state.sends).toBe(0);
+});
+
+test('Precios Feriado: configuración persistente por empresa, tarifas, cobertura y rollback visual', async ({page}) => {
+    const state = await fixture(page,{openTable:false,holidayPrices:true});
+    await page.locator('[data-module="configuraciones"]').click();
+    await expect(page.locator('#holiday-state')).toHaveText('Precio normal');
+    await expect(page.locator('#holiday-active')).toBeEnabled();
+    await expect(page.locator('#holiday-coverage')).toContainText('1 productos');
+    await page.locator('#holiday-active').check();
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 1');
+    await expect(page.locator('#holiday-last-change')).toContainText('QA');
+    await page.locator('#holiday-other-tariffs summary').click();
+    await page.selectOption('#holiday-tariff','6');
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 6');
+    await page.selectOption('#holiday-empresa','04');
+    await expect(page.locator('#holiday-state')).toHaveText('Precio normal');
+    await page.selectOption('#holiday-empresa','02');
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 6');
+    state.holidayError = true;
+    await page.locator('#holiday-active').click();
+    await expect(page.locator('#holiday-message')).toContainText('Fallo de configuración');
+    await expect(page.locator('#holiday-active')).toBeChecked();
+    await page.getByText('Productos que usarán precio normal',{exact:true}).click();
+    await expect(page.locator('#holiday-fallback-list')).toContainText('Agua');
+    await page.reload();
+    await page.locator('[data-module="configuraciones"]').click();
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 6');
+});
+
+test('Precios Feriado: SSE actualiza catálogo sin cambiar filas guardadas; + conserva precio', async ({page}) => {
+    const state = await fixture(page,{holidayPrices:true});
+    await page.locator('.pos-product-card').click();
+    await expect.poll(()=>state.saves).toBe(1);
+    state.holiday[2] = {...state.holiday[2],activo:true,version:1};
+    await page.evaluate(()=>handleSSEEvent({type:'precios_feriado_updated',empresa:2}));
+    await expect(page.locator('#holiday-order-indicator')).toHaveText('Precios Feriado · Tarifa 1');
+    await expect(page.locator('.pos-product-price')).toHaveText('S/ 34.26');
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 1');
+    await page.locator('#pos-cart-items [data-action="inc"]').click();
+    await expect.poll(()=>state.saves).toBe(2);
+    expect(state.items[0].precio).toBe(20);
+    await page.locator('.pos-product-card').click();
+    await expect.poll(()=>state.saves).toBe(3);
+    await expect(page.locator('.cart-item')).toHaveCount(2);
+    expect(state.items.map(i=>i.precio)).toEqual([20,31]);
+    expect(state.sends).toBe(0);
+});
+
+test('Precios Feriado: catálogo desactualizado conserva borrador y exige revisión antes de reintentar', async ({page}) => {
+    const state = await fixture(page,{holidayPrices:true});
+    state.holiday[2] = {...state.holiday[2],activo:true,tarifa:2,version:1};
+    await page.locator('.pos-product-card').click();
+    await expect(page.locator('#order-review-prices')).toBeVisible();
+    expect(state.saves).toBe(0);
+    await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 1');
+    await page.waitForTimeout(900); expect(state.saves).toBe(0);
+    await page.locator('#order-review-prices').click();
+    await expect(page.locator('#holiday-review-list')).toContainText('22.10 → S/ 35.36');
+    await page.getByRole('button',{name:'Conservar borrador',exact:true}).last().click();
+    expect(state.saves).toBe(0);
+    await page.locator('#order-review-prices').click();
+    await page.getByRole('button',{name:'Aceptar precios y guardar'}).click();
+    await expect.poll(()=>state.saves).toBe(1);
+    expect(state.items[0].precio).toBe(32);
+    await expect(page.locator('#order-review-prices')).toBeHidden();
+});
+
+test('Precios Feriado: respuesta tardía de otra empresa y tabla ausente no activan el switch @android', async ({page}) => {
+    const state = await fixture(page,{openTable:false,holidayPrices:true,holidayDelay:empresa=>empresa===4?350:0});
+    state.pricesAvailable = false;
+    await page.locator('.mobile-menu-btn').click();
+    await page.locator('[data-module="configuraciones"]').click();
+    await expect(page.locator('#holiday-message')).toContainText('no están disponibles');
+    await expect(page.locator('#holiday-active')).toBeDisabled();
+    await page.selectOption('#holiday-empresa','04');
+    await page.selectOption('#holiday-empresa','06');
+    await page.waitForTimeout(500);
+    await expect(page.locator('#holiday-empresa')).toHaveValue('06');
+    await expect(page.locator('#holiday-active')).not.toBeChecked();
+    await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
+    await expect(page.locator('#holiday-message')).toHaveCSS('color','rgb(249, 250, 251)');
+    await page.screenshot({path:'test-results/holiday-settings-mobile-dark.png',fullPage:true});
+});
+
+test('Precios Feriado: conflicto de configuración recarga la versión vigente sin aplicar la selección obsoleta', async ({page}) => {
+    const state = await fixture(page,{openTable:false,holidayPrices:true});
+    await page.locator('[data-module="configuraciones"]').click();
+    await expect(page.locator('#holiday-active')).toBeEnabled();
+    state.holiday[2] = {...state.holiday[2],activo:true,tarifa:3,version:1};
+    await page.locator('#holiday-active').click();
+    await expect(page.locator('#holiday-message')).toContainText('La configuración cambió');
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 3');
+    await expect(page.locator('#holiday-selected-tariff')).toHaveText('Tarifa 3 · Alternativa');
+    expect(state.holiday[2].version).toBe(1);
+});
+
+test('Precios Feriado: aumentar y separar una línea enviada conservan tarifa después de desactivar', async ({page}) => {
+    const state = await fixture(page,{holidayPrices:true});
+    state.holiday[2] = {...state.holiday[2],activo:true,version:1};
+    await page.evaluate(()=>syncHolidayPrices(2));
+    await expect(page.locator('.pos-product-price')).toHaveText('S/ 34.26');
+    await page.locator('.pos-product-card').click();
+    await expect.poll(()=>state.saves).toBe(1);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect.poll(()=>state.sends).toBe(1);
+    state.holiday[2] = {...state.holiday[2],activo:false,version:2};
+    await page.evaluate(()=>handleSSEEvent({type:'precios_feriado_updated',empresa:2}));
+    await expect(page.locator('.pos-product-price')).toHaveText('S/ 22.10');
+    await page.locator('#pos-cart-items [data-action="inc"]').click();
+    await expect.poll(()=>state.saves).toBe(2);
+    expect(state.items.map(l=>l.precio)).toEqual([31,31]);
+    await page.evaluate(()=>{changeQty(1,1);});
+    await expect.poll(()=>state.saves).toBe(3);
+    page.once('dialog',d=>d.accept('1'));
+    await page.evaluate(()=>splitOrderLine(1));
+    await page.getByRole('button',{name:'Cancelar',exact:true}).last().click();
+    await expect.poll(()=>state.saves).toBe(4);
+    expect(state.items.map(l=>l.precio)).toEqual([31,31,31]);
+    expect(state.sends).toBe(1);
+});
+
+for (const width of [390,768,1280]) test(`Precios Feriado: controles y contraste oscuro a ${width}px`, async ({page}) => {
+    await page.setViewportSize({width,height:1000});
+    await fixture(page,{openTable:false,holidayPrices:true});
+    await page.evaluate(()=>showView('configuraciones'));
+    await expect(page.locator('#holiday-active')).toBeEnabled();
+    await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
+    await expect(page.locator('#holiday-message')).toHaveCSS('color','rgb(249, 250, 251)');
+    await page.locator('#holiday-active').focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#holiday-state')).toHaveText('Activo · Tarifa 1');
+    const metrics = await page.locator('.holiday-settings').evaluate(el=>({width:el.getBoundingClientRect().width,viewport:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth}));
+    expect(metrics.width).toBeLessThanOrEqual(metrics.viewport);expect(metrics.overflow).toBe(false);
+    await page.screenshot({path:`test-results/holiday-settings-${width}-dark.png`,fullPage:true});
+});
+
+
+// Deferred responses demonstrate concurrency without relying on scheduler timings.
+function phase63Gate() {
+    let release;
+    const promise = new Promise(resolve => { release = resolve; });
+    return { promise, release };
+}
+async function phase63ObserveCancellation(page) {
+    await page.evaluate(() => {
+        window.__posAborted = [];
+        const original = window.fetch;
+        window.fetch = (url, options) => {
+            options?.signal?.addEventListener('abort', () => {
+                window.__posAborted.push(new URL(url, location.href).pathname);
+            }, { once: true });
+            return original(url, options);
+        };
+    });
+}
+test('Fase 63 solapa ambas etapas y exporta tiempos sin contenido comercial', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    const employees = phase63Gate(), order = phase63Gate(), categories = phase63Gate(), products = phase63Gate();
+    const seen = [];
+    for (const [name, gate, json] of [
+        ['mozos', employees, [{ Codemp: 1, Nombre: 'Empleado secreto' }]],
+        ['pedido', order, { success: true, pedido: null }],
+        ['categories', categories, ['Platos']], ['products', products, [product]]
+    ]) await page.route(`**/api/pos/${name}?**`, async route => {
+        seen.push(name); await gate.promise;
+        await route.fulfill({ json, headers: { 'X-Request-Id': `diag-${name}` } });
+    });
+    await page.evaluate(() => { posPerformance.enable(); window.__opening = openPOSOrder(1, 2); });
+    await expect.poll(() => seen.length).toBe(2);
+    expect(seen.sort()).toEqual(['mozos', 'pedido']);
+    order.release();
+    await expect.poll(() => page.evaluate(() => posIsReadOnly)).toBe(true);
+    employees.release();
+    await expect.poll(() => seen.length).toBe(4);
+    expect(seen.slice(2).sort()).toEqual(['categories', 'products']);
+    products.release(); categories.release();
+    await page.evaluate(() => window.__opening);
+    await expect.poll(() => page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].outcome)).toBe('usable');
+    const report = await page.evaluate(() => posPerformance.export());
+    expect(report).not.toContain('Empleado secreto'); expect(report).not.toContain(product.Nombre);
+    const opening = JSON.parse(report).openings[0];
+    expect(opening.requests).toHaveLength(4); expect(opening.catalogUsableMs).toBeGreaterThan(0);
+    expect(opening.requests.map(r => r.requestId).sort()).toEqual(['diag-categories','diag-mozos','diag-pedido','diag-products']);
+    expect(opening.requests.every(r => r.jsonMs >= 0 && r.responseMs >= 0)).toBe(true);
+    await page.evaluate(async () => {
+        posPerformance.disable(); await openPOSOrder(1, 2);
+        for (let i = 0; i < 105; i++) beginPOSPerformance(i, 2);
+    });
+    expect(JSON.parse(await page.evaluate(() => posPerformance.export())).openings).toHaveLength(1);
+    await page.evaluate(() => { posPerformance.enable(); for (let i = 0; i < 105; i++) beginPOSPerformance(i, 2); });
+    expect(JSON.parse(await page.evaluate(() => posPerformance.export())).openings).toHaveLength(100);
+});
+for (const stage of ['initial', 'catalog']) test(`Fase 63 regresar cancela solicitudes de ${stage}`, async ({ page }) => {
+    await fixture(page, { openTable: false }); await phase63ObserveCancellation(page);
+    const gate = phase63Gate(); const seen = [];
+    const names = stage === 'initial' ? ['mozos', 'pedido'] : ['categories', 'products'];
+    for (const name of names) await page.route(`**/api/pos/${name}?**`, async route => {
+        seen.push(name); await gate.promise;
+        await route.fulfill({ json: name === 'pedido' ? { success: true, pedido: null } : name === 'mozos' ? [{ Codemp: 1, Nombre: 'Tardío' }] : name === 'products' ? [product] : ['Platos'] });
+    });
+    await page.evaluate(() => { posPerformance.enable(); window.__opening = openPOSOrder(1, 2); });
+    await expect.poll(() => seen.length).toBe(2);
+    await page.evaluate(() => leavePOSOrder());
+    const cancelled = await page.evaluate(() => window.__posAborted);
+    for (const name of names) expect(cancelled).toContain(`/api/pos/${name}`);
+    gate.release(); await page.evaluate(() => window.__opening);
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+    expect(await page.evaluate(() => posCurrentTable)).toBeNull();
+    expect(JSON.parse(await page.evaluate(() => posPerformance.export())).openings[0].outcome).toBe('cancelled');
+});
+test('Fase 63 cambio rápido de mesa y empresa conserva únicamente el contexto vigente', async ({ page }) => {
+    await fixture(page, { openTable: false }); await phase63ObserveCancellation(page);
+    const gate = phase63Gate(); let seen = 0;
+    await page.route('**/api/pos/mozos?**', async route => {
+        const empresa = new URL(route.request().url()).searchParams.get('empresa');
+        if (empresa === '2') { seen++; await gate.promise; }
+        await route.fulfill({ json: [{ Codemp: Number(empresa), Nombre: `Empresa ${empresa}` }] });
+    });
+    await page.evaluate(() => { window.__oldOpening = openPOSOrder(1, 2); });
+    await expect.poll(() => seen).toBe(1);
+    await page.evaluate(() => { window.__secondOpening = openPOSOrder(2, 2); });
+    await expect.poll(() => seen).toBe(2);
+    await page.evaluate(async () => {
+        await leavePOSOrder();
+        document.getElementById('pos-empresa-select').value = '04';
+        await openPOSOrder(3, 4);
+    });
+    gate.release(); await page.evaluate(() => Promise.all([window.__oldOpening, window.__secondOpening]));
+    expect(await page.evaluate(() => [posCurrentTable, posCurrentTableEmpresa])).toEqual([3, 4]);
+    await expect(page.locator('#pos-mojo-name')).toHaveText('Empresa 4');
+    expect((await page.evaluate(() => window.__posAborted)).filter(p => p === '/api/pos/mozos')).toHaveLength(2);
+});
+
+test('Fase 63 actualización SSE sustituye catálogo lento sin perder carrito ni precio manual', async ({ page }) => {
+    const state = await fixture(page, { holidayPrices: true, tables: [{ Numero: 201, Empresa: 2, Estado: 1, Ambiente: 1 }] });
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.saves).toBe(1);
+    await page.evaluate(() => { posCart[0].precioManualFinal = 7; });
+    await phase63ObserveCancellation(page);
+    const gate = phase63Gate(); let loads = 0;
+    await page.route('**/api/pos/products?**', async route => {
+        const ordinal = ++loads;
+        if (ordinal === 1) await gate.promise;
+        await route.fulfill({ json: [{ ...product, PrecioBaseEfectivo: ordinal === 1 ? 20 : 45, precioVersion: ordinal, precioOrigen: { tipo: 'feriado', tarifa: 2 } }] });
+    });
+    await page.evaluate(() => { window.__oldCatalog = loadPOSProducts(); });
+    await expect.poll(() => loads).toBe(1);
+    await page.evaluate(() => handleSSEEvent({ type: 'precios_feriado_updated', empresa: 2 }));
+    await expect.poll(() => loads).toBe(2);
+    await expect(page.locator('.pos-product-price')).toHaveText('S/ 49.73');
+    gate.release(); await page.evaluate(() => window.__oldCatalog);
+    expect(await page.evaluate(() => [posProducts[0].precioVersion, posCart[0].precioManualFinal, posCart.length])).toEqual([2, 7, 1]);
+    expect(await page.evaluate(() => window.__posAborted)).toContain('/api/pos/products');
+});
+test('Fase 63 fallos parciales conservan reintento y Preventa no solicita catálogo', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    let failed = true;
+    await page.route('**/api/pos/products?**', route => route.fulfill({ status: failed ? 500 : 200, json: failed ? {message:'Error'} : [product] }));
+    await page.evaluate(() => { posPerformance.enable(); });
+    await page.evaluate(() => openPOSOrder(1, 2));
+    await expect(page.locator('#pos-products-grid')).toContainText('Error al cargar productos');
+    expect(await page.evaluate(() => posCatalogReady)).toBe(false);
+    failed = false; await page.evaluate(() => retryPOSOrderLoad());
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    state.ticket = 'T001-preventa'; state.orderState = 2;
+    let catalogLoads = 0;
+    page.on('request', req => { if (/\/api\/pos\/(products|categories)/.test(req.url())) catalogLoads++; });
+    await page.evaluate(() => openPOSOrder(1, 2));
+    expect(catalogLoads).toBe(0);
+    expect(await page.evaluate(() => posIsReadOnly)).toBe(true);
+});
+test('Fase 63 apertura paralela reduce tiempo frente a secuencia con las mismas demoras', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    const payloads = { mozos: [{ Codemp: 1, Nombre: 'José' }], pedido: { success: true, pedido: null }, categories: ['Platos'], products: [product] };
+    for (const [name, json] of Object.entries(payloads)) await page.route(`**/api/pos/${name}?**`, async route => {
+        await new Promise(resolve => setTimeout(resolve, 200)); await route.fulfill({ json });
+    });
+    const baseline = await page.evaluate(async () => {
+        const start = performance.now();
+        for (const name of ['mozos','pedido','categories','products']) {
+            const res = await fetch(`/api/pos/${name}?empresa=2&mesa=1`); await res.json();
+        }
+        return performance.now() - start;
+    });
+    await page.evaluate(async () => { posPerformance.enable(); await openPOSOrder(1, 2); });
+    await expect.poll(() => page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].outcome)).toBe('usable');
+    const parallel = await page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].catalogUsableMs);
+    console.log(`Fase 63 comparación controlada: secuencial=${baseline.toFixed(1)}ms; paralela=${parallel.toFixed(1)}ms`);
+    expect(parallel).toBeLessThan(baseline * 0.8);
+});
+
+test('Fase 63 fallo de empleados o categorías se recupera sin perder el pedido', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    let employeesFail = true, categoriesFail = true;
+    await page.route('**/api/pos/mozos?**', route => route.fulfill({ status: employeesFail ? 500 : 200,
+        json: employeesFail ? { message: 'Error' } : [{ Codemp: 1, Nombre: 'José' }] }));
+    await page.route('**/api/pos/categories?**', route => route.fulfill({ status: categoriesFail ? 500 : 200,
+        json: categoriesFail ? { message: 'Error' } : ['Platos'] }));
+    await page.evaluate(() => { posPerformance.enable(); });
+    await page.evaluate(() => openPOSOrder(1, 2));
+    await expect(page.locator('#pos-categories-container')).toContainText('Error servidor: 500');
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].outcome)).toBe('employees_error');
+    employeesFail = false;
+    await page.evaluate(() => retryPOSOrderLoad());
+    await expect(page.locator('#pos-mojo-name')).toHaveText('José');
+    categoriesFail = false;
+    await page.evaluate(() => retryPOSOrderLoad());
+    await expect(page.locator('#pos-categories-container .cat-btn')).toHaveText(['Todos', 'Platos']);
+});
+test('Fase 63 SSE durante apertura espera el catálogo sustituto para medir utilizable', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    const first = phase63Gate(), replacement = phase63Gate(); let loads = 0;
+    await page.route('**/api/pos/products?**', async route => {
+        const ordinal = ++loads;
+        await (ordinal === 1 ? first : replacement).promise;
+        await route.fulfill({ json: [{ ...product, precioVersion: ordinal }] });
+    });
+    await page.evaluate(() => { posPerformance.enable(); window.__opening = openPOSOrder(1, 2); });
+    await expect.poll(() => loads).toBe(1);
+    await page.evaluate(() => handleSSEEvent({ type: 'precios_feriado_updated', empresa: 2 }));
+    await expect.poll(() => loads).toBe(2);
+    first.release(); await page.evaluate(() => window.__opening);
+    expect(await page.evaluate(() => posCatalogReady)).toBe(false);
+    expect(JSON.parse(await page.evaluate(() => posPerformance.export())).openings[0].outcome).toBe('loading');
+    replacement.release();
+    await expect.poll(() => page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].outcome)).toBe('usable');
+    expect(await page.evaluate(() => posProducts[0].precioVersion)).toBe(2);
 });

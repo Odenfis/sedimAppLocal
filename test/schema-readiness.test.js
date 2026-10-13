@@ -12,6 +12,9 @@ function poolWith(recordset) {
 }
 
 test('la preparación exige objetos e índices de Cocina, Bebidas y Barra', () => {
+    assert.ok(REQUIRED_TABLES.includes('Precios_feriado_config'));
+    assert.ok(REQUIRED_TABLES.includes('Precios_feriado_historial'));
+    assert.ok(REQUIRED_MIGRATIONS.includes('013_holiday_prices.sql'));
     assert.ok(REQUIRED_TABLES.includes('Impresion_linea_destinos'));
     assert.ok(REQUIRED_TABLES.includes('Impresion_trabajo_destinos'));
     assert.ok(REQUIRED_TABLES.includes('Impresion_barra_trabajos'));

@@ -160,7 +160,7 @@ function aplicarPermisos(permisos) {
     menuItems.forEach(item => {
         const mod = item.getAttribute('data-module');
         // Forzamos la visibilidad del módulo POS para asegurar que el usuario lo vea
-        if (mod === 'pos' || permisosUsuario.includes(mod)) item.style.display = 'block';
+        if (mod === 'pos' || mod === 'configuraciones' || permisosUsuario.includes(mod)) item.style.display = 'block';
     });
 }
 
@@ -684,6 +684,7 @@ function selectTurno(label) {
 }
 
 function onEmpresaOrTurnoChange() {
+    loadHolidayConfig(document.getElementById('pos-empresa-select')?.value);
     if (typeof isPOSOrderViewVisible === 'function' && isPOSOrderViewVisible()) {
         const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
         if (!selectedCompany || selectedCompany !== normalizePOSCompany(posCurrentTableEmpresa)) {
@@ -920,13 +921,73 @@ function renderPOSTables(tables) {
     });
 }
 
+// Opt-in, session-local performance diagnostics. Never retain payloads or URLs.
+const posPerformanceRecords = [];
+let posPerformanceOpening = null;
+window.posPerformance = {
+    enable() { sessionStorage.setItem('pos-performance', '1'); },
+    disable() { sessionStorage.removeItem('pos-performance'); finishPOSPerformance('cancelled'); posPerformanceOpening = null; },
+    clear() { posPerformanceRecords.length = 0; posPerformanceOpening = null; },
+    export() { return JSON.stringify({ resourceVersion: 63, openings: posPerformanceRecords }, null, 2); }
+};
+function beginPOSPerformance(generation, empresa, started = performance.now()) {
+    let enabled = false;
+    try { enabled = sessionStorage.getItem('pos-performance') === '1'; } catch {}
+    posPerformanceOpening = enabled ? { generation, empresa, started,
+        timestamp: new Date().toISOString(), requests: [], renderMs: 0, outcome: 'loading' } : null;
+    if (posPerformanceOpening) {
+        posPerformanceRecords.push(posPerformanceOpening);
+        if (posPerformanceRecords.length > 100) posPerformanceRecords.shift();
+    }
+}
+function finishPOSPerformance(outcome) {
+    const record = posPerformanceOpening;
+    if (!record || record.outcome !== 'loading') return;
+    record.outcome = outcome; record.totalMs = performance.now() - record.started;
+}
+async function fetchPOSData(stage, url, options = {}, generation = posOrderLoadGeneration, tolerateInvalidJSON = false) {
+    const record = posPerformanceOpening?.generation === generation && posPerformanceOpening.outcome === 'loading' ? posPerformanceOpening : null;
+    const timing = record ? { stage, startMs: performance.now() - record.started } : null;
+    if (timing) record.requests.push(timing);
+    const start = performance.now();
+    try {
+        const response = await fetch(url, options);
+        if (timing) Object.assign(timing, { responseMs: performance.now() - start,
+            status: response.status, requestId: response.headers.get('X-Request-Id') });
+        const jsonStart = performance.now();
+        let data;
+        try { data = await response.json(); }
+        catch (error) { if (!tolerateInvalidJSON) throw error; data = {}; }
+        if (timing) timing.jsonMs = performance.now() - jsonStart;
+        return { response, data };
+    } catch (error) {
+        if (timing) timing.outcome = error.name === 'AbortError' ? 'cancelled' : 'error';
+        throw error;
+    } finally { if (timing) timing.totalMs = performance.now() - start; }
+}
+function markPOSCatalogUsable() {
+    const record = posPerformanceOpening;
+    if (!record || record.outcome !== 'loading') return;
+    requestAnimationFrame(() => {
+        if (record !== posPerformanceOpening || record.generation !== posOrderLoadGeneration ||
+            !isViewVisible('view-pos-order') || posIsReadOnly || posWaiterLoading || !posCatalogReady) return;
+        // Mandatory selection on a new special table is expected, not a load failure.
+        if (posWaiterError && (posCurrentNroTicket || !posMozosList.length)) { finishPOSPerformance('employees_error'); return; }
+        record.catalogUsableMs = performance.now() - record.started;
+        finishPOSPerformance('usable');
+    });
+}
+
 function cancelPOSOrderLoad() {
+    finishPOSPerformance('cancelled');
     posOrderLoadGeneration++;
+    posProductsAbortController?.abort();
     posOrderAbortController?.abort();
     posOrderAbortController = null;
 }
 
 async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false } = {}) {
+    const openingStarted = performance.now();
     const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
     const rowCompany = tableEmpresa == null ? selectedCompany : normalizePOSCompany(tableEmpresa);
     const tableGrid = document.getElementById('pos-tables-grid');
@@ -941,8 +1002,11 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
     if (!await orderBeforeOpen()) return;
     preserveUI = preserveUI && Number(posCurrentTable) === Number(tableNum) && posCurrentTableEmpresa === selectedCompany && isViewVisible('view-pos-order');
     const refreshCatalog = !preserveUI || posIsReadOnly || !posCatalogReady;
-    posOrderAbortController?.abort();
-    const generation = ++posOrderLoadGeneration;
+    cancelPOSOrderLoad();
+    const generation = posOrderLoadGeneration;
+    const controller = new AbortController();
+    posOrderAbortController = controller;
+    beginPOSPerformance(generation, selectedCompany, openingStarted);
     if (!preserveUI) { resetMobilePOSSearch(); resetMobilePOSHeader(); resetPOSAddFeedback(); }
     closePOSEmployeeSearch(false);
     orderReset();
@@ -976,13 +1040,14 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
     
     const empresa = selectedCompany;
     if (empresa) {
-        const employeesLoaded = await loadMozos(empresa, tableNum, generation);
-        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
-        const controller = new AbortController();
-        posOrderAbortController = controller;
         try {
-            const res = await fetch(`/api/pos/pedido?mesa=${encodeURIComponent(tableNum)}&empresa=${encodeURIComponent(empresa)}`, { signal: controller.signal, cache: 'no-store' });
-            const data = await res.json().catch(() => ({}));
+            const [employeesLoaded, { response: res, data }] = await Promise.all([
+                loadMozos(empresa, tableNum, generation, controller.signal),
+                fetchPOSData('pedido', `/api/pos/pedido?mesa=${encodeURIComponent(tableNum)}&empresa=${encodeURIComponent(empresa)}`,
+                    { signal: controller.signal, cache: 'no-store' }, generation, true)
+            ]);
+            if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') ||
+                Number(posCurrentTable) !== Number(tableNum) || posCurrentTableEmpresa !== empresa) return;
             if (!res.ok) {
                 const ref = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
                 const error = new Error(`${data.message || 'No se pudo cargar el pedido'}${ref}`);
@@ -999,7 +1064,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
 
                 posCart = (data.items || []).map(item => ({
                     lineaId: item.lineaId, codPro: item.Codpro.trim(), nombre: item.Descripcion.trim(),
-                    precioManualFinal: item.precioManualFinal ?? null,
+                    precioManualFinal: item.precioManualFinal ?? null, precioOrigen: item.precioOrigen || null, precioVersion: item.precioVersion, precioPersistido: true,
                     precioBase: Number(item.Precio), precio: precioFinalUnitario(Number(item.Precio), item.Afecto, item.precioManualFinal),
                     cantidad: Number(item.Cantidad), afecto: item.Afecto, descuento: 0,
                     notasRapidas: item.notasRapidas || [], nota: item.nota || '', enviada: item.enviada,
@@ -1022,8 +1087,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
             orderConflict = false; orderSaveError = ''; orderLoadError = e.message;
             posIsReadOnly = true;
             updatePOSViewMode();
-        } finally {
-            if (posOrderAbortController === controller) posOrderAbortController = null;
+            finishPOSPerformance('error');
+            controller.abort();
         }
     } else {
         posIsReadOnly = false;
@@ -1033,10 +1098,12 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
     renderOrderStatus();
     if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
     if (!posIsReadOnly && refreshCatalog) {
-        await loadPOSCategories(generation);
-        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
-        await loadPOSProducts(generation);
+        await Promise.all([loadPOSCategories(generation, controller.signal), loadPOSProducts(generation)]);
     }
+    if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+    if (posIsReadOnly) finishPOSPerformance(orderLoadError ? 'error' : 'readonly');
+    else if (posCatalogReady) markPOSCatalogUsable();
+    else if (!posProductsAbortController) finishPOSPerformance('catalog_error');
 }
 
 let posCurrentTableEmpresa = null;
@@ -1251,17 +1318,17 @@ async function retryPOSWaiterLoad() {
     if (orderDirty && !posWaiterError) scheduleAutoSave();
 }
 
-async function loadMozos(empresa, mesa, generation = posOrderLoadGeneration) {
+async function loadMozos(empresa, mesa, generation = posOrderLoadGeneration, signal = posOrderAbortController?.signal) {
     const current = () => generation === posOrderLoadGeneration && isViewVisible('view-pos-order') && Number(posCurrentTable) === Number(mesa) && Number(posCurrentTableEmpresa) === Number(empresa);
     try {
-        const res = await fetch(`/api/pos/mozos?empresa=${encodeURIComponent(empresa)}&mesa=${encodeURIComponent(mesa)}`, { cache: 'no-store' });
+        const { response: res, data: mozos } = await fetchPOSData('empleados', `/api/pos/mozos?empresa=${encodeURIComponent(empresa)}&mesa=${encodeURIComponent(mesa)}`, { cache: 'no-store', signal }, generation);
         if (!res.ok) throw new Error('No se pudo cargar la lista de empleados');
-        const mozos = await res.json();
         if (!current()) return false;
         posMozosList = mozos;
         document.querySelector('.pos-mojo-badge').classList.toggle('has-mozos', mozos.length > 0);
         return true;
     } catch (e) {
+        if (e.name === 'AbortError') return false;
         console.error('Error al cargar mozos:', e);
         if (current()) posMozosList = [];
         return false;
@@ -1387,7 +1454,7 @@ async function liberarMesa() {
 
 async function borrarComanda() { return orderDelete(); }
 
-async function loadPOSCategories(generation = posOrderLoadGeneration) {
+async function loadPOSCategories(generation = posOrderLoadGeneration, signal = posOrderAbortController?.signal) {
     console.log("POS: Cargando categorías...");
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
@@ -1404,16 +1471,14 @@ async function loadPOSCategories(generation = posOrderLoadGeneration) {
     }
     
     try {
-        const res = await fetch(`/api/pos/categories?empresa=${encodeURIComponent(empresa)}`);
+        const { response: res, data: categories } = await fetchPOSData('categorias', `/api/pos/categories?empresa=${encodeURIComponent(empresa)}`, { signal, cache: 'no-store' }, generation);
         if (!res.ok) throw new Error(`Error servidor: ${res.status}`);
-        
-        const categories = await res.json();
         if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         console.log(`POS: Categorías recibidas: ${categories.length}`, categories);
         
         renderPOSCategories(categories);
     } catch (e) {
-        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        if (e.name === 'AbortError' || generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
         console.error("POS: Error cargando categorías:", e);
         container.innerHTML = `<div style="color:red; padding:10px;">Error: ${e.message}</div>`;
     }
@@ -1457,7 +1522,15 @@ function renderPOSCategories(categories) {
     searchPOSProducts();
 }
 
+let posProductsLoadSequence = 0;
+let posProductsAbortController = null;
 async function loadPOSProducts(generation = posOrderLoadGeneration) {
+    const sequence = ++posProductsLoadSequence;
+    posProductsAbortController?.abort();
+    const controller = new AbortController();
+    posProductsAbortController = controller;
+    posCatalogReady = false;
+    renderHolidayIndicators();
     console.log("POS: Iniciando carga de productos...");
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
@@ -1474,32 +1547,38 @@ async function loadPOSProducts(generation = posOrderLoadGeneration) {
         return;
     }
 
+    const parentSignal = posOrderAbortController?.signal;
+    const abort = () => controller.abort();
+    if (parentSignal?.aborted) controller.abort();
+    else parentSignal?.addEventListener('abort', abort, { once: true });
+
     console.log(`POS: Solicitando productos para la empresa: ${empresa}`);
     grid.innerHTML = '<div style="text-align:center; width:100%;">Cargando productos...</div>';
     
     try {
-        const res = await fetch(`/api/pos/products?empresa=${encodeURIComponent(empresa)}`);
-        if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Error servidor (${res.status}): ${errText}`);
-        }
-        
-        const products = await res.json();
-        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        const { response: res, data: products } = await fetchPOSData('productos', `/api/pos/products?empresa=${encodeURIComponent(empresa)}`, { signal: controller.signal, cache: 'no-store' }, generation);
+        if (!res.ok) throw new Error(`Error servidor (${res.status})`);
+        if (sequence !== posProductsLoadSequence || generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') || normalizePOSCompany(empresa) !== normalizePOSCompany(posCurrentTableEmpresa)) return;
         posProducts = products;
+        if (posPerformanceOpening?.generation === generation && posPerformanceOpening.outcome === 'loading')
+            posPerformanceOpening.productCount = products.length;
         posCatalogReady = true;
         posProductCards.clear();
         console.log(`POS: Productos recibidos: ${posProducts.length} ítems`);
         
-        // No renderizamos aquí, deixe que renderPOSCategories defina qué mostrar
         searchPOSProducts();
+        markPOSCatalogUsable();
     } catch (e) {
-        if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        if (e.name === 'AbortError' || sequence !== posProductsLoadSequence || generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        finishPOSPerformance('catalog_error');
         console.error("POS: Error detallando la carga de productos:", e);
         grid.innerHTML = `<div style="color:red; text-align:center; width:100%; padding:20px;">
             <strong>Error al cargar productos</strong><br>
             ${e.message}
         </div>`;
+    } finally {
+        parentSignal?.removeEventListener('abort', abort);
+        if (posProductsAbortController === controller) posProductsAbortController = null;
     }
 }
 
@@ -1563,7 +1642,7 @@ function renderPOSProducts(products) {
             const color = lineColors[p.Linea] || '#ccc';
             
             // Aseguramos que el precio sea un número válido
-            let precioBase = p.PventaMa;
+            let precioBase = p.PrecioBaseEfectivo ?? p.PventaMa;
             if (typeof precioBase !== 'number') {
                 precioBase = parseFloat(precioBase) || 0;
             }
@@ -1625,19 +1704,22 @@ function searchPOSProducts() {
         });
     }
     
+    const start = performance.now();
     renderPOSProducts(filtered);
+    if (posPerformanceOpening?.outcome === 'loading') posPerformanceOpening.renderMs += performance.now() - start;
 }
 
 function addToCart(product, card = null) {
     if (posIsReadOnly || orderBusy) return;
-    const existing = posCart.find(item => item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item) && item.precioManualFinal == null);
-    const precioBase = typeof product.PventaMa === 'number' ? product.PventaMa : (parseFloat(product.PventaMa) || 0);
+    if (!posCatalogReady || orderPriceConflict || orderConflict || orderLoadError || orderCompanyContextError) return;
+    const precioBase = Number(product.PrecioBaseEfectivo ?? product.PventaMa) || 0;
+    const existing = posCart.find(item => (item.precioBase ?? item.precio) === precioBase && JSON.stringify(item.precioOrigen || null) === JSON.stringify(product.precioOrigen || null) && item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item) && item.precioManualFinal == null);
     const esAfecto = product.Afecto === 1 || product.Afecto === true;
     if (existing) {
         existing.cantidad++;
     } else {
         posCart.push({
-            lineaId: newOrderId(), codPro: product.CodPro.trim(), notasRapidas: [], nota: '', enviada: null,
+            lineaId: newOrderId(), precioOrigen: product.precioOrigen || null, precioVersion: product.precioVersion ?? 0, precioPersistido: false, codPro: product.CodPro.trim(), notasRapidas: [], nota: '', enviada: null,
             nombre: product.Nombre,
             precio: precioFinalUnitario(precioBase, esAfecto),
             precioBase: precioBase,
@@ -1694,7 +1776,7 @@ function updateCartUI() {
     const grouped = new Map();
     posCart.forEach((item, index) => {
         const precioBase = item.precioBase != null ? item.precioBase : item.precio;
-        const key = JSON.stringify([item.codPro, precioBase, item.precioManualFinal ?? null, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
+        const key = JSON.stringify([item.codPro, precioBase, item.precioOrigen || null, item.precioManualFinal ?? null, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
         if (!grouped.has(key)) grouped.set(key, { item, indexes: [], cod: item.lineaId });
         grouped.get(key).indexes.push(index);
     });
@@ -1862,7 +1944,7 @@ function removeCartGroup(memberIds) { requestProductRemoval(memberIds); }
 function changeQty(index, delta) {
     if (posIsReadOnly || orderBusy || posCart[index].pendienteId) return;
     if (delta > 0 && posCart[index].enviada) {
-        const l = posCart[index]; posCart.push({ ...l, lineaId: newOrderId(), cantidad: delta, enviada: null, pendienteId: null, pendienteEnvio: true });
+        const l = posCart[index]; posCart.push({ ...l, lineaId: newOrderId(), precioPersistido: false, precioDerivadaDe: l.lineaId, cantidad: delta, enviada: null, pendienteId: null, pendienteEnvio: true });
         updateCartUI(); scheduleAutoSave(); return;
     }
     if (posCart[index].cantidad + delta <= 0) {
@@ -1927,6 +2009,12 @@ function navigateView(viewName) {
         closePOSTableGroups();
         loadPOSTables();
     }
+    if (viewName === 'configuraciones') {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('mobile-overlay').classList.remove('active');
+        openHolidaySettings();
+    }
+    if (viewName === 'pos-order') loadHolidayConfig(posCurrentTableEmpresa);
     if (viewName === 'cocina') loadCocinaPedidos();
     if (viewName === 'cierres') loadShiftClosurePreview();
 }
@@ -2176,6 +2264,7 @@ function connectSSE(force = false) {
     const connection = new EventSource('/api/events');
     sseConnection = connection;
 
+    connection.onopen = () => { if (sseConnection === connection) syncHolidayPrices(); };
     connection.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
@@ -2232,6 +2321,7 @@ async function reconcileActiveOrder() {
 }
 
 async function reconcileActiveView() {
+    syncHolidayPrices();
     if (isViewVisible('view-pos-tables')) {
         await loadPOSTables();
         return;
@@ -2293,6 +2383,7 @@ window.addEventListener('offline', () => { closeSSE(); clearCocinaRecovery(false
 window.addEventListener('focus', () => scheduleAppResumeSync());
 
 function handleSSEEvent(data) {
+    if (data.type === 'precios_feriado_updated') { syncHolidayPrices(data.empresa); return; }
     console.log('SSE: Evento recibido:', data);
 
     if (data.type === 'mesa_updated') {
@@ -2320,7 +2411,8 @@ function handleSSEEvent(data) {
                     return;
                 }
                 console.log('SSE: Mesa asignada cambió, recargando pedido...');
-                if (!orderLoadError && !posOrderAbortController && !posWaiterLoading) openPOSOrder(posCurrentTable, posCurrentTableEmpresa, { preserveUI: true });
+                // The controller now spans the catalog too; waiter loading covers initial reconciliation.
+                if (!orderLoadError && !posWaiterLoading) openPOSOrder(posCurrentTable, posCurrentTableEmpresa, { preserveUI: true });
             }
         }
     }

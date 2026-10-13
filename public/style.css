@@ -2750,3 +2750,78 @@ form label {
 .order-price-dialog button, .order-line-tools button[data-action="price"] { min-height: 44px; }
 .order-price-dialog #order-price-error { color: var(--danger-color, #d14343); }
 .order-price-dialog input:focus-visible { outline: 3px solid #667eea; outline-offset: 2px; }
+
+/* Fase 61: persistent company tariffs */
+.holiday-settings { max-width: 720px; width: 100%; padding: 16px; }
+.holiday-settings select, .holiday-settings button, .holiday-settings summary { min-height: 44px; font: inherit; }
+.holiday-settings select { width: 100%; color: var(--text-color); background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 10px; padding: 10px; margin: 8px 0 16px; }
+.holiday-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 18px; padding: 24px; box-shadow: var(--shadow); }
+.holiday-card h2 { margin: 0; }
+.holiday-card p { margin: 12px 0; }
+.holiday-card small { display: block; color: var(--text-secondary); margin-top: 18px; }
+.holiday-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.holiday-switch { position: relative; display: inline-flex; width: 64px; height: 44px; flex-shrink: 0; align-items: center; cursor: pointer; }
+.holiday-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.holiday-switch span { width: 64px; height: 34px; background: var(--text-secondary); border-radius: 20px; pointer-events: none; }
+.holiday-switch span::before { content: ''; display: block; width: 26px; height: 26px; margin: 4px; background: white; border-radius: 50%; transition: transform .15s; }
+.holiday-switch input:checked + span { background: var(--accent); }
+.holiday-switch input:checked + span::before { transform: translateX(30px); }
+.holiday-switch input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 4px; }
+.holiday-switch input:disabled + span { opacity: .5; }
+.holiday-settings summary { cursor: pointer; padding: 10px 0; }
+.holiday-settings button { color: var(--text-color); background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+#holiday-fallback-list { max-height: 280px; overflow: auto; overflow-wrap: anywhere; padding-left: 24px; }
+#holiday-fallback-list li { margin: 8px 0; }
+.holiday-indicator { display: inline-block; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 20px; color: var(--text-color); font-size: .8rem; background: var(--card-bg); }
+.holiday-indicator[hidden], #order-review-prices[hidden] { display: none; }
+#holiday-review-list { max-height: 40vh; overflow: auto; overflow-wrap: anywhere; }
+@media(max-width: 480px) { .holiday-settings { padding: 8px 0; } .holiday-card { padding: 18px 14px; } .holiday-heading h2 { font-size: 1.3rem; } }
+
+/* Fase 62: visual refinements scoped to company price settings */
+#view-configuraciones .holiday-settings { box-sizing: border-box; padding: 16px; color: var(--text-color); }
+#view-configuraciones .holiday-settings > label,
+#view-configuraciones #holiday-other-tariffs > label { display: block; font-size: .875rem; font-weight: 600; }
+#view-configuraciones .holiday-select { position: relative; min-width: 0; margin: 8px 0 20px; }
+#view-configuraciones .holiday-select::after { content: ''; position: absolute; right: 18px; top: 19px; width: 8px; height: 8px; border-right: 2px solid var(--text-secondary); border-bottom: 2px solid var(--text-secondary); transform: rotate(45deg); pointer-events: none; }
+#view-configuraciones .holiday-select select { box-sizing: border-box; appearance: none; -webkit-appearance: none; min-height: 48px; width: 100%; min-width: 0; margin: 0; padding: 12px 44px 12px 14px; font-size: 16px; line-height: 1.4; border-color: var(--input-border); border-radius: 12px; }
+#view-configuraciones .holiday-select select:disabled { opacity: .6; cursor: not-allowed; }
+#view-configuraciones select:focus-visible,
+#view-configuraciones summary:focus-visible,
+#view-configuraciones button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+#view-configuraciones .holiday-card { padding: 24px; overflow-wrap: anywhere; }
+#view-configuraciones .holiday-heading { align-items: flex-start; }
+#view-configuraciones .holiday-heading > div { min-width: 0; }
+#view-configuraciones .holiday-heading h2 { font-size: 1.5rem; line-height: 1.3; }
+#view-configuraciones #holiday-state { margin: 8px 0 0; font-size: .9375rem; font-weight: 600; }
+#view-configuraciones #holiday-selected-tariff { display: inline-block; max-width: 100%; box-sizing: border-box; margin: 16px 0; padding: 6px 12px; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 20px; font-size: .875rem; font-weight: 600; }
+#view-configuraciones .holiday-card details { border: 1px solid var(--border-color); border-radius: 12px; padding: 0 14px; }
+#view-configuraciones .holiday-card summary { display: flex; align-items: center; gap: 10px; min-height: 48px; box-sizing: border-box; padding: 12px 0; list-style: none; font-size: .9375rem; font-weight: 600; }
+#view-configuraciones .holiday-card summary::-webkit-details-marker { display: none; }
+#view-configuraciones .holiday-card summary::before { content: ''; width: 7px; height: 7px; flex-shrink: 0; border-right: 2px solid var(--text-secondary); border-bottom: 2px solid var(--text-secondary); transform: rotate(-45deg); margin-right: 3px; }
+#view-configuraciones .holiday-card details[open] > summary::before { transform: rotate(45deg); }
+#view-configuraciones .holiday-card details[open] > summary { margin-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+#view-configuraciones #holiday-other-tariffs .holiday-select { margin-bottom: 14px; }
+#view-configuraciones .holiday-feedback { display: flex; flex-direction: column; gap: 12px; margin: 20px 0; }
+#view-configuraciones #holiday-message { margin: 0; font-size: .875rem; line-height: 1.6; min-width: 0; }
+#view-configuraciones .holiday-feedback button { min-height: 44px; font-size: .875rem; font-weight: 600; padding: 10px 14px; }
+#view-configuraciones .holiday-feedback button:hover { background: var(--bg-color); border-color: var(--input-border); }
+#view-configuraciones #holiday-coverage { padding-top: 16px; margin: 0 0 12px; border-top: 1px solid var(--border-color); font-size: .9375rem; line-height: 1.6; }
+#view-configuraciones #holiday-fallback-list { max-height: 280px; margin: 0 0 14px; font-size: .875rem; line-height: 1.5; }
+#view-configuraciones #holiday-last-change { border-top: 1px solid var(--border-color); padding-top: 16px; margin-top: 20px; font-size: .8125rem; line-height: 1.6; }
+@media (min-width: 768px) {
+    #view-configuraciones .holiday-feedback { flex-direction: row; flex-wrap: wrap; align-items: center; }
+    #view-configuraciones #holiday-message { flex: 1 1 230px; }
+    #view-configuraciones .holiday-feedback button { flex: 0 1 auto; }
+}
+@media (max-width: 480px) {
+    #view-configuraciones .holiday-settings { padding: 8px 0; }
+    #view-configuraciones .holiday-card { padding: 18px 14px; border-radius: 14px; }
+    #view-configuraciones .holiday-heading { gap: 12px; }
+    #view-configuraciones .holiday-heading h2 { font-size: 1.25rem; }
+    #view-configuraciones .holiday-card details { padding: 0 12px; }
+    #view-configuraciones .holiday-feedback button { width: 100%; }
+}
+@media (forced-colors: active) {
+    #view-configuraciones .holiday-select select { appearance: auto; }
+    #view-configuraciones .holiday-select::after { display: none; }
+}

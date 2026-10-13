@@ -8,6 +8,7 @@ const requestContext = require('./lib/request-context');
 const { assertOperationalSchema } = require('./lib/schema-readiness');
 const { createHealthHandler } = require('./lib/health');
 const { normalizeCompany } = require('./lib/company-context');
+const holidayPrices = require('./lib/holiday-prices');
 const { employeeEligibilitySql } = require('./lib/employee-scope');
 
 const app = express();
@@ -274,12 +275,12 @@ app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
         const request = pool.request();
         request.input('empresa', sql.Int, company);
 
-        const result = await request.query(`
+        const result = await requestContext.measureSql(() => request.query(`
             SELECT Codemp, Nombre 
             FROM Empleados 
             WHERE ${employeeEligibilitySql(company, mesa)}
             ORDER BY Nombre, Codemp
-        `);
+        `));
 
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar mozos', req); }
@@ -296,11 +297,12 @@ function buildPOSCategoriesQuery({ empresa } = {}) {
     return query;
 }
 
-function buildPOSProductsQuery({ empresa, linea } = {}) {
+function buildPOSProductsQuery({ empresa, linea, priceConfig, pricesAvailable = false } = {}) {
     let query = `
-        SELECT P.CodPro, P.Nombre, P.PventaMa, P.Afecto, L.Descripcion as Linea
+        SELECT P.CodPro, P.Nombre, P.PventaMa, P.Afecto, L.Descripcion as Linea${priceConfig ? ', ' + holidayPrices.priceProjection(priceConfig, pricesAvailable) : ''}
         FROM Productos P
         LEFT JOIN Lineas L ON P.Clinea = L.CodLinea
+        ${priceConfig ? holidayPrices.priceJoin(pricesAvailable) : ''}
         WHERE P.Eliminado = 0 AND P.Tipo = 3
     `;
     if (empresa) query += " AND P.CodPro LIKE @empresa + '%'";
@@ -339,18 +341,23 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
     try {
         const pool = await getConnection();
         const request = pool.request();
-        const query = buildPOSProductsQuery({ empresa, linea });
+        const priceConfig = await holidayPrices.readConfig(pool, empresa);
+        const pricesAvailable = priceConfig.activo && await holidayPrices.priceSchema(pool);
+        if (priceConfig.activo && !pricesAvailable) throw Object.assign(new Error('La tarifa activa no está disponible. Revise Configuraciones.'), { status: 503, errorCode: 'HOLIDAY_PRICES_UNAVAILABLE' });
+        const query = buildPOSProductsQuery({ empresa: priceConfig.empresa, linea, priceConfig, pricesAvailable });
         if (empresa) {
-            request.input('empresa', sql.VarChar, empresa);
+            request.input('empresa', sql.VarChar, priceConfig.empresa);
         }
         if (linea) {
             request.input('linea', sql.VarChar, linea);
         }
         const result = await requestContext.measureSql(() => request.query(query));
-        res.json(result.recordset);
+        res.set('Cache-Control', 'no-store');
+        res.json(result.recordset.map(p => ({ ...p, ...holidayPrices.resolvePrice(p, priceConfig) })));
     } catch (e) { internalError(res, e, 'Listar productos'); }
 });
 
+holidayPrices.install(app, isAuthenticated, broadcastSSE);
 require('./lib/orders').install(app, isAuthenticated, broadcastSSE);
 require('./lib/shift-closures').install(app, isAuthenticated, broadcastSSE);
 

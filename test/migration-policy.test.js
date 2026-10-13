@@ -69,3 +69,12 @@ test('la excepción de referencia no permite otras alteraciones', () => {
         'ALTER TABLE dbo.Pedido_control DROP COLUMN CodigoPedido;'])
         assert.throws(() => validateMigration(source, '012_order_reference_code.sql'));
 });
+
+test('la migración de tarifas crea y siembra únicamente configuración auxiliar', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'migrations', '013_holiday_prices.sql'), 'utf8');
+    assert.match(source, /CREATE TABLE dbo\.Precios_feriado_config/);
+    assert.match(source, /CREATE TABLE dbo\.Precios_feriado_historial/);
+    assert.match(source, /WHERE NOT EXISTS/);
+    for (const table of ['Productos', 'Precios', 'Ticket_c', 'Ticket_d', 'Pedido_lineas'])
+        assert.doesNotMatch(source, new RegExp(`(?:ALTER|CREATE|INSERT|UPDATE)\\s+(?:TABLE\\s+|INTO\\s+)?(?:dbo\\.)?${table}\\b`, 'i'));
+});

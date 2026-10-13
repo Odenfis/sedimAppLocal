@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Precios','Precios_feriado_config','Precios_feriado_historial','Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -37,6 +37,7 @@ async function main() {
             CREATE TABLE Mesas(Numero INT,Empresa INT,Estado INT);
             CREATE TABLE Tablas(n_codtabla INT,n_numero INT,c_describe VARCHAR(100));
             CREATE TABLE Productos(CodPro CHAR(10),Nombre VARCHAR(70),PventaMa MONEY,Afecto INT,Eliminado BIT,Clinea INT,Tipo INT);
+            CREATE TABLE Precios(Codpro CHAR(10) PRIMARY KEY,PreTema1 MONEY,PreTema2 MONEY,PreTema3 MONEY,PreTema4 MONEY,PreTema5 MONEY,PreTema6 MONEY);
             CREATE TABLE Lineas(CodLinea INT,Descripcion VARCHAR(50));
             CREATE TABLE Empleados(Codemp INT,Nombre VARCHAR(50),Empresa INT,Tipo INT,FecCese DATETIME);
             CREATE TABLE Valores(c_valor VARCHAR(20),n_valor DECIMAL(9,2));
@@ -75,6 +76,8 @@ async function main() {
         const app = Object.fromEntries(['get','post','put','delete'].map(method => [method, (url, auth, handler) => { router[method + ' ' + url] = handler; }]));
         require('../lib/orders').install(app, () => {}, () => {});
         require('../lib/shift-closures').install(app, () => {}, () => {});
+        const priceEvents = [];
+        require('../lib/holiday-prices').install(app, () => {}, e => priceEvents.push(e));
         async function call(method, url, body = {}, params = {}, query = {}) {
             let status = 200, result;
             await router[method + ' ' + url]({ body, params, query, sessionID: 'sql-test', ip: '127.0.0.1', session: { user: { usuario: 'QA' } } }, { status(code) { status = code; return this; }, json(data) { result = data; } });
@@ -652,13 +655,123 @@ async function main() {
         const unchangedPrice=await call('get','/api/pos/pedido',{}, {}, {empresa:2,mesa:231});
         assert.equal(unchangedPrice.version,nextSend.version);
         passed++; console.log('✓ manual prices in all three groups/companies: quantities, reload, omitted/null/zero, server restrictions and immutable kitchen documents');
+        // Fase 61: all price changes are auxiliary; commercial fixtures are read-only during toggles.
+        const configGet = empresa => call('get','/api/configuraciones/precios-feriado',{}, {}, {empresa});
+        const configPut = (empresa, body) => call('put','/api/configuraciones/precios-feriado/:empresa',body,{empresa});
+        for (const empresa of [2,4,6]) {
+            const code = String(empresa).padStart(2,'0')+'991', mozo=610+empresa;
+            await pool.request().query(`INSERT Mesas VALUES(208,${empresa},1),(902,${empresa},1),(903,${empresa},1);
+                INSERT Empleados VALUES(${mozo},'Feriado QA',${empresa},3,NULL);
+                INSERT Productos VALUES('${code}','Feriado QA',10,1,0,1,3);
+                INSERT Precios VALUES('${code}',20,21,22,23,24,25);`);
+            let cfg = await configGet(empresa);
+            assert.equal(cfg.activo,false); assert.equal(cfg.tarifa,1); assert.equal(cfg.version,0); assert.equal(cfg.disponible,true);
+            const line = {lineaId:randomUUID(),codPro:code,nombre:'Feriado QA',precio:999,cantidad:1,afecto:1,precioVersion:cfg.version};
+            let order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,codigoPedido:'HOLIDAY-QA',items:[line]});
+            assert.equal(order.status,200,JSON.stringify(order)); assert.equal(order.items[0].Precio,10);
+            const kitchenUnchanged = async () => (await pool.request().input('nro',order.nroTicket).query(`SELECT
+                (SELECT * FROM Cocina_envios WHERE NroTicket=@nro FOR JSON PATH) Sends,
+                (SELECT s.* FROM Cocina_estados s JOIN Pedido_lineas l ON l.LineaId=s.LineaId WHERE l.NroTicket=@nro FOR JSON PATH) States,
+                (SELECT j.* FROM Impresion_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro FOR JSON PATH) Jobs`)).recordset[0];
+            for (let tarifa=1;tarifa<=6;tarifa++) {
+                const before = await kitchenUnchanged();
+                cfg = await configPut(empresa,{activo:true,tarifa,version:cfg.version});
+                assert.equal(cfg.status,200,JSON.stringify(cfg)); assert.equal(cfg.usuario,'QA');
+                assert.equal(cfg.cobertura.productosPrecioNormal.some(p=>p.CodPro===code),false);
+                assert.deepEqual(await kitchenUnchanged(),before);
+                const fresh = {lineaId:randomUUID(),codPro:code,nombre:'Feriado QA',precio:999,cantidad:1,afecto:1,precioVersion:cfg.version};
+                order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,items:[line,fresh],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order)); assert.equal(order.items[0].Precio,10);
+                assert.equal(order.items[1].Precio,19+tarifa); assert.deepEqual(order.items[1].precioOrigen,{tipo:'feriado',tarifa});
+                const manual = {...fresh,precioManualFinal:15};
+                order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,items:[line,manual],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order));
+                const detail = (await pool.request().input('nro',order.nroTicket).query('SELECT Precio,Importe FROM Ticket_d WHERE NroTicket=@nro ORDER BY Precio')).recordset;
+                assert.deepEqual(detail,[{Precio:11.05,Importe:11.05},{Precio:15,Importe:15}]);
+                const manualChild = {...fresh,lineaId:randomUUID(),precioDerivadaDe:fresh.lineaId};
+                order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,items:[line,manual,manualChild],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order)); assert.equal(order.items[2].precioManualFinal,15);
+                manual.precioManualFinal=null; manual.cantidad=2;
+                const split = {...fresh,lineaId:randomUUID(),precioDerivadaDe:fresh.lineaId,cantidad:1};
+                order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,items:[line,manual,split],nroTicket:order.nroTicket,version:order.version});
+                assert.equal(order.status,200,JSON.stringify(order)); assert.equal(order.items[2].Precio,19+tarifa);
+                const loaded = await call('get','/api/pos/pedido',{}, {}, {empresa,mesa:208});
+                assert.equal(loaded.items[1].Precio,19+tarifa); assert.equal(loaded.items[1].precioManualFinal,null);
+            }
+            const beforeRejected = (await pool.request().query(`SELECT
+                (SELECT * FROM Ticket_c FOR JSON PATH) Headers,(SELECT * FROM Ticket_d FOR JSON PATH) Details,
+                (SELECT * FROM Pedido_control FOR JSON PATH) Controls,(SELECT * FROM Tablas FOR JSON PATH) Sequences`)).recordset[0];
+            const stale = await call('post','/api/pos/pedido',{empresa,mesa:902,mozo,turno:1,items:[{...line,lineaId:randomUUID(),precioVersion:0}]});
+            assert.equal(stale.status,409); assert.equal(stale.errorCode,'PRICE_CONFIG_CHANGED');
+            const afterRejected = (await pool.request().query(`SELECT
+                (SELECT * FROM Ticket_c FOR JSON PATH) Headers,(SELECT * FROM Ticket_d FOR JSON PATH) Details,
+                (SELECT * FROM Pedido_control FOR JSON PATH) Controls,(SELECT * FROM Tablas FOR JSON PATH) Sequences`)).recordset[0];
+            assert.deepEqual(afterRejected,beforeRejected);
+            const rejectedCfg = await configPut(empresa,{activo:false,tarifa:1,version:0});
+            assert.equal(rejectedCfg.errorCode,'PRICE_CONFIG_CONFLICT'); assert.equal((await configGet(empresa)).version,cfg.version);
+            const currentLines = order.items.map(l=>({...l,precio:l.Precio,precioManualFinal:l.precioManualFinal}));
+            cfg = await configPut(empresa,{activo:false,tarifa:6,version:cfg.version});
+            currentLines[1].cantidad++;
+            const derived = {...currentLines[1],lineaId:randomUUID(),cantidad:1,precioDerivadaDe:currentLines[1].lineaId};
+            order = await call('post','/api/pos/pedido',{empresa,mesa:208,mozo,turno:1,items:[...currentLines,derived],nroTicket:order.nroTicket,version:order.version});
+            assert.equal(order.status,200,JSON.stringify(order)); assert.equal(order.items.at(-1).Precio,25);
+            const sent = await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa,version:order.version,clave:randomUUID()},{nro:order.nroTicket});
+            assert.equal(sent.status,200,JSON.stringify(sent));
+            const paid = await call('put','/api/pos/pedido/:nro/pagar',{empresa,version:sent.version},{nro:order.nroTicket});
+            assert.equal(paid.status,200,JSON.stringify(paid));
+            const paidBefore = await call('get','/api/pos/pedido',{}, {}, {empresa,mesa:208});
+            const documentsBefore = await kitchenUnchanged();
+            cfg = await configPut(empresa,{activo:true,tarifa:1,version:cfg.version});
+            const paidAfter = await call('get','/api/pos/pedido',{}, {}, {empresa,mesa:208});
+            assert.deepEqual(paidAfter.items,paidBefore.items); assert.equal(paidAfter.version,paidBefore.version);
+            assert.deepEqual(await kitchenUnchanged(),documentsBefore);
+            const reopened = await call('put','/api/pos/pedido/:nro/reabrir',{empresa,version:paidAfter.version},{nro:order.nroTicket});
+            assert.equal(reopened.status,200,JSON.stringify(reopened));
+            assert.equal((await call('get','/api/pos/pedido',{}, {}, {empresa,mesa:208})).items.at(-1).Precio,25);
+            passed++; console.log('✓ holiday tariffs 1–6: company '+empresa+', persisted/manual/derived prices, stale rollback, pre-sale and kitchen immutability');
+        }
+        // Fallbacks never select another PreTema. Test absence against the isolated fixture only.
+        let fallbackCfg = await configGet(2);
+        for (const amount of ['NULL','0','-1']) {
+            await pool.request().query(`UPDATE Precios SET PreTema1=${amount},PreTema2=99 WHERE Codpro='02991'`);
+            const covered = await configGet(2);
+            assert.ok(covered.cobertura.productosPrecioNormal.some(p=>p.CodPro==='02991'));
+        }
+        const invalidCfg = await configPut(2,{activo:true,tarifa:7,version:fallbackCfg.version});
+        assert.equal(invalidCfg.errorCode,'INVALID_PRICE_CONFIG');
+        const concurrentConfig = await configGet(2);
+        const concurrentResults = await Promise.all([2,3].map(tarifa=>configPut(2,{activo:true,tarifa,version:concurrentConfig.version})));
+        assert.deepEqual(concurrentResults.map(r=>r.status).sort(),[200,409]);
+        fallbackCfg = await configGet(2);
+        const beforeAuditFailure = fallbackCfg.version, eventsBeforeFailure = priceEvents.length;
+        await pool.request().query(`CREATE TRIGGER [${schema}].[HolidayAuditFailure] ON Precios_feriado_historial AFTER INSERT AS THROW 51000,'Injected holiday audit failure',1;`);
+        const auditFailure = await configPut(2,{activo:false,tarifa:1,version:fallbackCfg.version});
+        assert.equal(auditFailure.status,500); assert.equal((await configGet(2)).version,beforeAuditFailure);
+        assert.equal(priceEvents.length,eventsBeforeFailure);
+        await pool.request().query(`DROP TRIGGER [${schema}].[HolidayAuditFailure]`);
+        await pool.request().query('ALTER TABLE Precios DROP COLUMN PreTema6');
+        const missingColumn = await configPut(2,{activo:true,tarifa:1,version:fallbackCfg.version});
+        assert.equal(missingColumn.errorCode,'HOLIDAY_PRICES_UNAVAILABLE');
+        await pool.request().query('DROP TABLE Precios');
+        fallbackCfg = await configPut(2,{activo:false,tarifa:1,version:fallbackCfg.version});
+        assert.equal(fallbackCfg.status,200); assert.equal(fallbackCfg.disponible,false);
+        const noSchema = await configPut(2,{activo:true,tarifa:1,version:fallbackCfg.version});
+        assert.equal(noSchema.errorCode,'HOLIDAY_PRICES_UNAVAILABLE');
+        assert.equal((await configGet(2)).activo,false);
+        const normalLine = {lineaId:randomUUID(),codPro:'02991',nombre:'Normal sin Precios',cantidad:1,precio:10,precioVersion:fallbackCfg.version};
+        const normalOrder = await call('post','/api/pos/pedido',{empresa:2,mesa:903,mozo:612,turno:1,items:[normalLine]});
+        assert.equal(normalOrder.status,200,JSON.stringify(normalOrder)); assert.equal(normalOrder.items[0].Precio,10);
+        assert.ok(priceEvents.every(e=>e.type==='precios_feriado_updated'));
+        const holidayAudit = (await pool.request().query('SELECT * FROM Precios_feriado_historial')).recordset;
+        assert.ok(holidayAudit.length>=24); assert.ok(holidayAudit.every(r=>r.Usuario==='QA'));
+        passed++; console.log('✓ holiday coverage/fallback, missing commercial schema, validation, audit and normal-mode compatibility');
         console.log(`${passed} SQL integration scenarios passed.`);
     } finally {
         if (suitePrinterEnabled === undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED = suitePrinterEnabled;
         if (suitePrinterHost === undefined) delete process.env.PRINTER_HOST; else process.env.PRINTER_HOST = suitePrinterHost;
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();

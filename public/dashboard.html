@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=59">
+    <link rel="stylesheet" href="style.css?v=62">
     <link rel="stylesheet" href="responsive.css?v=57">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -43,6 +43,7 @@
                 <li onclick="showView('cocina')" data-module="cocina">
                     <i class="fas fa-fire-burner"></i> <span>Pedido Cocina</span>
                 </li>
+                <li onclick="showView('configuraciones')" data-module="configuraciones"><i class="fas fa-sliders"></i> <span>Configuraciones</span></li>
                 <li onclick="showView('cierres')" data-module="cierres">
                     <i class="fas fa-lock"></i> <span>Cierre de Turno</span>
                 </li>
@@ -63,6 +64,21 @@
                 <i class="fas fa-bars"></i>
             </button>
 
+            <section id="view-configuraciones" class="view-section" style="display:none">
+                <header><h1>Configuraciones</h1></header>
+                <div class="holiday-settings">
+                    <label for="holiday-empresa">Empresa</label>
+                    <div class="holiday-select"><select id="holiday-empresa" onchange="selectHolidayCompany()"><option value="" disabled selected>Seleccione</option><option value="02">Cocineria</option><option value="04">Mar Picante 1</option><option value="06">Inversiones Abruzzo SAC</option></select></div>
+                    <article class="holiday-card">
+                        <div class="holiday-heading"><div><h2>Precios Feriado</h2><p id="holiday-state">Precio normal</p></div><label class="holiday-switch"><input id="holiday-active" type="checkbox" role="switch" aria-label="Precios Feriado" onchange="saveHolidayConfig()"><span aria-hidden="true"></span></label></div>
+                        <p id="holiday-selected-tariff">Tarifa 1 · Habitual</p>
+                        <details id="holiday-other-tariffs"><summary>Otras tarifas</summary><label for="holiday-tariff">Tarifa a utilizar</label><div class="holiday-select"><select id="holiday-tariff" onchange="saveHolidayConfig()"><option value="1">Tarifa 1 · Habitual</option><option value="2">Tarifa 2</option><option value="3">Tarifa 3</option><option value="4">Tarifa 4</option><option value="5">Tarifa 5</option><option value="6">Tarifa 6</option></select></div></details>
+                        <div class="holiday-feedback"><p id="holiday-message" role="status" aria-live="polite"></p><button type="button" onclick="loadHolidayConfig(holidayCompany(), true)">Recargar configuración</button></div>
+                        <p id="holiday-coverage"></p><details><summary>Productos que usarán precio normal</summary><ul id="holiday-fallback-list"></ul></details>
+                        <small id="holiday-last-change"></small>
+                    </article>
+                </div>
+            </section>
             <!-- VISTA: POS MAPA DE MESAS -->
             <div id="view-pos-tables" class="view-section">
                 <header>
@@ -88,6 +104,7 @@
                             </div>
                         </div>
 
+                        <span id="holiday-map-indicator" class="holiday-indicator" role="status" hidden></span>
                         <div class="pos-legend">
                             <span class="legend-item"><i class="dot available"></i> Libre</span>
                             <span class="legend-item"><i class="dot occupied"></i> Ocupada</span>
@@ -132,6 +149,7 @@
                                 <span id="pos-order-timer">00:00</span>
                                 <button id="pos-header-toggle" class="pos-header-toggle" type="button" onclick="toggleMobilePOSHeader()" aria-expanded="false" aria-controls="pos-header-actions-region" aria-label="Mostrar acciones de la mesa"><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                             </div>
+                            <span id="holiday-order-indicator" class="holiday-indicator" role="status" hidden></span>
                             <div class="pos-header-divider"></div>
                             <div class="pos-header-row bottom">
                                 <div class="pos-header-info">
@@ -215,6 +233,7 @@
                         <div class="pos-order-actions">
                             <div class="order-status-stack">
                                 <strong id="order-kitchen-status" role="status">Sin enviar</strong>
+                                <button id="order-review-prices" type="button" onclick="reviewHolidayPrices()" hidden>Revisar precios actualizados</button>
                                 <small id="order-save-message" role="status"></small>
                                 <button id="order-retry-load" hidden onclick="retryPOSOrderLoad()">Reintentar carga</button>
                                 <button id="order-retry-save" hidden onclick="guardarMesa()">Reintentar guardado</button>
@@ -416,9 +435,11 @@
         <button onclick="document.getElementById('order-conflict-dialog').close()">Conservar borrador</button>
         <button onclick="discardOrderDraft()">Descartar borrador y cargar actual</button>
     </dialog>
+    <dialog id="holiday-review-dialog" class="order-dialog" aria-labelledby="holiday-review-title"><h2 id="holiday-review-title">La tarifa cambió</h2><p>Revise los precios de las líneas nuevas. Las líneas guardadas y los ajustes manuales conservan sus importes.</p><ul id="holiday-review-list"></ul><div class="order-dialog-actions"><button onclick="document.getElementById('holiday-review-dialog').close()">Conservar borrador</button><button onclick="acceptHolidayPrices()">Aceptar precios y guardar</button></div></dialog>
+    <script src="holiday-prices.js?v=61"></script>
     <script src="order-math.js?v=59"></script>
-    <script src="orders-ui.js?v=59"></script>
-    <script src="script.js?v=60"></script>
+    <script src="orders-ui.js?v=61"></script>
+    <script src="script.js?v=63"></script>
 </body>
 
 </html>
