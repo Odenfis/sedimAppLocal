@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Precios','Precios_feriado_config','Precios_feriado_historial','Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Pedido_traslados','Precios','Precios_feriado_config','Precios_feriado_historial','Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -765,13 +765,136 @@ async function main() {
         const holidayAudit = (await pool.request().query('SELECT * FROM Precios_feriado_historial')).recordset;
         assert.ok(holidayAudit.length>=24); assert.ok(holidayAudit.every(r=>r.Usuario==='QA'));
         passed++; console.log('✓ holiday coverage/fallback, missing commercial schema, validation, audit and normal-mode compatibility');
+
+        // Fase 64: all fixtures remain in the isolated schema; transports never contact printers.
+        await pool.request().query(`INSERT Mesas VALUES(101,2,1),(102,2,1),(103,2,1),(104,2,3),(105,2,1),(106,2,1),(107,2,1),(108,2,1),(109,2,1),(110,2,1),(111,2,1),(112,2,1),(113,2,1),(114,2,1),(115,2,1);
+            INSERT Empleados VALUES(640,'Mozo traslados',2,3,NULL);`);
+        const transferSave = (mesa, items=[{...base,lineaId:randomUUID()}]) => call('post','/api/pos/pedido',{empresa:2,mesa,mozo:640,turno:1,items:items.map(l=>({...l,precioVersion:fallbackCfg.version}))});
+        const move = (order, origen, destino, clave=randomUUID(), extra={}) => call('post','/api/pos/pedido/:nro/trasladar',
+            {empresa:2,origen,destino,version:order.version,clave,...extra},{nro:order.nroTicket});
+        let moving = await transferSave(101,[{...base,lineaId:randomUUID()},
+            {...base,lineaId:randomUUID(),codPro:'02002',nombre:'Bebida'}, {...base,lineaId:randomUUID(),codPro:'02007',nombre:'Barra'}]);
+        assert.equal(moving.status,200,JSON.stringify(moving));
+        const transferBarEnabled=process.env.BAR_PRINTER_ENABLED, transferBarHost=process.env.BAR_PRINTER_HOST;
+        process.env.BAR_PRINTER_ENABLED='true'; process.env.BAR_PRINTER_HOST='127.0.0.1';
+        try {
+            moving=await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:moving.version,clave:randomUUID()},{nro:moving.nroTicket});
+            assert.equal(moving.status,200,JSON.stringify(moving));
+            const preserved = async () => {
+                const values={nro:moving.nroTicket};
+                const data=[];
+                for (const table of ['Ticket_d','Pedido_lineas','Cocina_estados','Cocina_envios','Cocina_envio_detalles'])
+                    data.push((await pool.request().input('nro',values.nro).query(`SELECT * FROM ${table} WHERE ${table==='Cocina_envio_detalles' ? 'EnvioId IN(SELECT Id FROM Cocina_envios WHERE NroTicket=@nro)' : 'NroTicket=@nro'}`)).recordset);
+                return data;
+            };
+            const before=await preserved(), key=randomUUID(), initialVersion=moving.version;
+            const moved=await move(moving,101,102,key); assert.equal(moved.status,200,JSON.stringify(moved));
+            assert.equal(moved.nroTicket,moving.nroTicket); assert.equal(moved.version,initialVersion+1);
+            assert.deepEqual(await preserved(),before); assert.equal(moved.avisos.length,3);
+            assert.deepEqual(moved.avisos.map(j=>j.Destino).sort(),['barra','bebidas','cocina']);
+            assert.ok(moved.avisos.every(j=>j.EnvioId===null && j.Estado==='en_cola' && !/Arroz|Chicha|Pisco/.test(j.Documento)));
+            const mesaStates=(await pool.request().query('SELECT Numero,Estado FROM Mesas WHERE Empresa=2 AND Numero IN(101,102) ORDER BY Numero')).recordset;
+            assert.deepEqual(mesaStates,[{Numero:101,Estado:1},{Numero:102,Estado:2}]);
+            const repeat=await move(moving,101,102,key); assert.equal(repeat.status,200,JSON.stringify(repeat)); assert.equal(repeat.trasladoId,moved.trasladoId);
+            const mismatch=await move(moving,101,103,key); assert.equal(mismatch.errorCode,'TRANSFER_KEY_CONFLICT');
+            const located=await call('get','/api/pos/pedido/:nro/ubicacion',{}, {nro:moving.nroTicket},{empresa:2}); assert.equal(located.mesa,102);
+            const board=await call('get','/api/cocina/pedidos',{}, {},{empresa:2});
+            assert.deepEqual(board.pedidos.find(p=>p.nroTicket===moving.nroTicket).traslado,{origen:101,destino:102});
+            passed++; console.log('✓ transfer preserves ticket, financial detail, lines, kitchen times/documents; three notices, idempotency and current location');
+            for (const destination of [102,104,201,231,236,999]) assert.notEqual((await move(moved,102,destination)).status,200);
+            assert.equal((await move(moving,101,103)).status,409);
+            assert.equal((await move(moved,102,1,randomUUID(),{empresa:4})).status,409);
+            const commercialBefore=(await pool.request().input('nro',moving.nroTicket).query('SELECT * FROM Ticket_d WHERE NroTicket=@nro')).recordset;
+            await pool.request().input('nro',moving.nroTicket).query('UPDATE Ticket_d SET Importe=Importe+1 WHERE NroTicket=@nro');
+            assert.equal((await move(moved,102,103)).errorCode,'COMMERCIAL_CONFLICT');
+            await pool.request().input('nro',moving.nroTicket).query('UPDATE Ticket_d SET Importe=Importe-1 WHERE NroTicket=@nro');
+            assert.deepEqual((await pool.request().input('nro',moving.nroTicket).query('SELECT * FROM Ticket_d WHERE NroTicket=@nro')).recordset,commercialBefore);
+            const paid=await call('put','/api/pos/pedido/:nro/pagar',{empresa:2,version:moved.version},{nro:moving.nroTicket}); assert.equal(paid.status,200);
+            assert.equal((await move({...moved,version:moved.version+1},102,103)).status,409);
+            const reopened=await call('put','/api/pos/pedido/:nro/reabrir',{empresa:2,version:moved.version+1},{nro:moving.nroTicket}); assert.equal(reopened.status,200);
+            const current=await call('get','/api/pos/pedido',{}, {},{empresa:2,mesa:102});
+            passed++; console.log('✓ invalid/occupied/reserved/special/company/stale/commercial-conflict/pre-sale transfers are rejected without mutation');
+            await pool.request().query(`CREATE TRIGGER [${schema}].[RejectTransferPrint] ON Impresion_trabajos AFTER INSERT AS THROW 51000,'Injected transfer print failure',1;`);
+            const failed=await move(current,102,103); assert.equal(failed.status,500);
+            assert.equal((await call('get','/api/pos/pedido/:nro/ubicacion',{}, {nro:moving.nroTicket},{empresa:2})).mesa,102);
+            assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Pedido_traslados')).recordset[0].n,1);
+            await pool.request().query(`DROP TRIGGER [${schema}].[RejectTransferPrint]`);
+            passed++; console.log('✓ queue failure rolls back transfer, version, both tables and audit atomically');
+            const reverse=await move(current,102,101); assert.equal(reverse.status,200,JSON.stringify(reverse));
+            const originalRetry=await move(moving,101,102,key); assert.equal(originalRetry.mesa,101); assert.equal(originalRetry.yaRealizado,true);
+            passed++; console.log('✓ reverse transfer is a new audit; retry of an older transfer returns current location without moving again');
+            // Confirm workers claim standalone notices and preserve physical queue serialization.
+            await pool.request().query("UPDATE Impresion_trabajos SET Estado='error'; UPDATE Impresion_barra_trabajos SET Estado='error';");
+            for (const job of moved.avisos) await pool.request().input('id',job.Id).query(`UPDATE ${job.Destino==='barra'?'Impresion_barra_trabajos':'Impresion_trabajos'} SET Estado='en_cola' WHERE Id=@id`);
+            let inFlight=0,maxFlight=0; const docs=[],notifications=[];
+            const sharedTransport={async send(doc){inFlight++;maxFlight=Math.max(maxFlight,inFlight);docs.push(doc);await new Promise(r=>setTimeout(r,20));inFlight--;return {transmitted:true};}};
+            const stopShared=require('../lib/print-worker').startPrintWorker({transport:sharedTransport,intervalMs:15,notify:e=>notifications.push(e)});
+            const stopBar=require('../lib/print-worker').startPrintWorker({destination:'barra',transport:{async send(doc){docs.push(doc);return {transmitted:true};}},intervalMs:15,notify:e=>notifications.push(e)});
+            try { await waitFor(()=>notifications.length===3); } finally {stopShared();stopBar();await new Promise(r=>setTimeout(r,80));}
+            assert.equal(maxFlight,1);assert.equal(docs.length,3);assert.ok(notifications.every(e=>e.trasladoId===moved.trasladoId && e.envioId===null));
+            const reprintKey=randomUUID();
+            const reprintTransfer=()=>call('post','/api/pos/pedido/:nro/traslados/:traslado/reimprimir',{empresa:2,clave:reprintKey,destino:'cocina'},{nro:moving.nroTicket,traslado:moved.trasladoId});
+            const rp=await reprintTransfer();assert.equal(rp.status,200,JSON.stringify(rp));assert.equal((await reprintTransfer()).trabajoId,rp.trabajoId);
+            assert.match((await pool.request().input('id',rp.trabajoId).query('SELECT Documento FROM Impresion_trabajos WHERE Id=@id')).recordset[0].Documento,/REIMPRESIÓN/);
+            passed++;console.log('✓ standalone notices use real shared/bar workers, publish transfer status, and reprint idempotently');
+        } finally {
+            if(transferBarEnabled===undefined) delete process.env.BAR_PRINTER_ENABLED;else process.env.BAR_PRINTER_ENABLED=transferBarEnabled;
+            if(transferBarHost===undefined) delete process.env.BAR_PRINTER_HOST;else process.env.BAR_PRINTER_HOST=transferBarHost;
+        }
+        const a=await transferSave(105), b=await transferSave(106);
+        const race=await Promise.all([move(a,105,107),move(b,106,107)]);assert.deepEqual(race.map(r=>r.status).sort(),[200,409]);
+        assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Ticket_c WHERE NroMesa=107 AND Estado IN(1,2)')).recordset[0].n,1);
+        passed++;console.log('✓ concurrent transfers to one destination have exactly one winner');
+        const pending=await transferSave(108);const pendingMove=await move(pending,108,109);assert.equal(pendingMove.status,200,JSON.stringify(pendingMove));
+        assert.equal(pendingMove.avisos.length,0);assert.equal(pendingMove.cocina.pendientes,1);
+        const oldSave=await call('post','/api/pos/pedido',{empresa:2,mesa:108,mozo:640,turno:1,nroTicket:pending.nroTicket,version:pending.version,items:[{...base,lineaId:pending.items[0].lineaId}]});assert.equal(oldSave.status,409);
+        passed++;console.log('✓ unsent items remain pending with no notice; stale save at origin cannot overwrite the moved order');
+        const raceOrder=await transferSave(110), raceBody={empresa:2,version:raceOrder.version,clave:randomUUID()};
+        const sendRace=await Promise.all([move(raceOrder,110,111),call('post','/api/pos/pedido/:nro/enviar-cocina',raceBody,{nro:raceOrder.nroTicket})]);
+        assert.deepEqual(sendRace.map(r=>r.status).sort(),[200,409]);
+        const deletionOrder=await transferSave(112);
+        const deleteRace=await Promise.all([move(deletionOrder,112,113),call('delete','/api/pos/comanda/:nro',{version:deletionOrder.version,clave:randomUUID()},{nro:deletionOrder.nroTicket},{empresa:2})]);
+        assert.equal(deleteRace.filter(r=>r.status===200).length,1);assert.ok(deleteRace.some(r=>[404,409].includes(r.status)));
+        passed++;console.log('✓ transfer versus send/delete serializes safely through ticket version');
+
+
+        for (const empresa of [4,6]) {
+            let cfg=await configGet(empresa); cfg=await configPut(empresa,{activo:false,tarifa:1,version:cfg.version});
+            await pool.request().input('empresa',empresa).query('INSERT Mesas VALUES(101,@empresa,1),(102,@empresa,1)');
+            const employee=empresa===4?614:616;
+            await pool.request().input('empresa',empresa).input('mozo',employee).query("IF NOT EXISTS(SELECT 1 FROM Empleados WHERE Codemp=@mozo) INSERT Empleados VALUES(@mozo,'Mozo traslado',@empresa,3,NULL)");
+            const order=await call('post','/api/pos/pedido',{empresa,mesa:101,mozo:employee,turno:1,items:[{...base,lineaId:randomUUID(),codPro:String(empresa).padStart(2,'0')+'991',precioVersion:cfg.version}]});
+            assert.equal(order.status,200,JSON.stringify(order));
+            const moved=await move(order,101,102,randomUUID(),{empresa});assert.equal(moved.status,200,JSON.stringify(moved));assert.equal(moved.pedido.Empresa,empresa);
+        }
+        passed++;console.log('✓ transfers also preserve company isolation for companies 4 and 6 with overlapping table numbers');
+        const closingOrder=await transferSave(114);
+        const closingSend=await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:closingOrder.version,clave:randomUUID()},{nro:closingOrder.nroTicket});
+        const closingMove=await move(closingSend,114,115);assert.equal(closingMove.status,200,JSON.stringify(closingMove));
+        await pool.request().input('nro',closingOrder.nroTicket).query(`UPDATE Ticket_c SET Estado=3,Fecha='20200101',Turno=1 WHERE NroTicket=@nro;
+            UPDATE Cocina_estados SET Estado=4 WHERE NroTicket=@nro;
+            UPDATE j SET Estado='enviado' FROM Impresion_trabajos j JOIN Cocina_envios e ON e.Id=j.EnvioId WHERE e.NroTicket=@nro;`);
+        const transferScope={empresa:2,turno:1,fechaNegocio:'2020-01-01'};
+        const transferPin=process.env.MAINTENANCE_PIN_HASH;process.env.MAINTENANCE_PIN_HASH=require('bcryptjs').hashSync('2468',4);
+        const blockedClose=await call('get','/api/admin/cierres/preview',{}, {},transferScope);assert.equal(blockedClose.status,200,JSON.stringify(blockedClose));assert.equal(blockedClose.bloqueos.impresionesActivas,1);
+        await pool.request().input('transfer',closingMove.trasladoId).query("UPDATE Impresion_trabajos SET Estado='enviado' WHERE TrasladoId=@transfer");
+        try {
+            const closure=await call('post','/api/admin/cierres',{...transferScope,pin:'2468',confirmacion:'CERRAR TURNO',clave:randomUUID()});assert.equal(closure.status,200,JSON.stringify(closure));assert.equal(closure.conteos.Pedido_traslados,1);
+            const archive=JSON.parse((await pool.request().input('id',closure.id).query('SELECT Payload FROM Cierre_turno_archivos WHERE CierreId=@id')).recordset[0].Payload);
+            assert.equal(archive.tables.Pedido_traslados.length,1);assert.ok(archive.tables.Impresion_trabajos.some(j=>j.TrasladoId));
+            await pool.request().input('id',closure.id).query('UPDATE Cierres_turno SET PurgaProgramada=DATEADD(DAY,-1,SYSUTCDATETIME()) WHERE Id=@id');
+            const purged=await call('post','/api/admin/cierres/:id/purgar',{pin:'2468',confirmacion:'PURGAR DATOS',clave:randomUUID()},{id:closure.id});assert.equal(purged.status,200,JSON.stringify(purged));
+            assert.equal((await pool.request().input('nro',closingOrder.nroTicket).query('SELECT COUNT(*) n FROM Pedido_traslados WHERE NroTicket=@nro')).recordset[0].n,0);
+        } finally { if(transferPin===undefined)delete process.env.MAINTENANCE_PIN_HASH;else process.env.MAINTENANCE_PIN_HASH=transferPin; }
+        passed++;console.log('✓ closure blocks pending transfer notices, archives them with audit, and purges their foreign keys safely');
+
         console.log(`${passed} SQL integration scenarios passed.`);
     } finally {
         if (suitePrinterEnabled === undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED = suitePrinterEnabled;
         if (suitePrinterHost === undefined) delete process.env.PRINTER_HOST; else process.env.PRINTER_HOST = suitePrinterHost;
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Pedido_traslados','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();

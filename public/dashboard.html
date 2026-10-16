@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=62">
+    <link rel="stylesheet" href="style.css?v=65">
     <link rel="stylesheet" href="responsive.css?v=57">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -167,6 +167,7 @@
                                     </div>
                                 </div>
                                 <div id="pos-header-actions-region" class="pos-header-actions">
+                                    <button class="btn-state-mesa" id="btn-trasladar-mesa" onclick="openTableTransfer()" title="Trasladar todo el pedido" disabled><i class="fas fa-exchange-alt"></i> <span class="btn-label">Trasladar mesa</span></button>
                                     <button class="btn-state-mesa" id="btn-guardar-mesa" onclick="guardarMesa()" title="Marcar mesa como ocupada"><i class="fas fa-save"></i> <span class="btn-label">Guardar</span></button>
                                     <button class="btn-state-mesa btn-reservar" id="btn-reservar-mesa" onclick="reservarMesa()" title="Reservar mesa"><i class="fas fa-calendar-check"></i> <span class="btn-label">Reservar</span></button>
                                     <button class="btn-state-mesa btn-cancelar" id="btn-borrar-comanda" onclick="borrarComanda()" title="Borrar Comanda"><i class="fas fa-trash-alt"></i> <span class="btn-label">Borrar Comanda</span></button>
@@ -425,6 +426,19 @@
         <small>Máximo 500 caracteres. Las instrucciones se aplican a toda esta línea.</small>
         <div class="order-dialog-actions"><button onclick="saveOrderNotes(true)">Borrar nota</button><button onclick="closeOrderNotes()">Cancelar</button><button class="btn-send-kitchen" onclick="saveOrderNotes()">Guardar</button></div>
     </dialog>
+    <dialog id="order-transfer-dialog" class="order-dialog" aria-labelledby="order-transfer-title" oncancel="event.preventDefault(); closeTableTransfer()">
+        <div class="order-dialog-heading"><h2 id="order-transfer-title">Trasladar mesa</h2><button type="button" onclick="closeTableTransfer()" aria-label="Cerrar traslado">×</button></div>
+        <div class="transfer-search">
+            <label for="order-transfer-search">Buscar mesa por número</label>
+            <input id="order-transfer-search" autofocus type="search" inputmode="numeric" oninput="renderTransferTables()" autocomplete="off">
+        </div>
+        <div id="order-transfer-tables"></div>
+        <div class="transfer-footer">
+            <p id="order-transfer-summary"></p>
+            <p id="order-transfer-message" role="alert"></p>
+            <div class="transfer-actions"><button type="button" onclick="closeTableTransfer()">Cancelar</button><button id="order-transfer-submit" type="button" onclick="submitTableTransfer()" disabled>Confirmar traslado</button></div>
+        </div>
+    </dialog>
     <dialog id="order-history-dialog" class="order-dialog" aria-label="Historial e impresión">
         <div class="order-dialog-heading"><h2>Envíos a cocina</h2><button onclick="document.getElementById('order-history-dialog').close()" aria-label="Cerrar">×</button></div>
         <div id="order-history-content"></div>
@@ -438,8 +452,8 @@
     <dialog id="holiday-review-dialog" class="order-dialog" aria-labelledby="holiday-review-title"><h2 id="holiday-review-title">La tarifa cambió</h2><p>Revise los precios de las líneas nuevas. Las líneas guardadas y los ajustes manuales conservan sus importes.</p><ul id="holiday-review-list"></ul><div class="order-dialog-actions"><button onclick="document.getElementById('holiday-review-dialog').close()">Conservar borrador</button><button onclick="acceptHolidayPrices()">Aceptar precios y guardar</button></div></dialog>
     <script src="holiday-prices.js?v=61"></script>
     <script src="order-math.js?v=59"></script>
-    <script src="orders-ui.js?v=61"></script>
-    <script src="script.js?v=63"></script>
+    <script src="orders-ui.js?v=64"></script>
+    <script src="script.js?v=64"></script>
 </body>
 
 </html>

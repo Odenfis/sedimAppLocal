@@ -6,13 +6,17 @@ function validateMigration(source, file) {
     if (file === '012_order_reference_code.sql') {
         stripped = stripped.replace(/\bALTER\s+TABLE\s+dbo\.Pedido_control\s+ADD\s+CodigoPedido\s+VARCHAR\s*\(30\)\s+NULL\s*;/gi, '');
     }
+    if (file === '014_table_transfers.sql') {
+        stripped = stripped.replace(/\bALTER\s+TABLE\s+dbo\.Impresion_(?:barra_)?trabajos\s+ADD\s+TrasladoId\s+UNIQUEIDENTIFIER\s+NULL\s+REFERENCES\s+dbo\.Pedido_traslados\(Id\)\s*;/gi, '')
+            .replace(/\bALTER\s+TABLE\s+dbo\.Impresion_(?:barra_)?trabajos\s+ALTER\s+COLUMN\s+EnvioId\s+UNIQUEIDENTIFIER\s+NULL\s*;/gi, '');
+    }
     if (/\b(?:ALTER|DROP|TRUNCATE|DELETE|UPDATE|MERGE|EXEC|TRIGGER)\b/i.test(stripped)) {
         throw new Error(`Migración ${file} contiene una operación prohibida sobre el esquema protegido`);
     }
     const writes = [...stripped.matchAll(/\bINSERT\s+(?:INTO\s+)?(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi), ...stripped.matchAll(/\bCREATE\s+INDEX\s+\[?[A-Za-z0-9_]+\]?\s+ON\s+(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi)];
     for (const match of writes) {
         const table = match[1].toLowerCase();
-        if (!['pedido_control','pedido_lineas','pedido_residuos_archivo','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','impresion_linea_rutas','impresion_linea_destinos','impresion_trabajo_destinos','impresion_barra_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','web_sessions','precios_feriado_config','precios_feriado_historial','migrations'].includes(table)) {
+        if (!['pedido_traslados','pedido_control','pedido_lineas','pedido_residuos_archivo','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','impresion_linea_rutas','impresion_linea_destinos','impresion_trabajo_destinos','impresion_barra_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','web_sessions','precios_feriado_config','precios_feriado_historial','migrations'].includes(table)) {
             throw new Error(`Migración ${file} intenta escribir o indexar una tabla no autorizada: ${table}`);
         }
     }

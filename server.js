@@ -218,14 +218,19 @@ app.put('/api/pos/tables/:numero/estado', isAuthenticated, async (req, res) => {
     const { numero } = req.params;
     const { estado, empresa } = req.body;
     try {
-        const pool = await getConnection();
-        const request = pool.request();
-        request.input('numero', sql.Int, parseInt(numero));
-        request.input('estado', sql.Int, parseInt(estado));
-        request.input('empresa', sql.Int, parseInt(empresa));
-
-        const query = "UPDATE Mesas SET Estado = @estado WHERE Numero = @numero AND Empresa = @empresa";
-        const result = await requestContext.measureSql(() => request.query(query));
+        const company = normalizeCompany(empresa).empresa, mesa = Number(numero);
+        if (!Number.isInteger(mesa) || Number(estado) !== 3) return res.status(400).json({ success: false, message: 'Estado de reserva inválido' });
+        const orders = require('./lib/orders');
+        const result = await orders.transaction(async db => {
+            await orders.lock(db, `mesa:${company}:${mesa}`);
+            const occupied = await orders.query(db, `SELECT Estado FROM Mesas WITH(UPDLOCK,HOLDLOCK) WHERE Numero=@mesa AND Empresa=@empresa`, { mesa, empresa: company });
+            if (!occupied.recordset.length) return { rowsAffected: [0] };
+            const cfg = await orders.query(db, `SELECT c_describe FROM Tablas WHERE n_codtabla=23 AND n_numero=@numero`, { numero: company === 2 ? 1 : company === 4 ? 2 : 5 });
+            const active = await orders.query(db, `SELECT TOP 1 NroTicket FROM Ticket_c WHERE NroMesa=@mesa AND Estado IN(1,2) AND NroTicket LIKE @prefix`,
+                { mesa, prefix: cfg.recordset[0]?.c_describe.trim().split('-')[0] + '-%' });
+            if (occupied.recordset[0].Estado !== 1 || active.recordset.length) { const e = new Error('La mesa ya no está libre'); e.status = 409; throw e; }
+            return orders.query(db, 'UPDATE Mesas SET Estado=3 WHERE Numero=@mesa AND Empresa=@empresa', { mesa, empresa: company });
+        });
 
         if (result.rowsAffected[0] > 0) {
             broadcastSSE({ type: 'mesa_updated', numero: parseInt(numero), empresa: parseInt(empresa) });

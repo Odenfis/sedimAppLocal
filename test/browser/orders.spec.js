@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, Afecto: 1, Linea: 'Platos' };
 async function fixture(page, options = {}) {
-    const state = { items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
+    const state = { mesa: 1, transfers: [], transferRequests: [], transferUnavailable: false, transferLostResponse: false, items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
@@ -40,7 +40,7 @@ async function fixture(page, options = {}) {
         return { success: true, nroTicket: state.ticket, version: state.version,
             conciliacionComercial: { status: state.commercialConflict ? 'conflict' : 'ok',
                 code: state.commercialConflict ? 'COMMERCIAL_CONFLICT' : null },
-            pedido: state.ticket ? { NroTicket: state.ticket, Estado: state.orderState, Mozo: state.mozo ?? 1, CodigoPedido: state.codigoPedido || null } : null,
+            pedido: state.ticket ? { NroMesa: state.mesa, NroTicket: state.ticket, Estado: state.orderState, Mozo: state.mozo ?? 1, CodigoPedido: state.codigoPedido || null } : null,
             items: state.items.map(l => ({ ...l, Codpro: l.codPro, Descripcion: l.nombre, Cantidad: l.cantidad, Precio: l.precio, Afecto: l.afecto,
                 enviada: state.sent.has(l.lineaId) ? JSON.parse(state.sent.get(l.lineaId)) : null, pendienteEnvio: !state.sent.has(l.lineaId),
                 estadoCocina: state.kitchenStates.get(l.lineaId) || null, pendienteId: null, anulada: false })),
@@ -100,7 +100,9 @@ async function fixture(page, options = {}) {
             state.orderCompanies.push(url.searchParams.get('empresa'));
             if (state.orderLoadDelay) await new Promise(resolve => setTimeout(resolve, state.orderLoadDelay));
             if (state.orderLoadError) return fulfill({ success:false,message:'No se pudo cargar el pedido',diagnosticId:'diag-order-load',retryable:false },500);
-            return fulfill(data());
+            const result = data();
+            if (result.pedido && !state.transfers.length) result.pedido.NroMesa = Number(url.searchParams.get('mesa'));
+            return fulfill(result);
         }
         if (url.pathname === '/api/pos/pedido' && req.method() === 'POST') {
             state.requestOrder.push('save');
@@ -130,7 +132,21 @@ async function fixture(page, options = {}) {
                 state.deletes++; state.version++; state.ticket = null; state.items = []; state.sent.clear();
                 return fulfill({ success:true,pedidoEliminado:true });
             }
-            state.mozo = Number(body.mozo); state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
+            state.mesa = Number(body.mesa); state.mozo = Number(body.mozo); state.codigoPedido = body.codigoPedido; state.saves++; state.version++; state.ticket = 'T001-000001'; state.items = body.items; return fulfill(data());
+        }
+        if (url.pathname.endsWith('/ubicacion')) return fulfill({success:true,mesa:state.mesa,version:state.version});
+        if (url.pathname.endsWith('/traslados')) return fulfill({success:true,traslados:state.transfers});
+        if (url.pathname.endsWith('/trasladar')) {
+            state.transferRequests.push(body);
+            const existing = state.transfers.find(t=>t.Clave===body.clave);
+            if (state.transferUnavailable) return fulfill({message:'La mesa de destino ya no está libre',errorCode:'TRANSFER_DESTINATION_UNAVAILABLE'},409);
+            if (!existing) {
+                state.mesa=body.destino; state.version++;
+                state.transfers.push({Id:'33333333-3333-4333-8333-333333333333',Origen:body.origen,Destino:body.destino,Clave:body.clave,Documento:'CAMBIO DE MESA',trabajos:[]});
+            }
+            if (state.transferLostResponse) { state.transferLostResponse=false; return route.abort('failed'); }
+            if(existing) return fulfill({success:true,mesa:state.mesa,version:state.version,trasladoId:existing.Id,avisos:[],yaRealizado:true});
+            return fulfill({...data(),mesa:state.mesa,trasladoId:state.transfers[0].Id,avisos:[]});
         }
         if (url.pathname.endsWith('/pagar')) { state.orderState = 2; state.version++; return fulfill(data()); }
         if (url.pathname.endsWith('/reabrir')) { state.orderState = 1; state.version++; return fulfill(data()); }
@@ -2602,4 +2618,229 @@ test('Fase 63 SSE durante apertura espera el catálogo sustituto para medir util
     replacement.release();
     await expect.poll(() => page.evaluate(() => JSON.parse(posPerformance.export()).openings[0].outcome)).toBe('usable');
     expect(await page.evaluate(() => posProducts[0].precioVersion)).toBe(2);
+});
+
+const transferTables = [{Numero:1,Empresa:2,Ambiente:1,Estado:2},{Numero:2,Empresa:2,Ambiente:2,Estado:1},
+    {Numero:3,Empresa:2,Ambiente:1,Estado:3},{Numero:201,Empresa:2,Ambiente:1,Estado:1},{Numero:4,Empresa:4,Ambiente:1,Estado:1}];
+const phase65Tables = Array.from({length: 120}, (_, i) => ({Numero: i + 1, Empresa: 2, Ambiente: Math.floor(i / 40) + 1, Estado: i ? 1 : 2}));
+async function openPhase65Transfer(page, width, height = 900) {
+    await page.setViewportSize({width, height});
+    const state = await fixture(page, {tables: phase65Tables});
+    await page.locator('.pos-product-card').first().click();
+    if (width <= 480) await page.locator('#pos-header-toggle').click();
+    await page.locator('#btn-trasladar-mesa').click();
+    await expect(page.locator('#order-transfer-tables button')).toHaveCount(119);
+    return state;
+}
+for (const width of [360, 390, 768, 1024, 1280]) test(`Fase 65 traslado con ambientes extensos a ${width}px`, async ({page}, testInfo) => {
+    await openPhase65Transfer(page, width, width === 1024 ? 768 : 900);
+    const dialog = page.locator('#order-transfer-dialog'), list = page.locator('#order-transfer-tables');
+    const before = await page.locator('#order-transfer-search').boundingBox();
+    const layout = await dialog.evaluate(el => {
+        const list = el.querySelector('#order-transfer-tables'), sections = [...list.querySelectorAll('section')];
+        const first = sections[0], second = sections[1], heading = first.querySelector('h3'), grid = first.querySelector('.transfer-table-grid');
+        return {overflow: el.scrollWidth > el.clientWidth, scrollable: list.scrollHeight > list.clientHeight,
+            sectionGap: second.getBoundingClientRect().top - first.getBoundingClientRect().bottom,
+            titleGap: grid.getBoundingClientRect().top - heading.getBoundingClientRect().bottom,
+            columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+            minButton: Math.min(...[...list.querySelectorAll('button')].map(b => b.getBoundingClientRect().height))};
+    });
+    expect(layout).toMatchObject({overflow:false, scrollable:true, sectionGap:24, titleGap:12, columns:width < 480 ? 2 : width < 768 ? 3 : 4});
+    expect(layout.minButton).toBeGreaterThanOrEqual(48);
+    for (const theme of ['light', 'dark']) {
+        await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+        await list.evaluate(el => el.scrollTop = 0);
+        await dialog.screenshot({path:testInfo.outputPath(`transfer-${width}-${theme}.png`), animations:'disabled'});
+        await expect(list.locator('button').first()).toHaveCSS('color', theme === 'dark' ? 'rgb(249, 250, 251)' : 'rgb(31, 41, 55)');
+        await expect(list.locator('button').first()).toHaveCSS('background-color', theme === 'dark' ? 'rgb(31, 41, 55)' : 'rgb(255, 255, 255)');
+        await list.evaluate(el => el.scrollTop = el.querySelector('section').offsetHeight - 100);
+        await dialog.screenshot({path:testInfo.outputPath(`transfer-areas-${width}-${theme}.png`), animations:'disabled'});
+    }
+    await page.getByRole('button', {name:'Mesa 120', exact:true}).click();
+    await expect(page.getByRole('button', {name:'Mesa 120', exact:true})).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#order-transfer-summary')).toContainText('a Mesa 120');
+    expect((await page.locator('#order-transfer-search').boundingBox()).y).toBe(before.y);
+    const footer = await page.locator('.transfer-footer').boundingBox(), box = await dialog.boundingBox();
+    expect(footer.y + footer.height).toBeLessThanOrEqual(box.y + box.height);
+    await expect(page.locator('#order-transfer-submit')).toBeInViewport();
+    await page.locator('#order-transfer-search').fill('999');
+    await expect(list).toHaveText('No hay mesas libres para esta búsqueda.');
+    await page.locator('#order-transfer-submit').focus();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator('#btn-trasladar-mesa')).toBeFocused();
+});
+test('Fase 65 traslado con altura reducida, teclado y zoom 200%', async ({page}, testInfo) => {
+    const state = await openPhase65Transfer(page, 768);
+    for (const view of [{width:768,height:420,zoom:'1'}, {width:390,height:360,zoom:'1'}, {width:768,height:900,zoom:'2'}]) {
+        await page.setViewportSize({width:view.width,height:view.height});
+        await page.evaluate(zoom => document.documentElement.style.zoom = zoom, view.zoom);
+        const dialog = page.locator('#order-transfer-dialog');
+        expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+        const bounds = await dialog.boundingBox();
+        expect(bounds.x).toBeGreaterThanOrEqual(0);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(view.width);
+        if (view.zoom === '2') expect(await page.locator('#order-transfer-dialog .transfer-table-grid').first().evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(2);
+        await page.getByRole('button', {name:'Mesa 120',exact:true}).click();
+        await page.locator('#order-transfer-message').evaluate(el => el.textContent = 'Operación enviada. Reintente para confirmar el resultado sin duplicarla. '.repeat(3));
+        expect(await page.locator('#order-transfer-tables').evaluate(el => el.clientHeight)).toBeGreaterThanOrEqual(120);
+        await page.locator('#order-transfer-submit').focus();
+        await expect(page.locator('#order-transfer-submit')).toBeInViewport();
+        await page.screenshot({path:testInfo.outputPath(`transfer-short-${view.width}-${view.zoom}.png`)});
+        await page.locator('#order-transfer-search').focus();
+        await expect(page.locator('#order-transfer-search')).toBeInViewport();
+    }
+    expect(state.transferRequests).toHaveLength(0);
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    await expect(page.locator('#order-transfer-dialog')).not.toBeVisible();
+});
+test('Fase 65 traslado mantiene visibles carga y error de mesas', async ({page}) => {
+    const state = await fixture(page, {tables:transferTables});
+    await page.locator('.pos-product-card').first().click();
+    const gate = phase63Gate();
+    await page.route('**/api/pos/tables?**', async route => {
+        await gate.promise;
+        await route.fulfill({status:500,json:{message:'No se pudieron cargar las mesas.'}});
+    });
+    await page.locator('#btn-trasladar-mesa').click();
+    await expect(page.locator('#order-transfer-tables')).toHaveText('Cargando mesas…');
+    await expect(page.locator('#order-transfer-submit')).toBeDisabled();
+    gate.release();
+    await expect(page.locator('#order-transfer-message')).toContainText('No se pudieron cargar las mesas.');
+    await expect(page.locator('#order-transfer-submit')).toBeDisabled();
+    expect(state.transferRequests).toHaveLength(0);
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    await expect(page.locator('#order-transfer-dialog')).not.toBeVisible();
+});
+test('traslado completo guarda pendientes, conserva ticket y comensales y continúa atendiendo', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();
+    await page.locator('#pos-guests').fill('4');
+    await page.locator('#btn-trasladar-mesa').click();
+    await expect(page.locator('#order-transfer-tables')).toContainText('Ambiente 2');
+    await expect(page.locator('#order-transfer-tables button')).toHaveCount(1);
+    await page.getByRole('button',{name:'Mesa 2',exact:true}).click();
+    await expect(page.locator('#order-transfer-summary')).toContainText('Comensales: 4');
+    await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#pos-current-table')).toHaveText('2');
+    await expect(page.locator('#pos-guests')).toHaveValue('4');
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    expect(state.transfers).toHaveLength(1); expect(state.sends).toBe(0);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(()=>state.items.reduce((n,l)=>n+l.cantidad,0)).toBe(2);
+    expect(state.mesa).toBe(2);
+});
+test('traslado reintenta respuesta perdida con la misma clave sin duplicar operación', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click(); await expect.poll(()=>state.saves).toBe(1);
+    await page.locator('#pos-guests').fill('4');
+    state.transferLostResponse=true;
+    await page.locator('#btn-trasladar-mesa').click(); await page.getByRole('button',{name:'Mesa 2',exact:true}).click();
+    await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#order-transfer-message')).not.toBeEmpty();
+    await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#pos-current-table')).toHaveText('2');
+    await expect(page.locator('#pos-guests')).toHaveValue('4');
+    expect(state.transferRequests).toHaveLength(2); expect(state.transferRequests[0].clave).toBe(state.transferRequests[1].clave);
+    expect(state.transfers).toHaveLength(1);
+});
+test('traslado: destino ocupado durante confirmación conserva pedido y permite cancelar', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();
+    await page.locator('#btn-trasladar-mesa').click(); await page.getByRole('button',{name:'Mesa 2',exact:true}).click();
+    state.transferUnavailable=true; await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#order-transfer-message')).toContainText('ya no está libre');
+    await expect(page.locator('#pos-current-table')).toHaveText('1'); expect(state.transfers).toHaveLength(0);
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+});
+test('traslado remoto protege borrador y revisión carga ubicación actual', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click(); await expect.poll(()=>state.saves).toBe(1);
+    await page.evaluate(()=>{ clearTimeout(posAutoSaveTimer); orderDirty=true; });
+    state.mesa=2; state.version++;
+    await page.evaluate(version=>handleSSEEvent({type:'mesa_updated',empresa:2,numero:2,origen:1,destino:2,nroTicket:'T001-000001',version}),state.version);
+    await expect(page.locator('#order-save-message')).toContainText('Su borrador se conserva');
+    await expect(page.locator('#pos-current-table')).toHaveText('1');
+    await page.locator('#order-review-conflict').click();
+    page.once('dialog',d=>d.accept());
+    await page.getByRole('button',{name:'Descartar borrador y cargar actual'}).click();
+    await expect(page.locator('#pos-current-table')).toHaveText('2');
+});
+test('selector de traslado @android permite búsqueda, foco y cancelación sin desbordamiento', async ({page}) => {
+    await fixture(page,{tables:transferTables}); await page.locator('.pos-product-card').first().click();
+    await page.locator('#pos-header-toggle').click();
+    await page.locator('#btn-trasladar-mesa').click(); await page.locator('#order-transfer-search').fill('2');
+    await expect(page.locator('#order-transfer-tables button')).toHaveCount(1);
+    const box=await page.locator('#order-transfer-dialog').boundingBox(); expect(box.width).toBeLessThanOrEqual(393);
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    await expect(page.locator('#order-transfer-dialog')).not.toBeVisible();
+});
+
+test('traslado remoto sin borrador y reconexión siguen el mismo ticket', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);
+    state.mesa=2;state.version++;
+    await page.evaluate(()=>reconcileActiveOrder());
+    await expect(page.locator('#pos-current-table')).toHaveText('2');await expect(page.locator('.cart-item')).toHaveCount(1);
+    // A delayed notification from an earlier transfer cannot move it back.
+    await page.evaluate(()=>handleSSEEvent({type:'mesa_updated',empresa:2,numero:1,origen:2,destino:1,nroTicket:'T001-000001',version:1}));
+    await expect(page.locator('#pos-current-table')).toHaveText('2');
+});
+test('traslado no se ejecuta cuando guardar falla y Preventa exige reabrir', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);
+    state.conflict=true;
+    await page.evaluate(()=>{orderDirty=true;clearTimeout(posAutoSaveTimer);});
+    await page.locator('#btn-trasladar-mesa').click();await page.getByRole('button',{name:'Mesa 2',exact:true}).click();await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#order-transfer-message')).toContainText('Pedido cambiado');expect(state.transferRequests).toHaveLength(0);
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    state.conflict=false;state.orderState=2;await page.evaluate(()=>{orderDirty=false;orderConflict=false;return openPOSOrder(1,2);});
+    await expect(page.locator('#btn-trasladar-mesa')).toBeDisabled();
+});
+for (const width of [390,768,1280]) test(`traslado selección por teclado y temas a ${width}px`, async ({page}) => {
+    await page.setViewportSize({width,height:900}); await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();
+    if(width<=480) await page.locator('#pos-header-toggle').click();
+    await page.locator('#btn-trasladar-mesa').click();await page.locator('#order-transfer-search').fill('2');
+    await expect(page.locator('#order-transfer-tables button')).toHaveCount(1);
+    await page.locator('#order-transfer-search').press('Tab');
+    await expect(page.locator('#order-transfer-tables button')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#order-transfer-summary')).toContainText('Mesa 1 a Mesa 2');
+    await expect(page.locator('#order-transfer-submit')).toBeEnabled();
+    for(const theme of ['light','dark']) {
+        await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+        expect(await page.locator('#order-transfer-dialog').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+        await page.screenshot({path:`/tmp/sedim-transfer-${width}-${theme}.png`});
+    }
+    await page.locator('#order-transfer-submit').focus();await page.keyboard.press('Escape');
+    await expect(page.locator('#order-transfer-dialog')).not.toBeVisible();
+    await expect(page.locator('#btn-trasladar-mesa')).toBeFocused();
+});
+
+test('traslado pendiente se recupera tras recargar sin generar una segunda operación', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);state.transferLostResponse=true;
+    await page.locator('#btn-trasladar-mesa').click();await page.getByRole('button',{name:'Mesa 2',exact:true}).click();await page.locator('#order-transfer-submit').click();
+    await expect(page.locator('#order-transfer-message')).not.toBeEmpty();
+    await page.getByRole('button',{name:'Cancelar',exact:true}).click();
+    await page.reload();
+    await page.selectOption('#pos-empresa-select','02');
+    await page.getByRole('button',{name:'Mañana',exact:true}).click();
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('traslado pendiente');
+    await page.locator('#btn-trasladar-mesa').click();await expect(page.locator('#order-transfer-summary')).toContainText('Mesa 1 a Mesa 2');
+    await page.locator('#order-transfer-submit').click();await expect(page.locator('#pos-current-table')).toHaveText('2');expect(state.transfers).toHaveLength(1);
+});
+test('traslado durante apertura sigue la mesa devuelta por el pedido y descarta el contexto antiguo', async ({page}) => {
+    const state=await fixture(page,{tables:transferTables});
+    await page.locator('.pos-product-card').first().click();await expect.poll(()=>state.saves).toBe(1);
+    let once=true;
+    await page.route('**/api/pos/pedido?mesa=1&empresa=2',async route=>{
+        if(!once) return route.fallback();once=false;
+        return route.fulfill({json:{success:true,version:state.version+1,nroTicket:state.ticket,pedido:{NroTicket:state.ticket,NroMesa:2,Estado:1,Mozo:1},items:[]}});
+    });
+    state.mesa=2;await page.evaluate(()=>openPOSOrder(1,2));
+    await expect(page.locator('#pos-current-table')).toHaveText('2');await expect(page.locator('.cart-item')).toHaveCount(1);
 });

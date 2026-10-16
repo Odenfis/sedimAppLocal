@@ -928,7 +928,7 @@ window.posPerformance = {
     enable() { sessionStorage.setItem('pos-performance', '1'); },
     disable() { sessionStorage.removeItem('pos-performance'); finishPOSPerformance('cancelled'); posPerformanceOpening = null; },
     clear() { posPerformanceRecords.length = 0; posPerformanceOpening = null; },
-    export() { return JSON.stringify({ resourceVersion: 63, openings: posPerformanceRecords }, null, 2); }
+    export() { return JSON.stringify({ resourceVersion: 64, openings: posPerformanceRecords }, null, 2); }
 };
 function beginPOSPerformance(generation, empresa, started = performance.now()) {
     let enabled = false;
@@ -1057,6 +1057,9 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
             }
             if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order') || Number(posCurrentTable) !== Number(tableNum)) return;
             if (data.success && data.pedido) {
+                if (data.pedido.NroMesa != null && Number(data.pedido.NroMesa) !== Number(tableNum)) {
+                    await openPOSOrder(data.pedido.NroMesa, empresa); return;
+                }
                 posCurrentNroTicket = data.pedido.NroTicket;
                 document.getElementById('pos-guests').value = data.pedido.Comensales || 1;
                 
@@ -1095,6 +1098,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
         updatePOSViewMode();
     }
     
+    recoverTransferAttempt();
     renderOrderStatus();
     if (generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
     if (!posIsReadOnly && refreshCatalog) {
@@ -2289,6 +2293,7 @@ function isViewVisible(id) {
 
 async function reconcileActiveOrder() {
     if (!posCurrentTable || !posCurrentTableEmpresa) return;
+    try { if (await reconcileOrderLocation()) return; } catch (e) { console.warn('No se pudo verificar la ubicación del pedido:', e.message); return; }
     const hasProtectedWork = orderDirty || orderSavePromise || orderBusy || document.querySelector('dialog[open]');
     if (!hasProtectedWork) {
         await openPOSOrder(posCurrentTable, posCurrentTableEmpresa, { preserveUI: true });
@@ -2386,6 +2391,12 @@ function handleSSEEvent(data) {
     if (data.type === 'precios_feriado_updated') { syncHolidayPrices(data.empresa); return; }
     console.log('SSE: Evento recibido:', data);
 
+    if (data.type === 'mesa_updated' && data.destino && !ownOrderOperations.has(data.operacionId)
+        && Number(data.empresa) === Number(posCurrentTableEmpresa) && data.nroTicket?.trim() === posCurrentNroTicket?.trim()
+        && Number(data.destino) !== Number(posCurrentTable) && isViewVisible('view-pos-order')) {
+        if (Number(data.version) >= orderVersion) reconcileOrderLocation().catch(e => console.warn('No se pudo verificar el traslado:', e.message));
+        return;
+    }
     if (data.type === 'mesa_updated') {
         const empresaSelect = document.getElementById('pos-empresa-select');
         const empresaActual = empresaSelect ? empresaSelect.value : null;
@@ -2735,7 +2746,7 @@ async function loadCocinaPedidosOnce() {
         const synchronization = data.sincronizacion || { desactualizado: false, actualizadaEn: new Date().toISOString() };
         // Normaliza el contrato agrupado de la API al modelo interno del tablero.
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
-            NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
+            Traslado: p.traslado, NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
             FechaTicket: p.fechaEnvio, MinutosEspera: p.minutosEspera, Documento: p.documento,
             Impresion: p.impresion, Impresiones: p.impresiones || (p.impresion ? [{ ...p.impresion, destino: 'cocina' }] : []),
             EstadoCocina: l.estado, LineaId: l.lineaId, Codpro: l.codPro, Cantidad: l.cantidad,
@@ -2797,7 +2808,7 @@ function agruparCocinaPorTicket() {
         if (!mapa.has(r.NroTicket)) {
             mapa.set(r.NroTicket, {
                 NroTicket: r.NroTicket,
-                NroMesa: r.NroMesa,
+                Traslado: r.Traslado, NroMesa: r.NroMesa,
                 FechaTicket: r.FechaTicket,
                 MinutosEspera: r.MinutosEspera || 0,
                 EnvioId: r.EnvioId, NumeroEnvio: r.NumeroEnvio, Mozo: r.Mozo, Documento: r.Documento, Impresion: r.Impresion, Impresiones: r.Impresiones,
@@ -2873,6 +2884,7 @@ function construirTarjetaCocina(t) {
         head.innerHTML = `
         <span class="cocina-ticket">${t.NroTicket}</span>
         <span class="cocina-mesa">Mesa ${t.NroMesa}</span>
+        ${t.Traslado ? `<span class="transfer-kitchen-label">Trasladado: Mesa ${escapeOrderText(t.Traslado.origen)} → Mesa ${escapeOrderText(t.Traslado.destino)}</span>` : ''}
         <span class="cocina-envio">Envío ${t.NumeroEnvio || '—'}</span>
         <span class="cocina-mozo">${escapeOrderText(t.Mozo || '')}</span>
         <span class="cocina-timer"><i class="fas fa-stopwatch"></i> ${minutos}'</span>

@@ -96,6 +96,7 @@ async function orderRequest(url, method = 'GET', body) {
     return data;
 }
 function orderReset() {
+    orderMovedTo = null; orderTransferNotices = []; orderTransferContext = null; document.getElementById('order-transfer-dialog')?.close();
     orderSavedPriceIds.clear(); orderPriceConflict = false; document.getElementById('holiday-review-dialog')?.close();
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
@@ -106,7 +107,7 @@ function orderReset() {
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data, codeRevision = null, savedGeneration = null) {
-    if (!data.pedido) return;
+    if (!data.pedido || orderMovedTo) return;
     if (codeRevision === orderCodeRevision || (codeRevision === null && !orderDirty)) {
         orderCode = data.pedido.CodigoPedido || ''; orderCodeError = '';
     }
@@ -116,6 +117,7 @@ function orderAccept(data, codeRevision = null, savedGeneration = null) {
     orderConflict = orderCommercialConflict;
     orderSaveError = orderCommercialConflict ? 'El detalle comercial difiere del pedido web. Puede eliminar el pedido o solicitar una conciliación antes de editarlo.' : '';
     orderPrintings = Array.isArray(data.impresiones) ? data.impresiones : (orderPrinting ? [{ ...orderPrinting, destino: 'cocina' }] : []);
+    orderTransferNotices = data.avisosTraslado || [];
     orderPendingCancellations = data.cocina?.anulaciones || [];
     if (data.nroTicket) posCurrentNroTicket = data.nroTicket;
     for (const saved of data.items || []) orderSavedPriceIds.add(saved.lineaId);
@@ -169,7 +171,7 @@ function orderPayload() {
     };
 }
 function orderSchedule() {
-    if (posIsReadOnly || orderBusy) return;
+    if (posIsReadOnly || orderBusy || transferMatches(pendingTransfer())) return;
     if (!normalizePOSCompany(posCurrentTableEmpresa)) return invalidatePOSCompanyContext();
     orderDirty = true; orderDeleteRetry = false; orderGeneration++; orderSaveError = ''; orderConfirmation = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
     posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => { }), POS_AUTOSAVE_DEBOUNCE_MS);
@@ -177,6 +179,7 @@ function orderSchedule() {
 async function orderFlush() {
     clearTimeout(posAutoSaveTimer);
     if (orderSavePromise) { await orderSavePromise; if (orderDirty) return orderFlush(); return; }
+    if (transferMatches(pendingTransfer())) throw new Error('Confirme el traslado pendiente antes de guardar.');
     if (orderPriceConflict) throw new Error('Revise los precios actualizados antes de guardar. Su borrador se conserva.');
     if (orderConflict) throw new Error('Revise la versión actual antes de guardar. Su borrador se conserva.');
     if (!posCurrentNroTicket && !posCart.length) { orderDirty = false; return; }
@@ -187,6 +190,7 @@ async function orderFlush() {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
+            if (orderMovedTo) throw new Error(`El pedido se trasladó a Mesa ${orderMovedTo}. Su borrador se conserva para revisión.`);
             orderAccept(data, codeRevision, generation); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
         } catch (e) {
             orderDeleteRetry = false; orderSaveError = e.message;
@@ -198,6 +202,12 @@ async function orderFlush() {
     if (orderDirty) await orderFlush();
 }
 function renderOrderStatus() {
+    const transferButton = document.getElementById('btn-trasladar-mesa');
+    if (transferButton) {
+        const retry = transferMatches(pendingTransfer());
+        transferButton.hidden = !retry && !diningTable(posCurrentTable);
+        transferButton.disabled = orderBusy || (!retry && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || orderCompanyContextError || posWaiterLoading || !posCart.length));
+    }
     renderOrderCode();
     document.getElementById('order-review-prices').hidden = !orderPriceConflict;
     document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => { button.disabled = !manualPriceEditable(); });
@@ -218,7 +228,7 @@ function renderOrderStatus() {
         const name = printDestinationName(item.destino);
         const state = item.estado || item.Estado, error = item.error || item.Error;
         return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
-    }).join(' · ');
+    }).concat(orderTransferNotices.map(j => `Aviso de traslado · ${printDestinationName(j.Destino)}: ${labels[j.Estado] || j.Estado}${!printDestinationEnabled(j.Destino) && j.Estado === 'en_cola' ? ' (impresora deshabilitada)' : ''}`)).join(' · ');
     document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
     const pay = document.querySelector('.btn-pay-now');
     if (pay) pay.disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
@@ -319,6 +329,7 @@ function splitOrderLine(index) {
     updateCartUI(); orderSchedule(); openOrderNotes(index + 1);
 }
 async function showOrderHistory() {
+    const historyGeneration = posOrderLoadGeneration, historyTicket = posCurrentNroTicket;
     try {
         const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/envios?empresa=${posCurrentTableEmpresa}`);
         const container = document.getElementById('order-history-content'); container.replaceChildren();
@@ -342,14 +353,36 @@ async function showOrderHistory() {
             }
             container.append(section);
         }
-        if (!data.envios.length) container.textContent = 'Todavía no hay envíos a cocina.';
+        const history = await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket.trim())}/traslados?empresa=${posCurrentTableEmpresa}`);
+        for (const transfer of history.traslados || []) {
+            const section = document.createElement('section'), h = document.createElement('h3'), pre = document.createElement('pre');
+            h.textContent = `Traslado: Mesa ${transfer.Origen} → Mesa ${transfer.Destino}`; pre.textContent = transfer.Documento; section.append(h, pre);
+            for (const job of transfer.trabajos) { const p = document.createElement('p'); p.textContent = `${printDestinationName(job.Destino)}: ${job.Estado}${job.Error ? ' · ' + job.Error : ''}`; section.append(p); }
+            for (const destination of PRINT_DESTINATIONS) {
+                const jobs = transfer.trabajos.filter(j => j.Destino === destination);
+                if (!jobs.length) continue;
+                const btn = document.createElement('button'); btn.textContent = `Reimprimir aviso · ${printDestinationName(destination)}`;
+                btn.disabled = !printDestinationEnabled(destination) || jobs.some(j => ['en_cola','procesando'].includes(j.Estado));
+                let attempt = null;
+                btn.onclick = async () => {
+                    if (!confirm('Revise el papel antes de imprimir una copia marcada REIMPRESIÓN.')) return;
+                    btn.disabled = true;
+                    try { attempt ||= newOrderId(); await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket.trim())}/traslados/${transfer.Id}/reimprimir`, 'POST', { empresa: posCurrentTableEmpresa, clave: attempt, destino: destination }); await showOrderHistory(); }
+                    catch (e) { alert(e.message); btn.disabled = false; }
+                }; section.append(btn);
+            }
+            container.append(section);
+        }
+        if (!container.children.length) container.textContent = 'Todavía no hay envíos ni traslados.';
+        if (historyGeneration !== posOrderLoadGeneration || historyTicket !== posCurrentNroTicket || !isViewVisible('view-pos-order')) return;
         const dialog = document.getElementById('order-history-dialog'); if (!dialog.open) dialog.showModal();
     } catch (e) { alert(e.message); }
 }
 async function reviewOrderConflict() {
     // Preserve the complete draft for explicit comparison. Nothing is overwritten until the user chooses.
     try {
-        const data = await orderRequest(`/api/pos/pedido?mesa=${posCurrentTable}&empresa=${posCurrentTableEmpresa}`);
+        if (posCurrentNroTicket) await reconcileOrderLocation();
+        const data = await orderRequest(`/api/pos/pedido?mesa=${orderMovedTo || posCurrentTable}&empresa=${posCurrentTableEmpresa}`);
         const format = items => items.map(l => `${l.cantidad ?? l.Cantidad} × ${l.nombre ?? l.Descripcion}\n  ${orderNotes(l)}`).join('\n');
         document.getElementById('order-conflict-local').textContent = format(posCart);
         document.getElementById('order-conflict-server').textContent = format(data.items || []);
@@ -359,7 +392,7 @@ async function reviewOrderConflict() {
 async function discardOrderDraft() {
     if (!confirm('¿Descartar el borrador local y cargar la versión actual?')) return;
     document.getElementById('order-conflict-dialog').close(); orderDirty = false; orderConflict = false; orderSaveError = '';
-    await openPOSOrder(posCurrentTable, posCurrentTableEmpresa);
+    await openPOSOrder(orderMovedTo || posCurrentTable, posCurrentTableEmpresa);
 }
 function kitchenCompany() { return Number(document.getElementById('cocina-empresa-select').value); }
 async function acknowledgeKitchenLine(nroTicket, lineaId) {
@@ -426,4 +459,132 @@ function applyManualPrice() {
     }
     for (const line of lines) { line.precioManualFinal = value; line.precio = value; }
     closeManualPrice(false); orderSchedule(); restoreManualPriceFocus(pending);
+}
+
+/* Fase 64: moving preserves the ticket and the local draft until explicitly resolved. */
+let orderTransferContext = null, orderMovedTo = null, orderTransferNotices = [];
+const transferStorageKey = 'sedim-transfer-attempt';
+function diningTable(value) { return Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 200; }
+function pendingTransfer() {
+    try { return JSON.parse(sessionStorage.getItem(transferStorageKey) || 'null'); } catch { return null; }
+}
+function transferMatches(attempt) {
+    return attempt && Number(attempt.empresa) === Number(posCurrentTableEmpresa)
+        && (Number(attempt.origen) === Number(posCurrentTable) || attempt.nro === posCurrentNroTicket?.trim());
+}
+function recoverTransferAttempt() {
+    const attempt = pendingTransfer();
+    if (!transferMatches(attempt)) return;
+    orderConflict = true;
+    orderSaveError = 'Hay un traslado pendiente de confirmar. Pulse Trasladar mesa para recuperar su resultado.';
+    renderOrderStatus();
+}
+function closeTableTransfer() {
+    if (orderBusy) return;
+    document.getElementById('order-transfer-dialog').close(); orderTransferContext = null;
+    document.getElementById('btn-trasladar-mesa').focus();
+}
+async function openTableTransfer() {
+    const retry = pendingTransfer();
+    if (retry && !transferMatches(retry)) { alert(`Confirme primero el traslado pendiente de Mesa ${retry.origen}, empresa ${retry.empresa}.`); return; }
+    if (orderBusy || (!transferMatches(retry) && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || !posCart.length || !diningTable(posCurrentTable)))) return;
+    const dialog = document.getElementById('order-transfer-dialog');
+    orderTransferContext = { empresa: posCurrentTableEmpresa, origen: posCurrentTable, generation: posOrderLoadGeneration, tables: [], destino: null,
+        attempt: transferMatches(retry) ? retry : null };
+    const context = orderTransferContext;
+    document.getElementById('order-transfer-search').value = '';
+    document.getElementById('order-transfer-message').textContent = '';
+    document.getElementById('order-transfer-summary').textContent = '';
+    document.getElementById('order-transfer-tables').textContent = 'Cargando mesas…';
+    document.getElementById('order-transfer-submit').disabled = true;
+    dialog.showModal();
+    if (context.attempt) {
+        context.origen = context.attempt.origen; context.destino = context.attempt.destino;
+        renderTransferTables(); return;
+    }
+    try {
+        const tables = await orderRequest(`/api/pos/tables?empresa=${context.empresa}`);
+        if (orderTransferContext !== context || context.generation !== posOrderLoadGeneration) return;
+        context.tables = tables.filter(t => Number(t.Empresa) === Number(context.empresa) && Number(t.Estado) === 1 && diningTable(t.Numero) && Number(t.Numero) !== Number(context.origen));
+        renderTransferTables();
+    } catch (e) { if (orderTransferContext === context) document.getElementById('order-transfer-message').textContent = e.message; }
+}
+function renderTransferTables() {
+    const c = orderTransferContext; if (!c) return;
+    const focusedTable = document.activeElement?.dataset.transferTable;
+    const container = document.getElementById('order-transfer-tables'); container.replaceChildren();
+    const search = document.getElementById('order-transfer-search'); search.disabled = Boolean(c.attempt);
+    const term = search.value.trim(), groups = new Map();
+    for (const table of c.tables.filter(t => String(t.Numero).includes(term)).sort((a,b) => Number(a.Numero) - Number(b.Numero))) {
+        const area = String(table.Ambiente ?? 'Sin ambiente');
+        if (!groups.has(area)) {
+            const section = document.createElement('section'), heading = document.createElement('h3'), grid = document.createElement('div');
+            heading.textContent = `Ambiente ${area}`; grid.className = 'transfer-table-grid'; section.append(heading,grid); container.append(section); groups.set(area, grid);
+        }
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = `Mesa ${table.Numero}`;
+        button.dataset.transferTable = String(table.Numero);
+        button.setAttribute('aria-pressed', String(Number(c.destino) === Number(table.Numero)));
+        button.onclick = () => { c.destino = Number(table.Numero); renderTransferTables(); }; groups.get(area).append(button);
+    }
+    if (focusedTable) container.querySelector(`[data-transfer-table="${CSS.escape(focusedTable)}"]`)?.focus();
+    if (!container.children.length) container.textContent = c.attempt ? 'Operación enviada. Reintente para confirmar el resultado sin duplicarla.' : 'No hay mesas libres para esta búsqueda.';
+    document.getElementById('order-transfer-summary').textContent = c.destino
+        ? `Trasladar todo el pedido de Mesa ${c.origen} a Mesa ${c.destino}. Mozo: ${document.getElementById('pos-mojo-name').textContent || '—'}. Comensales: ${document.getElementById('pos-guests').value}. Total: ${document.getElementById('pos-total').textContent}.`
+        : 'Seleccione una mesa de destino.';
+    document.getElementById('order-transfer-submit').textContent = c.attempt ? 'Confirmar resultado del traslado' : 'Confirmar traslado';
+    document.getElementById('order-transfer-submit').disabled = !c.destino || orderBusy;
+}
+async function submitTableTransfer() {
+    const c = orderTransferContext;
+    if (!c || !c.destino || orderBusy || c.generation !== posOrderLoadGeneration) return;
+    orderBusy = true; renderOrderStatus(); renderTransferTables();
+    try {
+        if (!c.attempt) {
+            await orderFlush();
+            if (!posCurrentNroTicket) throw new Error('Guarde un pedido con productos antes de trasladar.');
+            c.attempt = { nro: posCurrentNroTicket.trim(), empresa: c.empresa, origen: Number(c.origen), destino: c.destino, version: orderVersion, clave: newOrderId() };
+            sessionStorage.setItem(transferStorageKey, JSON.stringify(c.attempt));
+        }
+        const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(c.attempt.nro)}/trasladar`, 'POST', { ...c.attempt, operacionId: orderOperation() });
+        sessionStorage.removeItem(transferStorageKey);
+        if (orderTransferContext !== c || c.generation !== posOrderLoadGeneration) return;
+        document.getElementById('order-transfer-dialog').close(); orderTransferContext = null;
+        orderBusy = false; orderConflict = false; orderMovedTo = null; orderDirty = false;
+        if (data.pedido && Number(data.mesa) === Number(c.destino)) {
+            // Keep comensales and UI state: these were already displayed before the move.
+            posOrderLoadGeneration++; posOrderAbortController?.abort();
+            posCurrentTable = c.destino; document.getElementById('pos-current-table').textContent = c.destino;
+            orderAccept(data); updateStateButtons(); updateCartUI();
+        } else if (data.mesa != null) {
+            const guests = document.getElementById('pos-guests').value;
+            await openPOSOrder(data.mesa, c.empresa);
+            if (data.version === c.attempt.version + 1 && posCurrentNroTicket?.trim() === c.attempt.nro) document.getElementById('pos-guests').value = guests;
+        }
+        else { orderSaveError = 'El traslado se realizó y el pedido ya fue cerrado. Regrese al mapa.'; posIsReadOnly = true; updatePOSViewMode(); }
+        orderTransferNotices = data.avisos || [];
+        orderConfirmation = 'Traslado realizado.'; renderOrderStatus();
+        document.getElementById('btn-trasladar-mesa').focus();
+    } catch (e) {
+        if (c.attempt && e.status && e.status < 500) { sessionStorage.removeItem(transferStorageKey); c.attempt = null; }
+        if (c.attempt) { orderConflict = true; orderSaveError = 'Confirme el resultado del traslado antes de seguir editando.'; }
+        else if (isOrderConflict(e) && e.errorCode !== 'TRANSFER_DESTINATION_UNAVAILABLE') orderConflict = true;
+        document.getElementById('order-transfer-message').textContent = e.message;
+    } finally { orderBusy = false; renderOrderStatus(); if (orderTransferContext === c) renderTransferTables(); }
+}
+async function handleOrderMoved(destination) {
+    if (!destination || Number(destination) === Number(posCurrentTable)) return false;
+    if (orderDirty || orderSavePromise || orderBusy || document.querySelector('dialog[open]')) {
+        if (orderMovedTo !== Number(destination)) orderGeneration++;
+        orderMovedTo = Number(destination); orderConflict = true; clearTimeout(posAutoSaveTimer);
+        orderSaveError = `El pedido se trasladó a Mesa ${destination}. Su borrador se conserva; revise la versión actual.`;
+        renderOrderStatus();
+    } else await openPOSOrder(destination, posCurrentTableEmpresa, { preserveUI: true });
+    return true;
+}
+async function reconcileOrderLocation() {
+    if (!posCurrentNroTicket) return false;
+    const nro = posCurrentNroTicket, empresa = posCurrentTableEmpresa, table = posCurrentTable, generation = posOrderLoadGeneration;
+    const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(nro.trim())}/ubicacion?empresa=${empresa}`);
+    if (generation !== posOrderLoadGeneration || nro !== posCurrentNroTicket || Number(table) !== Number(posCurrentTable) || !isViewVisible('view-pos-order')) return true;
+    return handleOrderMoved(data.mesa);
 }
