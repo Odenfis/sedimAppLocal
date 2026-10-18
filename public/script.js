@@ -504,14 +504,6 @@ function resetPOSAddFeedback() {
     posCardFeedbackTimers.clear();
 }
 
-const posFeedbackAnimations = new WeakMap();
-function restartPOSFeedback(element) {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    posFeedbackAnimations.get(element)?.cancel();
-    const animation = element.animate([{ opacity: 0.65 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
-    posFeedbackAnimations.set(element, animation);
-}
-
 function showPOSAddFeedback(product, card) {
     const codPro = String(product.CodPro || '').trim();
     const quantity = posCart.reduce((total, item) => total + (String(item.codPro || '').trim() === codPro ? Number(item.cantidad) || 0 : 0), 0);
@@ -521,7 +513,6 @@ function showPOSAddFeedback(product, card) {
         feedback.textContent = `Agregado al pedido: ${String(product.Nombre || 'Producto').trim()} · Cantidad ${quantity}`;
         feedback.hidden = false;
         feedback.classList.add('is-visible');
-        restartPOSFeedback(feedback);
         posAddFeedbackTimer = setTimeout(() => {
             feedback.hidden = true;
             feedback.classList.remove('is-visible');
@@ -531,7 +522,6 @@ function showPOSAddFeedback(product, card) {
     if (card?.isConnected) {
         clearTimeout(posCardFeedbackTimers.get(card));
         card.classList.add('is-added');
-        restartPOSFeedback(card);
         posCardFeedbackTimers.set(card, setTimeout(() => {
             card.classList.remove('is-added');
             posCardFeedbackTimers.delete(card);
@@ -542,7 +532,6 @@ function showPOSAddFeedback(product, card) {
     if (cart) {
         clearTimeout(posCartFeedbackTimer);
         cart.classList.add('is-bumping');
-        restartPOSFeedback(cart);
         posCartFeedbackTimer = setTimeout(() => cart.classList.remove('is-bumping'), 450);
     }
 }
@@ -923,16 +912,96 @@ function renderPOSTables(tables) {
 
 // Opt-in, session-local performance diagnostics. Never retain payloads or URLs.
 const posPerformanceRecords = [];
+const posInteractionRecords = [];
+const posInteractionFrames = new Map();
 let posPerformanceOpening = null;
+let posEventTimingObserver = null;
+let posEventTimingSupported = false;
+function isPOSPerformanceEnabled() {
+    try { return sessionStorage.getItem('pos-performance') === '1'; } catch { return false; }
+}
+function stopPOSInteractionObservation() {
+    posEventTimingObserver?.disconnect();
+    posEventTimingObserver = null;
+    posInteractionFrames.forEach(frame => cancelAnimationFrame(frame));
+    posInteractionFrames.clear();
+}
+function observePOSInteractionTiming() {
+    if (posEventTimingObserver || !isPOSPerformanceEnabled()) return;
+    posEventTimingSupported = typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('event') === true;
+    if (!posEventTimingSupported) return;
+    try {
+        posEventTimingObserver = new PerformanceObserver(list => {
+            for (const entry of list.getEntries()) {
+                let record;
+                for (let i = posInteractionRecords.length - 1; i >= 0; i--) {
+                    const item = posInteractionRecords[i];
+                    if (item.eventStartMs !== null && item.eventName === entry.name && Math.abs(item.eventStartMs - entry.startTime) < 1) { record = item; break; }
+                }
+                if (!record) continue;
+                record.eventTiming = {
+                    durationMs: entry.duration,
+                    inputDelayMs: entry.processingStart - entry.startTime,
+                    processingMs: entry.processingEnd - entry.processingStart,
+                    presentationDelayMs: Math.max(0, entry.startTime + entry.duration - entry.processingEnd)
+                };
+            }
+        });
+        posEventTimingObserver.observe({ type: 'event', durationThreshold: 16 });
+    } catch {
+        posEventTimingObserver?.disconnect();
+        posEventTimingObserver = null;
+        posEventTimingSupported = false;
+    }
+}
+function beginPOSInteraction(event, inputType) {
+    if (!isPOSPerformanceEnabled()) return null;
+    observePOSInteractionTiming();
+    const started = performance.now();
+    const eventStart = event?.timeStamp;
+    const validTime = Number.isFinite(eventStart) && eventStart >= 0 && eventStart <= started;
+    const record = {
+        inputType: inputType || (event?.type === 'keydown' ? 'keyboard' : event?.pointerType || (event?.isTrusted ? 'keyboard' : 'programmatic')),
+        eventName: event?.type || null, eventStartMs: validTime ? eventStart : null,
+        eventQueueMs: validTime ? started - eventStart : null,
+        productCount: posProducts.length,
+        renderedProductCount: document.getElementById('pos-products-grid').children.length,
+        cartLineCount: posCart.length,
+        searchActive: Boolean(posSearchTerm), categoryActive: Boolean(posCurrentCategory),
+        cartMs: null, feedbackMs: null, handlerMs: null,
+        twoFrameApproxMs: null, eventTiming: null
+    };
+    posInteractionRecords.push(record);
+    if (posInteractionRecords.length > 200) {
+        const oldest = posInteractionRecords.shift();
+        cancelAnimationFrame(posInteractionFrames.get(oldest));
+        posInteractionFrames.delete(oldest);
+    }
+    return { record, started, generation: posOrderLoadGeneration };
+}
+function finishPOSInteraction(sample) {
+    if (!sample) return;
+    const { record, started, generation } = sample;
+    record.handlerMs = performance.now() - started;
+    const current = () => generation === posOrderLoadGeneration && !document.hidden && isViewVisible('view-pos-order');
+    // Two frames are only an approximation; Event Timing is reported separately.
+    posInteractionFrames.set(record, requestAnimationFrame(() => {
+        if (!current()) { posInteractionFrames.delete(record); return; }
+        posInteractionFrames.set(record, requestAnimationFrame(() => {
+            if (current()) record.twoFrameApproxMs = performance.now() - (record.eventStartMs ?? started);
+            posInteractionFrames.delete(record);
+        }));
+    }));
+}
 window.posPerformance = {
-    enable() { sessionStorage.setItem('pos-performance', '1'); },
-    disable() { sessionStorage.removeItem('pos-performance'); finishPOSPerformance('cancelled'); posPerformanceOpening = null; },
-    clear() { posPerformanceRecords.length = 0; posPerformanceOpening = null; },
-    export() { return JSON.stringify({ resourceVersion: 64, openings: posPerformanceRecords }, null, 2); }
+    enable() { sessionStorage.setItem('pos-performance', '1'); observePOSInteractionTiming(); },
+    disable() { sessionStorage.removeItem('pos-performance'); finishPOSPerformance('cancelled'); posPerformanceOpening = null; stopPOSInteractionObservation(); },
+    clear() { posPerformanceRecords.length = 0; posPerformanceOpening = null; posInteractionRecords.length = 0; stopPOSInteractionObservation(); observePOSInteractionTiming(); },
+    export() { return JSON.stringify({ resourceVersion: 66, openings: posPerformanceRecords, interactions: posInteractionRecords, eventTimingSupported: posEventTimingSupported }, null, 2); }
 };
+observePOSInteractionTiming();
 function beginPOSPerformance(generation, empresa, started = performance.now()) {
-    let enabled = false;
-    try { enabled = sessionStorage.getItem('pos-performance') === '1'; } catch {}
+    const enabled = isPOSPerformanceEnabled();
     posPerformanceOpening = enabled ? { generation, empresa, started,
         timestamp: new Date().toISOString(), requests: [], renderMs: 0, outcome: 'loading' } : null;
     if (posPerformanceOpening) {
@@ -1593,20 +1662,26 @@ function bindPOSProductDelegation(grid) {
     if (posProductDelegationBound) return;
     posProductDelegationBound = true;
     let pointerCard = null;
-    grid.addEventListener('pointerdown', event => { pointerCard = event.target.closest('.pos-product-card'); });
-    grid.addEventListener('pointercancel', () => { pointerCard = null; });
+    let pointerType = null;
+    grid.addEventListener('pointerdown', event => { pointerCard = event.target.closest('.pos-product-card'); pointerType = event.pointerType; });
+    grid.addEventListener('pointercancel', () => { pointerCard = null; pointerType = null; });
     grid.addEventListener('click', event => {
         const card = event.target.closest('.pos-product-card');
         const allowed = event.detail === 0 || pointerCard === card;
+        const inputType = event.detail === 0 ? null : pointerType;
         pointerCard = null;
+        pointerType = null;
         if (!card || !grid.contains(card) || !allowed || performance.now() < posSearchSuppressProductClickUntil) return;
         const product = posCardProducts.get(card);
-        if (product) addToCart(product, card);
+        if (product) addToCart(product, card, event, inputType);
     });
     grid.addEventListener('keydown', event => {
         const card = event.target.closest('.pos-product-card');
         if (!card || (event.key !== 'Enter' && event.key !== ' ')) return;
-        event.preventDefault(); card.click();
+        event.preventDefault();
+        if (performance.now() < posSearchSuppressProductClickUntil) return;
+        const product = posCardProducts.get(card);
+        if (product) addToCart(product, card, event, 'keyboard');
     });
 }
 
@@ -1713,9 +1788,10 @@ function searchPOSProducts() {
     if (posPerformanceOpening?.outcome === 'loading') posPerformanceOpening.renderMs += performance.now() - start;
 }
 
-function addToCart(product, card = null) {
+function addToCart(product, card = null, event = null, inputType = null) {
     if (posIsReadOnly || orderBusy) return;
     if (!posCatalogReady || orderPriceConflict || orderConflict || orderLoadError || orderCompanyContextError) return;
+    const sample = beginPOSInteraction(event, inputType);
     const precioBase = Number(product.PrecioBaseEfectivo ?? product.PventaMa) || 0;
     const existing = posCart.find(item => (item.precioBase ?? item.precio) === precioBase && JSON.stringify(item.precioOrigen || null) === JSON.stringify(product.precioOrigen || null) && item.codPro === product.CodPro.trim() && !item.enviada && !item.pendienteId && !orderNotes(item) && item.precioManualFinal == null);
     const esAfecto = product.Afecto === 1 || product.Afecto === true;
@@ -1733,8 +1809,12 @@ function addToCart(product, card = null) {
         });
     }
     scheduleAutoSave();
+    if (sample) sample.record.cartMs = performance.now() - sample.started;
+    const feedbackStart = sample ? performance.now() : 0;
     showPOSAddFeedback(product, card);
+    if (sample) sample.record.feedbackMs = performance.now() - feedbackStart;
     retainMobilePOSSearchFocus();
+    finishPOSInteraction(sample);
 }
 
 let cartDelegationBound = false;
@@ -1767,7 +1847,6 @@ function setPOSTotalText(id, amount) {
 }
 
 function updateCartUI() {
-    renderOrderCode();
     const container = document.getElementById('pos-cart-items');
     if (!container) return;
     bindCartDelegation(container);
@@ -1775,10 +1854,12 @@ function updateCartUI() {
     let subtotal = 0;
     let totalIgv = 0;
     let total = 0;
+    let count = 0;
 
     const allocatedAmounts = orderAmounts(posCart, GLOBAL_IGVV_PCT);
     const grouped = new Map();
     posCart.forEach((item, index) => {
+        count += item.cantidad;
         const precioBase = item.precioBase != null ? item.precioBase : item.precio;
         const key = JSON.stringify([item.codPro, precioBase, item.precioOrigen || null, item.precioManualFinal ?? null, item.afecto ? 1 : 0, item.notasRapidas || [], item.nota || '']);
         if (!grouped.has(key)) grouped.set(key, { item, indexes: [], cod: item.lineaId });
@@ -1843,8 +1924,6 @@ function updateCartUI() {
     });
     const codsActuales = new Set(filas.map(f => f.cod));
 
-    const scrollPrevio = container.scrollTop;
-
     filas.forEach((f, position) => {
         let el = previosPorCod[f.cod];
         if (!el) {
@@ -1856,7 +1935,7 @@ function updateCartUI() {
             el.innerHTML = f.html;
         }
         if (el.className !== claseEsperada) el.className = claseEsperada;
-        el.dataset.sig = f.html;
+        if (el.dataset.sig !== f.html) el.dataset.sig = f.html;
         if (container.children[position] !== el) container.insertBefore(el, container.children[position] || null);
     });
 
@@ -1864,18 +1943,24 @@ function updateCartUI() {
         if (!codsActuales.has(cod)) el.remove();
     });
 
-    container.scrollTop = scrollPrevio;
+    // The scroll owner is .pos-cart-scroll-region, not this list. Retaining its
+    // node and disabling scroll anchoring preserves the offset without forcing
+    // synchronous layout on every selection. The browser clamps on deletion.
 
     const cancellations = document.getElementById('order-pending-cancellations');
     if (cancellations) {
-        cancellations.hidden = !orderPendingCancellations.length;
-        cancellations.replaceChildren();
-        if (orderPendingCancellations.length) {
-            const title = document.createElement('strong'); title.textContent = 'Anulaciones pendientes de enviar'; cancellations.appendChild(title);
-            for (const line of orderPendingCancellations) {
-                const row = document.createElement('div');
-                row.textContent = `${fmtCantCocina(line.cantidad)} × ${line.nombre}${orderNotes(line) ? ` · ${orderNotes(line)}` : ''}`;
-                cancellations.appendChild(row);
+        const signature = JSON.stringify(orderPendingCancellations.map(line => [line.cantidad, line.nombre, orderNotes(line)]));
+        if (cancellations.dataset.sig !== signature) {
+            cancellations.dataset.sig = signature;
+            cancellations.hidden = !orderPendingCancellations.length;
+            cancellations.replaceChildren();
+            if (orderPendingCancellations.length) {
+                const title = document.createElement('strong'); title.textContent = 'Anulaciones pendientes de enviar'; cancellations.appendChild(title);
+                for (const line of orderPendingCancellations) {
+                    const row = document.createElement('div');
+                    row.textContent = `${fmtCantCocina(line.cantidad)} × ${line.nombre}${orderNotes(line) ? ` · ${orderNotes(line)}` : ''}`;
+                    cancellations.appendChild(row);
+                }
             }
         }
     }
@@ -1886,7 +1971,7 @@ function updateCartUI() {
     setPOSTotalText('pos-subtotal', subtotal);
     setPOSTotalText('pos-igv', totalIgv);
     setPOSTotalText('pos-total', total);
-    updateCartFab();
+    updateCartFab(count, total);
     renderOrderStatus();
 }
 
@@ -2176,14 +2261,13 @@ document.addEventListener('keydown', event => {
 });
 syncCartSheetAccessibility();
 
-function updateCartFab() {
+function updateCartFab(count, total) {
     const countEl = document.getElementById('pos-cart-fab-count');
     const totalEl = document.getElementById('pos-cart-fab-total');
     if (!countEl || !totalEl) return;
-    const count = posCart.reduce((acc, i) => acc + i.cantidad, 0);
-    const total = redondear2(orderAmounts(posCart, GLOBAL_IGVV_PCT).reduce((acc, amount) => acc + amount, 0));
-    countEl.innerText = count;
-    totalEl.innerText = `S/ ${total.toFixed(2)}`;
+    const countText = String(count), totalText = `S/ ${total.toFixed(2)}`;
+    if (countEl.textContent !== countText) countEl.textContent = countText;
+    if (totalEl.textContent !== totalText) totalEl.textContent = totalText;
 }
 
 // ==========================================

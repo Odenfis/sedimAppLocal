@@ -1,14 +1,18 @@
 let orderCode = '', orderCodeRevision = 0, orderCodeError = '';
+function setOrderUIProperty(element, property, value) {
+    if (element && element[property] !== value) element[property] = value;
+}
 function orderCodeEligible() { return Number(posCurrentTable) >= 201 && Number(posCurrentTable) <= 230; }
 function renderOrderCode() {
     const group = document.getElementById('order-code-group'), input = document.getElementById('order-code');
     if (!group || !input) return;
-    group.hidden = !orderCodeEligible();
+    setOrderUIProperty(group, 'hidden', !orderCodeEligible());
     if (input.value !== orderCode) input.value = orderCode;
-    input.readOnly = posIsReadOnly || orderConflict || Boolean(orderLoadError) || orderCompanyContextError;
-    input.disabled = orderBusy;
-    input.setAttribute('aria-invalid', String(Boolean(orderCodeError)));
-    document.getElementById('order-code-error').textContent = orderCodeError;
+    setOrderUIProperty(input, 'readOnly', posIsReadOnly || orderConflict || Boolean(orderLoadError) || orderCompanyContextError);
+    setOrderUIProperty(input, 'disabled', orderBusy);
+    const invalid = String(Boolean(orderCodeError));
+    if (input.getAttribute('aria-invalid') !== invalid) input.setAttribute('aria-invalid', invalid);
+    setOrderUIProperty(document.getElementById('order-code-error'), 'textContent', orderCodeError);
 }
 function validateOrderCode(required = false) {
     const code = orderCode.trim();
@@ -205,34 +209,36 @@ function renderOrderStatus() {
     const transferButton = document.getElementById('btn-trasladar-mesa');
     if (transferButton) {
         const retry = transferMatches(pendingTransfer());
-        transferButton.hidden = !retry && !diningTable(posCurrentTable);
-        transferButton.disabled = orderBusy || (!retry && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || orderCompanyContextError || posWaiterLoading || !posCart.length));
+        setOrderUIProperty(transferButton, 'hidden', !retry && !diningTable(posCurrentTable));
+        setOrderUIProperty(transferButton, 'disabled', orderBusy || (!retry && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || orderCompanyContextError || posWaiterLoading || !posCart.length)));
     }
     renderOrderCode();
-    document.getElementById('order-review-prices').hidden = !orderPriceConflict;
-    document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => { button.disabled = !manualPriceEditable(); });
+    setOrderUIProperty(document.getElementById('order-review-prices'), 'hidden', !orderPriceConflict);
+    const priceDisabled = !manualPriceEditable();
+    document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => setOrderUIProperty(button, 'disabled', priceDisabled));
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
-    status.textContent = orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado;
+    setOrderUIProperty(status, 'textContent', orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado);
     const msg = document.getElementById('order-save-message');
-    msg.textContent = orderLoadError || orderNavigationMessage || orderSaveError || posWaiterError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation);
+    setOrderUIProperty(msg, 'textContent', orderLoadError || orderNavigationMessage || orderSaveError || posWaiterError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation));
     msg.classList.toggle('is-confirmation', !orderLoadError && !orderNavigationMessage && !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
-    document.getElementById('order-retry-load').hidden = !orderLoadError && !(posWaiterError && !posMozosList.length);
+    setOrderUIProperty(document.getElementById('order-retry-load'), 'hidden', !orderLoadError && !(posWaiterError && !posMozosList.length));
     const retrySave = document.getElementById('order-retry-save');
-    retrySave.hidden = orderPriceConflict || !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage);
-    retrySave.textContent = orderDeleteRetry ? 'Reintentar eliminación' : 'Reintentar guardado';
+    setOrderUIProperty(retrySave, 'hidden', orderPriceConflict || !orderSaveError || orderConflict || Boolean(orderLoadError) || Boolean(orderNavigationMessage));
+    setOrderUIProperty(retrySave, 'textContent', orderDeleteRetry ? 'Reintentar eliminación' : 'Reintentar guardado');
     retrySave.onclick = orderDeleteRetry ? () => deleteCurrentOrder({ ask: false }) : () => guardarMesa();
-    document.getElementById('order-review-conflict').hidden = !orderConflict;
+    setOrderUIProperty(document.getElementById('order-review-conflict'), 'hidden', !orderConflict);
     const print = document.getElementById('order-print-status');
     const labels = { en_cola: 'En cola de impresión', procesando: 'Transmitiendo a impresora', enviado: 'Enviado a impresora', error: 'Error de impresión', incierto: 'Impresión incierta: revise el papel antes de reimprimir' };
-    print.textContent = orderPrintings.map(item => {
+    const printText = orderPrintings.map(item => {
         const name = printDestinationName(item.destino);
         const state = item.estado || item.Estado, error = item.error || item.Error;
         return `${name}: ${labels[state] || state}${error ? ': ' + error : ''}`;
     }).concat(orderTransferNotices.map(j => `Aviso de traslado · ${printDestinationName(j.Destino)}: ${labels[j.Estado] || j.Estado}${!printDestinationEnabled(j.Destino) && j.Estado === 'en_cola' ? ' (impresora deshabilitada)' : ''}`)).join(' · ');
-    document.getElementById('btn-enviar-cocina').disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt);
+    setOrderUIProperty(print, 'textContent', printText);
+    setOrderUIProperty(document.getElementById('btn-enviar-cocina'), 'disabled', Boolean(posIsReadOnly || posWaiterLoading || posWaiterError || orderBusy || orderConflict || orderPriceConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt)));
     const pay = document.querySelector('.btn-pay-now');
-    if (pay) pay.disabled = posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length;
-    document.getElementById('order-envios').disabled = !posCurrentNroTicket || orderBusy;
+    setOrderUIProperty(pay, 'disabled', posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length);
+    setOrderUIProperty(document.getElementById('order-envios'), 'disabled', !posCurrentNroTicket || orderBusy);
 }
 async function orderBeforeOpen() {
     if (orderBusy) return false;

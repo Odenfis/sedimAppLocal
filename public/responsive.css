@@ -771,9 +771,13 @@ button,
 
 .pos-cart-scroll-region {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+    /* Keep the user's pixel offset while retained rows change. Native scrolling
+       clamps it when deletion shortens the list; no per-tap scrollTop flush. */
+    overflow-anchor: none;
 }
 
 .pos-cart-items {

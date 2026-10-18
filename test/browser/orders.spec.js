@@ -2844,3 +2844,206 @@ test('traslado durante apertura sigue la mesa devuelta por el pedido y descarta 
     state.mesa=2;await page.evaluate(()=>openPOSOrder(1,2));
     await expect(page.locator('#pos-current-table')).toHaveText('2');await expect(page.locator('.cart-item')).toHaveCount(1);
 });
+
+// Fase 66: trusted touch events, real scroll owner and opt-in diagnostics.
+const phase66Products = size => Array.from({ length: size }, (_, i) => ({
+    ...product, CodPro: `02${String(i).padStart(5, '0')}`,
+    Nombre: `Arroz ${String(i).padStart(4, '0')}`, Linea: i % 2 ? 'Bebidas' : 'Platos'
+}));
+const phase66Report = page => page.evaluate(() => JSON.parse(posPerformance.export()));
+
+test.describe('Fase 66', () => {
+    test.use({ hasTouch: true });
+    for (const [width, height] of [[390, 844], [844, 390], [768, 1024], [1024, 768]]) {
+        test(`@android @webkit catálogo completo, filtros y toques ${width}x${height}`, async ({ page }, testInfo) => {
+            test.setTimeout(45000);
+            await page.setViewportSize({ width, height });
+            const state = await fixture(page, { products: phase66Products(1000), stubEventSource: true });
+            await page.evaluate(() => {
+                window.catalogMutations = 0;
+                new MutationObserver(records => { catalogMutations += records.length; })
+                    .observe(document.getElementById('pos-products-grid'), { childList: true });
+                posPerformance.enable();
+            });
+            const cards = page.locator('.pos-product-card');
+            for (let i = 0; i < 10; i++) await cards.first().tap();
+            await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 10');
+            expect(await cards.first().evaluate(el => getComputedStyle(el, '::after').opacity)).toBe('1');
+            expect(await page.evaluate(() => catalogMutations)).toBe(0);
+            await cards.nth(1).tap();
+            await cards.last().tap();
+            await expect(cards).toHaveCount(1000);
+            await page.locator('.cat-btn').filter({ hasText: /^Platos$/ }).tap();
+            await expect(cards).toHaveCount(500);
+            await cards.first().tap();
+            await page.locator('#pos-product-search').fill('Arroz 0000');
+            await expect(cards).toHaveCount(1);
+            await cards.first().tap();
+            await page.locator('#pos-search-clear').tap();
+            if (width <= 480) await page.locator('#pos-search-done').tap();
+            await expect(cards).toHaveCount(500);
+            await page.locator('.cat-btn').filter({ hasText: /^Todos$/ }).tap();
+            await expect(cards).toHaveCount(1000);
+            await cards.first().tap();
+            await page.evaluate(() => orderFlush());
+            expect(state.items.reduce((sum, line) => sum + line.cantidad, 0)).toBe(15);
+            await expect(page.locator('#pos-cart-fab-count')).toHaveText('15');
+            await expect(page.locator('#pos-cart-fab-total')).toHaveText('S/ 331.50');
+            await expect(page.locator('#pos-total')).toHaveText('S/ 331.50');
+            const report = await phase66Report(page);
+            expect(report.interactions).toHaveLength(15);
+            expect(report.interactions.every(sample => sample.inputType === 'touch')).toBe(true);
+            expect(report.interactions.some(sample => sample.searchActive && sample.renderedProductCount === 1)).toBe(true);
+            expect(report.interactions.some(sample => sample.categoryActive && sample.renderedProductCount === 500)).toBe(true);
+            expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+            await page.screenshot({ path: testInfo.outputPath('catalog.png'), animations: 'disabled' });
+            await page.locator('#pos-cart-fab').tap();
+            await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+            await page.screenshot({ path: testInfo.outputPath('detail.png'), animations: 'disabled' });
+        });
+    }
+
+    test('@webkit diagnóstico privado, límites, apagado y recarga', async ({ page }) => {
+        await fixture(page, { products: phase66Products(10) });
+        await page.locator('.pos-product-card').first().tap();
+        expect((await phase66Report(page)).interactions).toEqual([]);
+        await page.evaluate(() => posPerformance.enable());
+        await page.locator('.pos-product-card').first().focus();
+        await page.keyboard.press('Enter');
+        await page.keyboard.press('Space');
+        await expect.poll(async () => (await phase66Report(page)).interactions.filter(i => i.twoFrameApproxMs !== null).length).toBe(2);
+        let report = await phase66Report(page);
+        expect(report.resourceVersion).toBe(66);
+        expect(report.interactions.every(i => i.inputType === 'keyboard' && i.eventName === 'keydown' && i.cartMs >= 0 && i.feedbackMs >= 0 && i.eventQueueMs >= 0)).toBe(true);
+        expect(JSON.stringify(report)).not.toMatch(/Arroz|CodPro|precio|nombre|ticket|\/api\//i);
+        await page.evaluate(() => {
+            posPerformance.clear();
+            for (let i = 0; i < 205; i++) addToCart(posProducts[0]);
+            posPerformance.disable();
+        });
+        report = await phase66Report(page);
+        expect(report.interactions).toHaveLength(200);
+        const frozen = JSON.stringify(report);
+        await page.evaluate(async () => {
+            addToCart(posProducts[0]);
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        expect(JSON.stringify(await phase66Report(page))).toBe(frozen);
+        await page.evaluate(() => { posPerformance.enable(); addToCart(posProducts[0]); posPerformance.clear(); });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        expect((await phase66Report(page)).interactions).toEqual([]);
+        await page.evaluate(() => orderFlush());
+        await page.reload();
+        expect(await page.evaluate(() => sessionStorage.getItem('pos-performance'))).toBe('1');
+        expect((await phase66Report(page)).interactions).toEqual([]);
+    });
+
+    test('@webkit sin Event Timing, movimiento reducido y gestos cancelados', async ({ page }) => {
+        await page.addInitScript(() => { window.PerformanceObserver = undefined; });
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        const state = await fixture(page);
+        await page.evaluate(() => posPerformance.enable());
+        await page.locator('.pos-product-card').tap();
+        await expect.poll(async () => (await phase66Report(page)).interactions[0]?.twoFrameApproxMs).toBeGreaterThan(0);
+        expect((await phase66Report(page)).eventTimingSupported).toBe(false);
+        expect((await phase66Report(page)).interactions[0].eventTiming).toBeNull();
+        expect(await page.locator('.pos-product-card').evaluate(el => getComputedStyle(el, '::after').opacity)).toBe('1');
+        await page.evaluate(() => {
+            const card = document.querySelector('.pos-product-card');
+            card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+            card.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+            card.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+            posIsReadOnly = true;
+            addToCart(posProducts[0], card);
+            posIsReadOnly = false;
+        });
+        expect((await phase66Report(page)).interactions).toHaveLength(1);
+        await page.evaluate(() => orderFlush());
+        expect(state.items[0].cantidad).toBe(1);
+    });
+
+    test('@webkit selección inmediata con guardado lento y fallo de red', async ({ page }) => {
+        const state = await fixture(page, { products: phase66Products(1000), stubEventSource: true });
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        await page.route('**/api/pos/pedido', async route => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            await gate;
+            await route.abort('failed');
+        });
+        await page.locator('.pos-product-card').first().tap();
+        await page.evaluate(() => { window.slowSave = orderFlush().catch(() => {}); });
+        for (let i = 0; i < 4; i++) await page.locator('.pos-product-card').first().tap();
+        await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 5');
+        await expect(page.locator('#pos-total')).toHaveText('S/ 110.50');
+        expect(state.saves).toBe(0);
+        release();
+        await page.evaluate(() => window.slowSave);
+        await expect(page.locator('#order-save-message')).not.toBeEmpty();
+        await expect(page.locator('.cart-item-details')).toHaveText('S/ 22.10 x 5');
+        await page.unroute('**/api/pos/pedido');
+        await page.evaluate(() => orderFlush());
+        expect(state.items[0].cantidad).toBe(5);
+    });
+
+    test('@webkit detalle extenso conserva desplazamiento real durante selección y SSE', async ({ page }) => {
+        await page.setViewportSize({ width: 768, height: 1024 });
+        const state = await fixture(page, { products: phase66Products(1000), stubEventSource: true });
+        await page.evaluate(async () => { for (let i = 0; i < 30; i++) addToCart(posProducts[i]); await orderFlush(); });
+        await page.locator('#pos-cart-fab').tap();
+        const scroller = page.locator('.pos-cart-scroll-region');
+        await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+        await scroller.evaluate(el => { el.scrollTop = 500; });
+        await expect.poll(() => scroller.evaluate(el => el.scrollTop)).toBe(500);
+        await page.evaluate(async () => { addToCart(posProducts[29]); await orderFlush(); });
+        expect(await scroller.evaluate(el => el.scrollTop)).toBe(500);
+        state.orderLoadDelay = 300;
+        const loads = state.orderLoads;
+        await page.evaluate(() => handleSSEEvent({ type: 'mesa_updated', empresa: 2, numero: 1, version: orderVersion + 1, operacionId: 'phase66-external' }));
+        await expect.poll(() => state.orderLoads).toBe(loads + 1);
+        await scroller.evaluate(el => { el.scrollTop = 650; });
+        await expect(page.locator('#pos-mojo-name')).toHaveText('José');
+        expect(await scroller.evaluate(el => el.scrollTop)).toBe(650);
+        await expect(page.locator('#pos-order-sidebar')).toHaveClass(/open/);
+        await page.locator('#pos-cart-close').tap();
+        await expect(page.locator('.pos-product-card')).toHaveCount(1000);
+        expect(state.items.reduce((sum, line) => sum + line.cantidad, 0)).toBe(31);
+    });
+
+    test('Event Timing nativo separa cola, procesamiento y presentación', async ({ page }) => {
+        await fixture(page);
+        await page.evaluate(() => {
+            posPerformance.enable();
+            document.getElementById('pos-products-grid').addEventListener('click', () => {
+                const start = performance.now();
+                while (performance.now() - start < 40) { /* deliberately slow event for Event Timing */ }
+            }, { capture: true, once: true });
+        });
+        await page.locator('.pos-product-card').tap();
+        await expect.poll(async () => (await phase66Report(page)).interactions[0]?.eventTiming).toEqual(expect.objectContaining({ processingMs: expect.any(Number) }));
+        const timing = (await phase66Report(page)).interactions[0].eventTiming;
+        expect(timing.processingMs).toBeGreaterThanOrEqual(40);
+        expect(timing.inputDelayMs).toBeGreaterThanOrEqual(0);
+        expect(timing.presentationDelayMs).toBeGreaterThanOrEqual(0);
+    });
+
+    test('1000 productos con CPU 6×: toques y persistencia', async ({ page }) => {
+        test.setTimeout(60000);
+        await page.setViewportSize({ width: 768, height: 1024 });
+        const session = await page.context().newCDPSession(page);
+        await session.send('Emulation.setCPUThrottlingRate', { rate: 6 });
+        try {
+            const state = await fixture(page, { products: phase66Products(1000), stubEventSource: true });
+            await page.evaluate(() => posPerformance.enable());
+            for (let i = 0; i < 20; i++) await page.locator('.pos-product-card').nth(i % 4).tap();
+            await expect.poll(async () => (await phase66Report(page)).interactions.filter(i => i.twoFrameApproxMs !== null).length).toBe(20);
+            const timings = (await phase66Report(page)).interactions.map(i => i.twoFrameApproxMs).sort((a, b) => a - b);
+            console.log('POS_PHASE66_TOUCH', JSON.stringify({ samples: timings.length, twoFrameP95: timings[18], max: timings[19] }));
+            // This is a local regression budget, not physical-device acceptance.
+            expect(timings[18]).toBeLessThan(200);
+            await page.evaluate(() => orderFlush());
+            expect(state.items.map(line => line.cantidad)).toEqual([5, 5, 5, 5]);
+            await expect(page.locator('#pos-total')).toHaveText('S/ 442.00');
+        } finally { await session.send('Emulation.setCPUThrottlingRate', { rate: 1 }); }
+    });
+});
