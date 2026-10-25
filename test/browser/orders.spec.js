@@ -398,6 +398,53 @@ test('servidor inaccesible con Wi-Fi conectado usa preparación y conserva inten
     expect(state.saves).toBe(0); expect(state.sends).toBe(0);
 });
 
+test('sin preparación offline, una mesa abre normalmente cuando el servidor responde', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('#pos-products-grid')).toContainText('Arroz');
+    expect(state.orderLoads).toBe(1);
+    await expect(page.locator('#load-notice-offline-table')).toHaveCount(0);
+});
+
+test('sin preparación ni SQL, muestra aviso en pantalla y permite reintentar', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    state.orderLoadError = true;
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('#order-save-message')).toContainText('No se pudo cargar el pedido');
+    await expect(page.locator('#order-retry-load')).toBeVisible();
+    expect(state.saves).toBe(0);
+    state.orderLoadError = false;
+    await page.locator('#order-retry-load').click();
+    await expect(page.locator('#pos-products-grid')).toContainText('Arroz');
+});
+
+test('sin preparación, reconcilia el borrador local antes de reabrir la mesa', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('[data-table-number="1"]').click();
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.locator('#pos-order-back').click();
+    await page.context().setOffline(false);
+    await page.locator('[data-table-number="1"]').click();
+    await expect.poll(() => state.saves).toBe(1);
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    await expect(page.locator('#load-notice-offline-table')).toHaveCount(0);
+});
+
+test('un código sin productos no crea un ticket durante la sincronización', async ({ page }) => {
+    const state = await fixture(page, { openTable: false,
+        tables: [{ Numero: 201, Empresa: 2, Ambiente: 1, Estado: 1 }] });
+    await page.locator('#offline-prepare-button').click();
+    await page.locator('[data-table-number="201"]').click();
+    await page.locator('#order-code').fill('REF-201');
+    await page.evaluate(() => orderSyncQueued());
+    expect(state.saves).toBe(0);
+    const draft = await page.evaluate(() => offlineOrders.get(2, 201));
+    expect(draft.snapshot.code).toBe('REF-201');
+    expect(draft.pending).toBeFalsy();
+});
+
 test('mesas 220 y 230 de Empresa 2 exigen elegir PEDIDOS YA o RAPPI', async ({ page }) => {
     for (const [mesa, employee] of [[220, 195], [230, 203]]) {
         const state = await fixture(page, { openTable: false, employeeScope: true,
@@ -2879,6 +2926,7 @@ for (const width of [360, 390, 768, 1024, 1280]) test(`Fase 65 traslado con ambi
     expect(layout.minButton).toBeGreaterThanOrEqual(48);
     for (const theme of ['light', 'dark']) {
         await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+        await page.mouse.move(0, 0);
         await list.evaluate(el => el.scrollTop = 0);
         await dialog.screenshot({path:testInfo.outputPath(`transfer-${width}-${theme}.png`), animations:'disabled'});
         await expect(list.locator('button').first()).toHaveCSS('color', theme === 'dark' ? 'rgb(249, 250, 251)' : 'rgb(31, 41, 55)');

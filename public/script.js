@@ -859,7 +859,7 @@ async function prepareOfflineShift() {
             if (!response.ok) throw new Error(`No se pudieron leer las mesas de ${option.textContent}`);
             await offlineOrders.prepare(option.value, await response.json());
         }
-        label.textContent = 'Tres empresas preparadas para uso sin conexión en este dispositivo.';
+        label.textContent = 'Tres empresas preparadas en este dispositivo. Las mesas ocupadas deben abrirse con conexión antes de usarlas offline.';
     } catch (error) { label.textContent = `Preparación incompleta: ${error.message}`; }
     finally { button.disabled = false; renderOfflinePreparation(label.textContent); }
 }
@@ -1107,13 +1107,26 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
         setLoadNotice('tables', tableGrid, 'La mesa no corresponde a la empresa seleccionada. Actualice el mapa antes de continuar.', () => loadPOSTables());
         return;
     }
-    if (!navigator.onLine) return openOfflinePOSOrder(tableNum, selectedCompany);
     const localDraft = await offlineOrders.get(selectedCompany, tableNum).catch(() => null);
     if (localDraft?.dirty || localDraft?.pending || localDraft?.send) {
-        await openOfflinePOSOrder(tableNum, selectedCompany);
-        orderSyncQueued().catch(() => {});
-        return;
+        const prepared = await offlineOrders.prepared(selectedCompany).catch(() => null);
+        if (prepared) {
+            await openOfflinePOSOrder(tableNum, selectedCompany);
+            orderSyncQueued().catch(() => {});
+            return;
+        }
+        // Preserve the draft while attempting its normal, idempotent reconciliation.
+        // A missing preparation must not prevent opening a table when SQL is reachable.
+        await orderSyncQueued().catch(() => {});
+        const remaining = await offlineOrders.get(selectedCompany, tableNum).catch(() => localDraft);
+        if (remaining?.dirty || remaining?.pending || remaining?.send) {
+            setLoadNotice('offline-table', tableGrid,
+                `La mesa ${tableNum} conserva cambios locales que necesitan revisión. Conéctese para sincronizarlos; no se abrirá otro pedido encima.`,
+                () => openPOSOrder(tableNum, selectedCompany));
+            return;
+        }
     }
+    setLoadNotice('offline-table', tableGrid, '');
     if (!await orderBeforeOpen()) return;
     preserveUI = preserveUI && Number(posCurrentTable) === Number(tableNum) && posCurrentTableEmpresa === selectedCompany && isViewVisible('view-pos-order');
     const refreshCatalog = !preserveUI || posIsReadOnly || !posCatalogReady;
@@ -1155,6 +1168,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
     
     const empresa = selectedCompany;
     if (empresa) {
+        let loadTimedOut = false;
+        const loadTimeout = setTimeout(() => { loadTimedOut = true; controller.abort(); }, 8000);
         try {
             const [employeesLoaded, { response: res, data }] = await Promise.all([
                 loadMozos(empresa, tableNum, generation, controller.signal),
@@ -1202,7 +1217,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
                 orderCacheServerSnapshot(data, empresa, tableNum).catch(() => {});
             }
         } catch (e) {
-            if (e.name === 'AbortError' || generation !== posOrderLoadGeneration) return;
+            if ((e.name === 'AbortError' && !loadTimedOut) || generation !== posOrderLoadGeneration) return;
+            if (loadTimedOut) e = new Error('Sin respuesta del servidor en 8 segundos. Reintente la apertura de la mesa.');
             if (!e.status || e.status >= 500) {
                 const prepared = await offlineOrders.prepared(empresa).catch(() => null);
                 if (prepared) { controller.abort(); return openOfflinePOSOrder(tableNum, empresa); }
@@ -1213,6 +1229,8 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
             updatePOSViewMode();
             finishPOSPerformance('error');
             controller.abort();
+        } finally {
+            clearTimeout(loadTimeout);
         }
     } else {
         posIsReadOnly = false;

@@ -148,7 +148,7 @@ app.get('/api/users', async (req, res) => {
             request.input('q', sql.NVarChar, q);
         }
         query += " ORDER BY Usuario";
-        const result = await requestContext.measureSql(() => request.query(query));
+        const result = await requestContext.measureSql(() => request.query(query), 'users_list');
         res.json(result.recordset);
     } catch (error) {
         internalError(res, error, 'Listar usuarios');
@@ -209,7 +209,7 @@ app.get('/api/pos/tables', isAuthenticated, async (req, res) => {
             request.input('empresa', sql.Int, normalized.empresa);
         }
         query += " ORDER BY Numero";
-        const result = await requestContext.measureSql(() => request.query(query));
+        const result = await requestContext.measureSql(() => request.query(query), 'pos_tables');
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar mesas', req); }
 });
@@ -285,7 +285,7 @@ app.get('/api/pos/mozos', isAuthenticated, async (req, res) => {
             FROM Empleados 
             WHERE ${employeeEligibilitySql(company, mesa)}
             ORDER BY Nombre, Codemp
-        `));
+        `), 'pos_mozos');
 
         res.json(result.recordset);
     } catch (e) { internalError(res, e, 'Listar mozos', req); }
@@ -324,7 +324,7 @@ app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
         if (empresa) {
             request.input('empresa', sql.VarChar, empresa);
         }
-        const result = await requestContext.measureSql(() => request.query(query));
+        const result = await requestContext.measureSql(() => request.query(query), 'pos_categories');
         res.json(result.recordset.map(r => r.Descripcion));
     } catch (e) { internalError(res, e, 'Listar categorías'); }
 });
@@ -332,7 +332,7 @@ app.get('/api/pos/categories', isAuthenticated, async (req, res) => {
 app.get('/api/pos/config', isAuthenticated, async (req, res) => {
     try {
         const pool = await getConnection();
-        const result = await requestContext.measureSql(() => pool.request().query(`SELECT c_valor, n_valor FROM Valores WHERE c_valor IN ('Igv', 'Igvv')`));
+        const result = await requestContext.measureSql(() => pool.request().query(`SELECT c_valor, n_valor FROM Valores WHERE c_valor IN ('Igv', 'Igvv')`), 'pos_config');
         const config = {};
         result.recordset.forEach(r => {
             config[r.c_valor.trim().toLowerCase()] = r.n_valor;
@@ -356,7 +356,7 @@ app.get('/api/pos/products', isAuthenticated, async (req, res) => {
         if (linea) {
             request.input('linea', sql.VarChar, linea);
         }
-        const result = await requestContext.measureSql(() => request.query(query));
+        const result = await requestContext.measureSql(() => request.query(query), 'pos_products');
         res.set('Cache-Control', 'no-store');
         res.json(result.recordset.map(p => ({ ...p, ...holidayPrices.resolvePrice(p, priceConfig) })));
     } catch (e) { internalError(res, e, 'Listar productos'); }

@@ -1788,3 +1788,14 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - `style.css` pasa a versión 70; `responsive.css` y scripts mantienen sus versiones. Las pruebas focalizadas de navegador aprobaron 7/7 casos en escritorio, Chrome móvil y WebKit tablet, con horizontal/vertical, altura reducida, escritorio normal/colapsado y regresiones cercanas de navegación. `npm run check` y `git diff --check` también pasaron. Pendiente comprobar Safari en iPad real, ambas orientaciones y temas, durante la instalación; no se declara desplegada.
 
 ---
+
+## Fase 71: Recuperación de apertura y diagnóstico del incidente (Implementada en código; causa SQL y piloto pendientes)
+
+- El registro recibido del turno afectado muestra timeouts SQL y dos interbloqueos; `/api/session` respondió mayormente, mientras consultas de pedidos, mesas y precios fallaron. La falta de «Preparar offline» explica el bloqueo de respaldo en los dispositivos, pero no esos errores del servidor. No se atribuye la causa a Wi-Fi sin medirla.
+- Al abrir una mesa se intenta la lectura del servidor con límite de ocho segundos aunque el navegador informe ausencia de red. Si falta preparación local y hay cambios pendientes, se intenta reconciliar la cola idempotente; si sigue pendiente, se conserva el borrador y se impide abrir otro pedido encima. La falta de datos offline se explica en un aviso de pantalla con reintento, sin alerta nativa repetida.
+- El mapa muestra el estado de preparación de la empresa y advierte cuántas mesas ocupadas aún requieren una apertura con conexión en ese dispositivo. Un código de pedido sin productos permanece como borrador local y no genera un ticket vacío al sincronizar.
+- Los registros `slow_sql` añaden un identificador de consulta sin parámetros ni contenido comercial para pedidos y precios, y nombres de operación para otras lecturas POS. Se mantienen los tiempos y referencias existentes; no se cambian pool, timeout SQL, esquema ni transacciones.
+- Verificación local: `npm run check`, `git diff --check`, 79/79 pruebas unitarias y 161/163 pruebas de interfaz de pedidos en la primera suite completa. Los dos casos visuales fallaron porque el cursor quedó sobre el botón inspeccionado; tras estabilizarlo, ambos pasaron. Los seis casos focalizados de apertura, offline y conflictos y el caso adicional de reconciliación sin preparación también pasaron. La suite completa aún no se ha repetido tras estabilizar la prueba.
+- Pendiente en producción: confirmar versión instalada y conservar respaldo, recoger registros con marca de tiempo y `X-Request-Id`, identificar la consulta lenta, esperas/bloqueos y recursos de SQL Server en el equipo Windows, aplicar una corrección dirigida y repetir el piloto en una tablet con Cocina. Esta fase no se declara instalada ni resuelta en producción.
+
+---

@@ -40,8 +40,13 @@ function renderOfflinePreparation(message = '') {
     const button = document.getElementById('offline-prepare-button');
     const empresa = document.getElementById('pos-empresa-select')?.value;
     if (!label || !empresa) return;
-    offlineOrders.prepared(empresa).then(data => {
-        label.textContent = message || (data ? `Preparado para uso sin conexión · ${new Date(data.at).toLocaleString('es-PE')}` : 'Sin preparación offline para esta empresa');
+    Promise.all([offlineOrders.prepared(empresa), offlineOrders.list()]).then(([data, drafts]) => {
+        const occupiedWithoutOrder = data?.tables.filter(table => [2, 3, 4, 5, 6].includes(Number(table.Estado)) &&
+            !drafts.some(draft => Number(draft.empresa) === Number(empresa) && Number(draft.mesa) === Number(table.Numero) &&
+                (draft.server || draft.snapshot))).length || 0;
+        const readiness = data ? `Preparado el ${new Date(data.at).toLocaleString('es-PE')}${occupiedWithoutOrder ? ` · ${occupiedWithoutOrder} mesas ocupadas requieren abrirse con conexión en este dispositivo` : ''}`
+            : 'Sin preparación offline para esta empresa en este dispositivo';
+        label.textContent = message || readiness;
         if (button && !button.disabled) {
             button.textContent = data ? `Offline · ${new Date(data.at).toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'Preparar offline';
             button.title = label.textContent;
@@ -87,8 +92,13 @@ async function openOfflinePOSOrder(mesa, empresa) {
     const draft = await offlineOrders.get(empresa, mesa).catch(() => null);
     const table = prepared?.tables.find(row => Number(row.Numero) === Number(mesa));
     if (!prepared || !table || ([2, 3, 4, 5, 6].includes(Number(table.Estado)) && !draft?.server && !draft?.snapshot)) {
-        alert('Esta mesa no tiene datos suficientes en este dispositivo. Conéctese para prepararla o abrir su pedido.'); return;
+        const grid = document.getElementById('pos-tables-grid');
+        setLoadNotice('offline-table', grid,
+            `La mesa ${mesa} no tiene datos suficientes para abrirse sin el servidor en este dispositivo. Reintente la conexión o use «Preparar offline» antes del turno.`,
+            () => openPOSOrder(mesa, empresa));
+        return false;
     }
+    setLoadNotice('offline-table', document.getElementById('pos-tables-grid'), '');
     if (!await orderBeforeOpen()) return;
     cancelPOSOrderLoad(); orderReset();
     posCurrentTable = mesa; posCurrentTableEmpresa = empresa; posCurrentNroTicket = draft?.snapshot?.nroTicket || draft?.server?.pedido?.NroTicket || null;
@@ -120,6 +130,7 @@ async function openOfflinePOSOrder(mesa, empresa) {
     if (draft?.status === 'blocked') { orderConflict = true; orderSaveError = `${draft.error || 'Conflicto de sincronización'}. El borrador local se conserva para revisión.`; }
     else if (draft?.status === 'uncertain') orderSaveError = 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.';
     renderPOSCategories(prepared.categories); searchPOSProducts(); updateCartUI(); updatePOSViewMode(); renderOrderStatus();
+    return true;
 }
 async function orderSyncQueued() {
     if (!navigator.onLine || !offlineOrders.userName()) return;
@@ -163,6 +174,9 @@ async function orderSyncOne(draft) {
     let pending = latest.pending;
     if (!pending && latest.dirty) {
         const snapshot = latest.snapshot;
+        if (!snapshot) return;
+        // A code-only draft has no commercial order to create yet. Keep it locally.
+        if (!snapshot.nroTicket && !latest.server?.pedido?.NroTicket && !snapshot.cart?.length) return;
         const current = await orderRequest(`/api/pos/pedido?mesa=${latest.mesa}&empresa=${latest.empresa}`);
         const expectedNro = snapshot.nroTicket || latest.server?.pedido?.NroTicket || null;
         if ((current.pedido?.NroTicket || null) !== expectedNro ||
@@ -384,7 +398,14 @@ async function orderFlush() {
     if (transferMatches(pendingTransfer())) throw new Error('Confirme el traslado pendiente antes de guardar.');
     if (orderPriceConflict) throw new Error('Revise los precios actualizados antes de guardar. Su borrador se conserva.');
     if (orderConflict) throw new Error('Revise la versión actual antes de guardar. Su borrador se conserva.');
-    if (!posCurrentNroTicket && !posCart.length) { orderDirty = false; return; }
+    if (!posCurrentNroTicket && !posCart.length) {
+        orderDirty = false;
+        if (queuedDraft?.dirty && !queuedDraft.pending && !queuedDraft.send) {
+            queuedDraft.dirty = false;
+            await offlineOrders.put(queuedDraft);
+        }
+        return;
+    }
     if (!orderDirty || posIsReadOnly) return;
     if (!validateOrderCode()) throw new Error(orderCodeError);
     let generation = orderGeneration;
