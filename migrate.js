@@ -16,7 +16,7 @@ function validateMigration(source, file) {
     const writes = [...stripped.matchAll(/\bINSERT\s+(?:INTO\s+)?(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi), ...stripped.matchAll(/\bCREATE\s+INDEX\s+\[?[A-Za-z0-9_]+\]?\s+ON\s+(?:dbo\.)?\[?([A-Za-z0-9_]+)\]?/gi)];
     for (const match of writes) {
         const table = match[1].toLowerCase();
-        if (!['pedido_traslados','pedido_control','pedido_lineas','pedido_residuos_archivo','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','impresion_linea_rutas','impresion_linea_destinos','impresion_trabajo_destinos','impresion_barra_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','web_sessions','precios_feriado_config','precios_feriado_historial','migrations'].includes(table)) {
+        if (!['pedido_guardados','pedido_traslados','pedido_control','pedido_lineas','pedido_residuos_archivo','cocina_envios','cocina_envio_detalles','cocina_estados','impresion_trabajos','impresion_linea_rutas','impresion_linea_destinos','impresion_trabajo_destinos','impresion_barra_trabajos','cocina_pedidos_legacy','cocina_pedidos','cierres_turno','cierre_turno_archivos','cierre_turno_operaciones','web_sessions','precios_feriado_config','precios_feriado_historial','migrations'].includes(table)) {
             throw new Error(`Migración ${file} intenta escribir o indexar una tabla no autorizada: ${table}`);
         }
     }

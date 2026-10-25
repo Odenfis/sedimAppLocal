@@ -150,6 +150,22 @@ async function main() {
             await call('delete','/api/pos/comanda/:nro',{version:bulkSent.version,clave:randomUUID()},{nro:bulkSaved.nroTicket},{empresa:2});
         }
         passed++; console.log('✓ batch save and send preserve 10-line and 30-line orders');
+        const saveKey = randomUUID();
+        const recoverBody = { empresa: 2, mesa: 5, mozo: 1, turno: 1, items: [{ ...base, lineaId: randomUUID() }], clave: saveKey };
+        const firstSave = await call('post','/api/pos/pedido', recoverBody);
+        assert.equal(firstSave.status, 200, JSON.stringify(firstSave));
+        const replaySave = await call('post','/api/pos/pedido', recoverBody);
+        assert.equal(replaySave.status, 200, JSON.stringify(replaySave));
+        assert.equal(replaySave.nroTicket, firstSave.nroTicket);
+        assert.equal(replaySave.version, firstSave.version);
+        const reused = await call('post','/api/pos/pedido', { ...recoverBody, items: [{ ...base, lineaId: randomUUID() }] });
+        assert.equal(reused.status, 409); assert.equal(reused.errorCode, 'SAVE_KEY_REUSED');
+        assert.equal((await pool.request().input('clave', saveKey).query('SELECT COUNT(*) n FROM Pedido_guardados WHERE Clave=@clave')).recordset[0].n, 1);
+        assert.equal((await get(5)).nroTicket, firstSave.nroTicket);
+        await call('delete','/api/pos/comanda/:nro', { version: firstSave.version, clave: randomUUID() }, { nro: firstSave.nroTicket }, { empresa: 2 });
+        const staleDraft = await call('post','/api/pos/pedido', { ...recoverBody, clave: randomUUID(), fechaNegocio: '1900-01-01' });
+        assert.equal(staleDraft.status, 409); assert.equal(staleDraft.errorCode, 'ORDER_BUSINESS_DATE_CHANGED');
+        passed++; console.log('✓ save replay recovers one ticket and rejects key reuse with different content');
         passed++; console.log('✓ duplicate send is idempotent; new commercial rows store final unit Precio and extended Importe');
         const previousBarEnabled = process.env.BAR_PRINTER_ENABLED, previousBarHost = process.env.BAR_PRINTER_HOST;
         try {
@@ -894,7 +910,7 @@ async function main() {
         if (suitePrinterHost === undefined) delete process.env.PRINTER_HOST; else process.env.PRINTER_HOST = suitePrinterHost;
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Pedido_traslados','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Pedido_guardados','Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Pedido_traslados','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();

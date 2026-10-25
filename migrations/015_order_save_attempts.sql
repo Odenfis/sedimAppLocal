@@ -1,0 +1,10 @@
+IF OBJECT_ID('dbo.Pedido_guardados', 'U') IS NULL
+CREATE TABLE dbo.Pedido_guardados (
+    Clave UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+    Empresa INT NOT NULL,
+    Usuario NVARCHAR(100) NOT NULL,
+    SolicitudHash CHAR(64) NOT NULL,
+    NroTicket VARCHAR(30) NOT NULL,
+    Respuesta NVARCHAR(MAX) NOT NULL,
+    Fecha DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);

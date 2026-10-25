@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=67">
+    <link rel="stylesheet" href="style.css?v=70">
     <link rel="stylesheet" href="responsive.css?v=66">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -83,7 +83,13 @@
             <div id="view-pos-tables" class="view-section">
                 <header>
                     <h1>Mapa de Mesas</h1>
+                    <small id="offline-preparation-status" class="offline-status-announcement" role="status"></small>
+                    <button id="offline-prepare-button" class="offline-prepare-button" type="button" onclick="prepareOfflineShift()">Preparar offline</button>
                 </header>
+                <div class="pos-connectivity" data-connectivity-indicator data-state="checking" role="status" aria-live="polite">
+                    <span class="pos-connectivity-state">Verificando conexión</span>
+                    <span class="pos-connectivity-pending">Mesas pendientes: 0</span>
+                </div>
 
                 <div class="pos-tables-container">
                     <div class="pos-area-filters">
@@ -137,6 +143,10 @@
 
             <!-- VISTA: POS TOMA DE PEDIDO -->
             <div id="view-pos-order" class="view-section" style="display:none;">
+                <div class="pos-connectivity" data-connectivity-indicator data-state="checking" role="status" aria-live="polite">
+                    <span class="pos-connectivity-state">Verificando conexión</span>
+                    <span class="pos-connectivity-pending">Mesas pendientes: 0</span>
+                </div>
                 <div class="pos-order-layout">
                     <div class="pos-order-main">
                         <header class="pos-order-header">
@@ -452,8 +462,10 @@
     <dialog id="holiday-review-dialog" class="order-dialog" aria-labelledby="holiday-review-title"><h2 id="holiday-review-title">La tarifa cambió</h2><p>Revise los precios de las líneas nuevas. Las líneas guardadas y los ajustes manuales conservan sus importes.</p><ul id="holiday-review-list"></ul><div class="order-dialog-actions"><button onclick="document.getElementById('holiday-review-dialog').close()">Conservar borrador</button><button onclick="acceptHolidayPrices()">Aceptar precios y guardar</button></div></dialog>
     <script src="holiday-prices.js?v=61"></script>
     <script src="order-math.js?v=59"></script>
-    <script src="orders-ui.js?v=66"></script>
-    <script src="script.js?v=66"></script>
+    <script src="offline-orders.js?v=69"></script>
+    <script src="connectivity.js?v=69"></script>
+    <script src="orders-ui.js?v=69"></script>
+    <script src="script.js?v=69"></script>
 </body>
 
 </html>

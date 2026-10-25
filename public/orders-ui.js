@@ -34,6 +34,179 @@ let orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPen
 let orderCommercialConflict = false;
 let orderCompanyContextError = false;
 let orderDeleteRetry = false;
+let orderOfflinePending = false, orderOfflineDurable = false, orderSnapshotPromise = Promise.resolve();
+function renderOfflinePreparation(message = '') {
+    const label = document.getElementById('offline-preparation-status');
+    const button = document.getElementById('offline-prepare-button');
+    const empresa = document.getElementById('pos-empresa-select')?.value;
+    if (!label || !empresa) return;
+    offlineOrders.prepared(empresa).then(data => {
+        label.textContent = message || (data ? `Preparado para uso sin conexión · ${new Date(data.at).toLocaleString('es-PE')}` : 'Sin preparación offline para esta empresa');
+        if (button && !button.disabled) {
+            button.textContent = data ? `Offline · ${new Date(data.at).toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'Preparar offline';
+            button.title = label.textContent;
+        }
+    }).catch(() => { label.textContent = 'Almacenamiento local no disponible'; });
+}
+async function orderCacheServerSnapshot(data, empresa, mesa) {
+    const old = await offlineOrders.get(empresa, mesa);
+    if (old?.dirty || old?.send || old?.pending) return;
+    await offlineOrders.put({ empresa: Number(empresa), mesa: Number(mesa), server: data,
+        fechaNegocio: data.pedido?.FechaNegocio || null, snapshot: null,
+        dirty: false, send: false, status: 'confirmed', at: Date.now() });
+}
+function orderLocalSnapshot() {
+    return { cart: JSON.parse(JSON.stringify(posCart)), nroTicket: posCurrentNroTicket, version: orderVersion,
+        mozo: document.getElementById('pos-mojo-select')?.value || null, code: orderCode,
+        turno: getTurnoValue(posCurrentTableEmpresa, posCurrentTurnoLabel),
+        fechaNegocio: new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) };
+}
+function orderPersistSnapshot(send = false) {
+    const empresa = Number(posCurrentTableEmpresa), mesa = Number(posCurrentTable);
+    if (!empresa || !mesa || !offlineOrders.userName()) return Promise.resolve();
+    const snapshot = orderLocalSnapshot(), revision = orderGeneration;
+    orderSnapshotPromise = orderSnapshotPromise.catch(() => {}).then(async () => {
+        const old = await offlineOrders.get(empresa, mesa) || { empresa, mesa };
+        old.fechaNegocio ||= snapshot.fechaNegocio;
+        snapshot.fechaNegocio = old.fechaNegocio;
+        old.snapshot = snapshot; old.revision = revision; old.dirty = old.dirty || orderDirty;
+        old.send = old.send || send;
+        old.status = navigator.onLine ? 'local' : 'offline'; old.at = Date.now();
+        await offlineOrders.put(old);
+        orderOfflineDurable = true;
+        orderOfflinePending = !navigator.onLine || old.send || Boolean(old.pending);
+        renderOrderStatus();
+    }).catch(error => {
+        orderOfflineDurable = false; orderSaveError = `No se pudo guardar en este dispositivo: ${error.message}`; renderOrderStatus();
+        throw error;
+    });
+    return orderSnapshotPromise;
+}
+async function openOfflinePOSOrder(mesa, empresa) {
+    const prepared = await offlineOrders.prepared(empresa).catch(() => null);
+    const draft = await offlineOrders.get(empresa, mesa).catch(() => null);
+    const table = prepared?.tables.find(row => Number(row.Numero) === Number(mesa));
+    if (!prepared || !table || ([2, 3, 4, 5, 6].includes(Number(table.Estado)) && !draft?.server && !draft?.snapshot)) {
+        alert('Esta mesa no tiene datos suficientes en este dispositivo. Conéctese para prepararla o abrir su pedido.'); return;
+    }
+    if (!await orderBeforeOpen()) return;
+    cancelPOSOrderLoad(); orderReset();
+    posCurrentTable = mesa; posCurrentTableEmpresa = empresa; posCurrentNroTicket = draft?.snapshot?.nroTicket || draft?.server?.pedido?.NroTicket || null;
+    document.getElementById('pos-current-table').textContent = mesa;
+    showView('pos-order'); closeCartSheet();
+    posProducts = prepared.products; posCatalogReady = true; posProductCards.clear();
+    posMozosList = offlineOrders.mozos(prepared, empresa, mesa);
+    posWaiterLoading = false; posWaiterError = '';
+    const saved = draft?.server;
+    if (saved?.pedido) {
+        orderVersion = saved.version || 0; orderSummary = saved.cocina || orderSummary;
+        orderCode = saved.pedido.CodigoPedido || '';
+    }
+    const snapshot = draft?.snapshot;
+    posCart = snapshot?.cart || (saved?.items || []).map(item => ({
+        lineaId: item.lineaId, codPro: item.Codpro.trim(), nombre: item.Descripcion.trim(),
+        precioManualFinal: item.precioManualFinal ?? null, precioOrigen: item.precioOrigen || null,
+        precioVersion: item.precioVersion, precioPersistido: true, precioBase: Number(item.Precio),
+        precio: precioFinalUnitario(Number(item.Precio), item.Afecto, item.precioManualFinal),
+        cantidad: Number(item.Cantidad), afecto: item.Afecto, notasRapidas: item.notasRapidas || [],
+        nota: item.nota || '', enviada: item.enviada, pendienteId: item.pendienteId,
+        pendienteEnvio: item.pendienteEnvio, estadoCocina: item.estadoCocina
+    }));
+    if (snapshot) { orderCode = snapshot.code || ''; orderVersion = snapshot.version; }
+    resolvePOSWaiter(snapshot?.mozo || saved?.pedido?.Mozo || null, Boolean(saved?.pedido), true);
+    posIsReadOnly = saved?.pedido?.Estado === 2;
+    orderDirty = Boolean(draft?.dirty); orderOfflinePending = Boolean(draft?.dirty || draft?.send || draft?.pending);
+    orderOfflineDurable = Boolean(draft?.snapshot);
+    if (draft?.status === 'blocked') { orderConflict = true; orderSaveError = `${draft.error || 'Conflicto de sincronización'}. El borrador local se conserva para revisión.`; }
+    else if (draft?.status === 'uncertain') orderSaveError = 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.';
+    renderPOSCategories(prepared.categories); searchPOSProducts(); updateCartUI(); updatePOSViewMode(); renderOrderStatus();
+}
+async function orderSyncQueued() {
+    if (!navigator.onLine || !offlineOrders.userName()) return;
+    if (offlineOrders.syncing()) return offlineOrders.syncing();
+    const run = (async () => {
+        const drafts = (await offlineOrders.list()).filter(d => (d.dirty || d.send || d.pending) && d.snapshot?.mozo);
+        if (!drafts.length) return;
+        const session = await posConnectivity.check();
+        if (!session) return;
+        const user = session.user?.usuario;
+        if (user !== offlineOrders.userName()) return;
+        for (const draft of drafts) {
+            if (draft.status === 'blocked') continue;
+            if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa && orderBusy) continue;
+            if (isViewVisible('view-pos-order') && Number(posCurrentTable) === draft.mesa &&
+                Number(posCurrentTableEmpresa) === draft.empresa && orderDirty && !draft.send && !orderOfflinePending) continue;
+            if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa && orderSavePromise)
+                await orderSavePromise.catch(() => {});
+            try {
+                await orderSyncOne(draft);
+            } catch (error) {
+                const currentDraft = await offlineOrders.get(draft.empresa, draft.mesa) || draft;
+                currentDraft.status = error.status && error.status < 500 ? 'blocked' : 'uncertain';
+                currentDraft.error = error.message; await offlineOrders.put(currentDraft);
+                if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa) {
+                    orderOfflinePending = true;
+                    orderSaveError = currentDraft.status === 'blocked'
+                        ? `${error.message} El borrador local se conserva para revisión.`
+                        : 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.';
+                    if (currentDraft.status === 'blocked') orderConflict = true;
+                }
+            }
+        }
+        if (isViewVisible('view-pos-order')) renderOrderStatus();
+    })().finally(() => offlineOrders.setSyncing(null));
+    offlineOrders.setSyncing(run); return run;
+}
+async function orderSyncOne(draft) {
+    const latest = await offlineOrders.get(draft.empresa, draft.mesa);
+    if (!latest) return;
+    let pending = latest.pending;
+    if (!pending && latest.dirty) {
+        const snapshot = latest.snapshot;
+        const current = await orderRequest(`/api/pos/pedido?mesa=${latest.mesa}&empresa=${latest.empresa}`);
+        const expectedNro = snapshot.nroTicket || latest.server?.pedido?.NroTicket || null;
+        if ((current.pedido?.NroTicket || null) !== expectedNro ||
+            (current.pedido && current.version !== snapshot.version)) {
+            const error = new Error('El pedido cambió en otro dispositivo. Revise el borrador local.'); error.status = 409; throw error;
+        }
+        pending = { clave: newOrderId(), mesa: latest.mesa, empresa: latest.empresa, turno: snapshot.turno,
+            fechaNegocio: snapshot.fechaNegocio,
+            mozo: snapshot.mozo, nroTicket: expectedNro, version: snapshot.version, codigoPedido: snapshot.code || null,
+            operacionId: newOrderId(), items: snapshot.cart.map(i => ({ lineaId: i.lineaId, codPro: i.codPro,
+                precioVersion: i.precioVersion, precioDerivadaDe: i.precioDerivadaDe,
+                precioManualFinal: i.precioManualFinal ?? null, nombre: i.nombre, precio: i.precioBase ?? i.precio,
+                cantidad: i.cantidad, afecto: i.afecto, notasRapidas: i.notasRapidas || [], nota: i.nota || '' })) };
+        latest.pending = pending; latest.pendingRevision = latest.revision; latest.status = 'confirming'; await offlineOrders.put(latest);
+    }
+    if (pending) {
+        const saved = await orderRequest('/api/pos/pedido', 'POST', pending);
+        const currentDraft = await offlineOrders.get(latest.empresa, latest.mesa) || latest;
+        currentDraft.server = saved; currentDraft.pending = null;
+        currentDraft.dirty = currentDraft.revision !== latest.pendingRevision;
+        if (currentDraft.snapshot) { currentDraft.snapshot.nroTicket = saved.nroTicket; currentDraft.snapshot.version = saved.version; }
+        currentDraft.status = currentDraft.dirty ? 'local' : 'saved'; await offlineOrders.put(currentDraft);
+        Object.assign(latest, currentDraft);
+        if (Number(posCurrentTable) === latest.mesa && Number(posCurrentTableEmpresa) === latest.empresa &&
+            orderGeneration === (latest.activeGeneration ?? orderGeneration)) {
+            posCurrentNroTicket = saved.nroTicket; orderAccept(saved); orderDirty = latest.dirty;
+            orderOfflinePending = latest.dirty || latest.send; updateCartUI();
+        }
+    }
+    if (latest.dirty) return orderSyncOne(latest);
+    if (latest.send) {
+        if (!latest.sendAttempt) { latest.sendAttempt = { clave: newOrderId(), version: latest.server.version }; await offlineOrders.put(latest); }
+        const sent = await orderRequest(`/api/pos/pedido/${encodeURIComponent(latest.server.nroTicket)}/enviar-cocina`, 'POST',
+            { ...latest.sendAttempt, empresa: latest.empresa, fechaNegocio: latest.snapshot?.fechaNegocio, operacionId: newOrderId() });
+        const newest = await offlineOrders.get(latest.empresa, latest.mesa) || latest;
+        newest.server = sent; newest.send = false; newest.sendAttempt = null;
+        newest.status = newest.dirty ? 'local' : 'confirmed';
+        if (newest.snapshot) { newest.snapshot.nroTicket = sent.nroTicket; newest.snapshot.version = sent.version; }
+        await offlineOrders.put(newest);
+        if (Number(posCurrentTable) === latest.mesa && Number(posCurrentTableEmpresa) === latest.empresa) {
+            orderAccept(sent); orderConfirmation = 'Envío registrado en Cocina'; orderOfflinePending = newest.dirty; renderOrderStatus();
+        }
+    }
+}
 const ownOrderOperations = new Set();
 const QUICK_ORDER_NOTES = ['Sin cebolla', 'Término medio', 'Bien cocido', 'Poco picante', 'Sin picante', 'Hielo aparte', 'Helada', 'Sin Helar', 'Sin azúcar', 'Para llevar', 'Servir primero', 'Con salsa aparte'];
 const PRINT_DESTINATIONS = ['cocina', 'bebidas', 'barra'];
@@ -87,8 +260,24 @@ function isOrderConflict(error) {
     return error.status === 409 && !['COMPANY_CONTEXT_MISMATCH', 'PRICE_CONFIG_CHANGED'].includes(error.errorCode);
 }
 async function orderRequest(url, method = 'GET', body) {
-    const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-    const data = await res.json().catch(() => ({ message: 'Respuesta no válida del servidor' }));
+    const requestStartedAt = Date.now();
+    const bounded = /^\/api\/pos\/pedido(?:$|\/)/.test(url);
+    const checkedMutation = method === 'POST' && (/^\/api\/pos\/pedido(?:$|\/[^/]+\/enviar-cocina$)/).test(url);
+    const controller = bounded ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), 8000) : null;
+    let res, data;
+    try {
+        res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {},
+            body: body ? JSON.stringify(body) : undefined, signal: controller?.signal });
+        posConnectivity.observe(res, requestStartedAt);
+        data = await res.json().catch(() => ({ message: 'Respuesta no válida del servidor' }));
+    } catch (error) {
+        if (!res) posConnectivity.failure(requestStartedAt);
+        if (error.name === 'AbortError') throw new Error('Sin respuesta del servidor en 8 segundos. Se verificará el resultado antes de reintentar.');
+        throw error;
+    } finally { if (timeout) clearTimeout(timeout); }
+    if ((checkedMutation || (method === 'GET' && url.startsWith('/api/pos/pedido?'))) && res.ok && data.success !== true)
+        throw new Error('Respuesta no válida del servidor. Se verificará el resultado antes de reintentar.');
     if (!res.ok) {
         const reference = data.diagnosticId ? ` Referencia: ${data.diagnosticId}.` : '';
         const e = new Error(`${data.message || 'No se pudo completar la operación'}${reference}`);
@@ -108,6 +297,7 @@ function orderReset() {
     closePOSEmployeeSearch(false);
     orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderCompanyContextError = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = []; orderSendAttempt = null; orderPendingCancellations = [];
+    orderOfflinePending = false; orderOfflineDurable = false;
     orderGeneration++; clearTimeout(posAutoSaveTimer);
 }
 function orderAccept(data, codeRevision = null, savedGeneration = null) {
@@ -139,6 +329,7 @@ function orderAccept(data, codeRevision = null, savedGeneration = null) {
     renderOrderStatus();
 }
 function orderFinishDeletion() {
+    if (posCurrentTableEmpresa && posCurrentTable) offlineOrders.remove(posCurrentTableEmpresa, posCurrentTable).catch(() => {});
     orderSavedPriceIds.clear(); orderPriceConflict = false; document.getElementById('holiday-review-dialog')?.close();
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
     closeProductRemoval(false);
@@ -166,7 +357,8 @@ function orderPayload() {
         codigoPedido: orderCodeEligible() ? orderCode.trim() || null : null,
         mesa: posCurrentTable, empresa: company, turno: getTurnoValue(company, posCurrentTurnoLabel),
         mozo: document.getElementById('pos-mojo-select').value || null, nroTicket: posCurrentNroTicket,
-        version: orderVersion, operacionId: orderOperation(), items: posCart.map(i => ({
+        version: orderVersion, fechaNegocio: new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
+        operacionId: orderOperation(), items: posCart.map(i => ({
             lineaId: i.lineaId, codPro: i.codPro, precioVersion: i.precioVersion, precioDerivadaDe: i.precioDerivadaDe,
             precioManualFinal: i.precioManualFinal ?? null,
             nombre: i.nombre, precio: i.precioBase ?? i.precio, cantidad: i.cantidad, afecto: i.afecto,
@@ -178,10 +370,16 @@ function orderSchedule() {
     if (posIsReadOnly || orderBusy || transferMatches(pendingTransfer())) return;
     if (!normalizePOSCompany(posCurrentTableEmpresa)) return invalidatePOSCompanyContext();
     orderDirty = true; orderDeleteRetry = false; orderGeneration++; orderSaveError = ''; orderConfirmation = ''; clearTimeout(posAutoSaveTimer); updateCartUI();
+    orderPersistSnapshot().catch(() => {});
     posAutoSaveTimer = setTimeout(() => orderFlush().catch(() => { }), POS_AUTOSAVE_DEBOUNCE_MS);
 }
 async function orderFlush() {
     clearTimeout(posAutoSaveTimer);
+    try { await orderSnapshotPromise; } catch (error) { if (!navigator.onLine) throw error; }
+    if (!navigator.onLine) { orderOfflinePending = true; renderOrderStatus(); return; }
+    if (offlineOrders.syncing()) await offlineOrders.syncing();
+    const queuedDraft = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
+    if (queuedDraft?.send) return orderSyncQueued();
     if (orderSavePromise) { await orderSavePromise; if (orderDirty) return orderFlush(); return; }
     if (transferMatches(pendingTransfer())) throw new Error('Confirme el traslado pendiente antes de guardar.');
     if (orderPriceConflict) throw new Error('Revise los precios actualizados antes de guardar. Su borrador se conserva.');
@@ -189,15 +387,36 @@ async function orderFlush() {
     if (!posCurrentNroTicket && !posCart.length) { orderDirty = false; return; }
     if (!orderDirty || posIsReadOnly) return;
     if (!validateOrderCode()) throw new Error(orderCodeError);
-    const generation = orderGeneration, codeRevision = orderCodeRevision, payload = orderPayload();
+    let generation = orderGeneration;
+    const codeRevision = orderCodeRevision, payload = orderPayload();
+    const draft = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
+    if (draft?.pending) { Object.assign(payload, draft.pending); generation = draft.pendingRevision ?? generation; }
+    else {
+        payload.clave = newOrderId();
+        if (draft) { draft.pending = payload; draft.pendingRevision = draft.revision; draft.activeGeneration = generation; await offlineOrders.put(draft); }
+    }
     orderSavePromise = (async () => {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
             if (data.pedidoEliminado) { orderFinishDeletion(); return; }
             if (orderMovedTo) throw new Error(`El pedido se trasladó a Mesa ${orderMovedTo}. Su borrador se conserva para revisión.`);
             orderAccept(data, codeRevision, generation); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
+            const currentDraft = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
+            if (currentDraft && currentDraft.pending?.clave === payload.clave) {
+                currentDraft.pending = null; currentDraft.server = data; currentDraft.dirty = currentDraft.revision !== currentDraft.pendingRevision;
+                currentDraft.status = orderDirty ? 'local' : 'saved';
+                if (currentDraft.snapshot) { currentDraft.snapshot.nroTicket = data.nroTicket; currentDraft.snapshot.version = data.version; }
+                await offlineOrders.put(currentDraft);
+            }
+            orderOfflinePending = !navigator.onLine || Boolean(currentDraft?.send);
         } catch (e) {
             orderDeleteRetry = false; orderSaveError = e.message;
+            if (!e.status || e.status >= 500) { orderOfflinePending = true; orderSaveError = 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.'; }
+            if (e.status && e.status < 500) {
+                const rejected = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
+                if (rejected?.pending?.clave === payload.clave) { rejected.pending = null; await offlineOrders.put(rejected); }
+                orderOfflinePending = false;
+            }
             if (e.errorCode === 'PRICE_CONFIG_CHANGED') await handleHolidayPriceConflict();
             if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
@@ -210,16 +429,16 @@ function renderOrderStatus() {
     if (transferButton) {
         const retry = transferMatches(pendingTransfer());
         setOrderUIProperty(transferButton, 'hidden', !retry && !diningTable(posCurrentTable));
-        setOrderUIProperty(transferButton, 'disabled', orderBusy || (!retry && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || orderCompanyContextError || posWaiterLoading || !posCart.length)));
+        setOrderUIProperty(transferButton, 'disabled', !navigator.onLine || orderOfflinePending || orderBusy || (!retry && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || orderCompanyContextError || posWaiterLoading || !posCart.length)));
     }
     renderOrderCode();
     setOrderUIProperty(document.getElementById('order-review-prices'), 'hidden', !orderPriceConflict);
     const priceDisabled = !manualPriceEditable();
     document.querySelectorAll('#pos-cart-items button[data-action="price"]').forEach(button => setOrderUIProperty(button, 'disabled', priceDisabled));
     const status = document.getElementById('order-kitchen-status'); if (!status) return;
-    setOrderUIProperty(status, 'textContent', orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado);
+    setOrderUIProperty(status, 'textContent', orderSaveError.startsWith('Resultado incierto') ? 'Resultado incierto; verificando con el servidor' : orderOfflinePending ? 'Pendiente de conexión; Cocina aún no lo recibió' : orderDirty ? (orderSummary.ultimoEnvio ? 'Cambios pendientes' : 'Sin enviar') : orderSummary.estado);
     const msg = document.getElementById('order-save-message');
-    setOrderUIProperty(msg, 'textContent', orderLoadError || orderNavigationMessage || orderSaveError || posWaiterError || (orderSavePromise ? 'Guardando…' : orderDirty ? 'Cambios por guardar' : orderConfirmation));
+    setOrderUIProperty(msg, 'textContent', orderLoadError || orderNavigationMessage || orderSaveError || posWaiterError || (orderSavePromise ? 'Confirmando con el servidor…' : orderOfflinePending ? (orderOfflineDurable ? 'Guardado en este dispositivo; pendiente de sincronizar' : 'Guardando en este dispositivo…') : orderDirty ? 'Cambios por guardar' : orderConfirmation));
     msg.classList.toggle('is-confirmation', !orderLoadError && !orderNavigationMessage && !orderSaveError && !orderSavePromise && !orderDirty && Boolean(orderConfirmation));
     setOrderUIProperty(document.getElementById('order-retry-load'), 'hidden', !orderLoadError && !(posWaiterError && !posMozosList.length));
     const retrySave = document.getElementById('order-retry-save');
@@ -237,35 +456,57 @@ function renderOrderStatus() {
     setOrderUIProperty(print, 'textContent', printText);
     setOrderUIProperty(document.getElementById('btn-enviar-cocina'), 'disabled', Boolean(posIsReadOnly || posWaiterLoading || posWaiterError || orderBusy || orderConflict || orderPriceConflict || (!orderDirty && !orderSummary.pendientes && !orderSendAttempt)));
     const pay = document.querySelector('.btn-pay-now');
-    setOrderUIProperty(pay, 'disabled', posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length);
+    setOrderUIProperty(pay, 'disabled', !navigator.onLine || orderOfflinePending || posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length);
     setOrderUIProperty(document.getElementById('order-envios'), 'disabled', !posCurrentNroTicket || orderBusy);
 }
 async function orderBeforeOpen() {
     if (orderBusy) return false;
     if (orderDirty || orderSavePromise) {
-        try { await orderFlush(); } catch { alert('Hay cambios sin guardar. Reintente o revise el conflicto antes de cambiar de mesa.'); return false; }
+        try { await orderFlush(); } catch {
+            if (orderOfflineDurable && orderOfflinePending && !orderConflict) return true;
+            alert('Hay cambios sin guardar. Reintente o revise el conflicto antes de cambiar de mesa.'); return false;
+        }
     }
     return true;
 }
 async function sendOrderKitchen() {
     if (orderBusy || posIsReadOnly) return;
     if (!validateOrderCode(true)) { document.getElementById('order-code').focus(); return; }
+    if (!navigator.onLine) {
+        try { await orderPersistSnapshot(true); orderOfflinePending = true; renderOrderStatus(); }
+        catch (error) { orderSaveError = error.message; renderOrderStatus(); }
+        return;
+    }
     orderBusy = true; renderOrderStatus();
     try {
         await orderFlush();
+        if (!orderDirty && !orderSummary.pendientes && !orderSendAttempt) return;
+        const draft = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
         const retryKey = `sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`;
-        orderSendAttempt ||= JSON.parse(sessionStorage.getItem(retryKey) || 'null') || { clave: newOrderId(), version: orderVersion };
+        orderSendAttempt ||= draft?.sendAttempt || JSON.parse(sessionStorage.getItem(retryKey) || 'null') || { clave: newOrderId(), version: orderVersion };
+        if (draft) { draft.send = true; draft.sendAttempt = orderSendAttempt; await offlineOrders.put(draft); }
         sessionStorage.setItem(retryKey, JSON.stringify(orderSendAttempt));
+        orderConfirmation = 'Confirmando con el servidor…'; renderOrderStatus();
         const data = await orderRequest(`/api/pos/pedido/${encodeURIComponent(posCurrentNroTicket)}/enviar-cocina`, 'POST',
-            { ...orderSendAttempt, empresa: posCurrentTableEmpresa, operacionId: orderOperation() });
+            { ...orderSendAttempt, empresa: posCurrentTableEmpresa,
+                fechaNegocio: new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
+                operacionId: orderOperation() });
         sessionStorage.removeItem(retryKey); orderSendAttempt = null; orderAccept(data);
+        if (draft) { draft.send = false; draft.sendAttempt = null; draft.server = data; draft.status = 'confirmed'; await offlineOrders.put(draft); }
         orderConfirmation = `Envío registrado en Cocina${data.envioId ? ` · ${data.envioId.slice(0, 8)}` : ''}.`;
         updateCartUI();
-    } catch (e) { orderSaveError = e.message; if (isOrderConflict(e)) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; } }
+    } catch (e) {
+        orderSaveError = e.status && e.status < 500 ? e.message : 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.';
+        if (!e.status || e.status >= 500) {
+            orderOfflinePending = true;
+            await orderPersistSnapshot(true).catch(() => {});
+        }
+        if (isOrderConflict(e)) { sessionStorage.removeItem(`sedim-send:${posCurrentTableEmpresa}:${posCurrentNroTicket}`); orderSendAttempt = null; orderConflict = true; }
+    }
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function orderPay() {
-    if (orderBusy || posIsReadOnly) return;
+    if (orderBusy || posIsReadOnly || !navigator.onLine || orderOfflinePending) return;
     orderBusy = true; renderOrderStatus();
     try {
         await orderFlush();
@@ -277,7 +518,7 @@ async function orderPay() {
     finally { orderBusy = false; renderOrderStatus(); }
 }
 async function deleteCurrentOrder({ ask = true } = {}) {
-    if (orderBusy || (posIsReadOnly && !orderCommercialConflict) || !posCurrentNroTicket) return false;
+    if (!navigator.onLine || orderOfflinePending || orderBusy || (posIsReadOnly && !orderCommercialConflict) || !posCurrentNroTicket) return false;
     if (ask && !confirm('Se eliminará el pedido y la mesa quedará libre. El historial previo de Cocina se conservará. ¿Continuar?')) return false;
     orderBusy = true; orderDeleteRetry = false;
     try {
@@ -297,7 +538,7 @@ async function deleteCurrentOrder({ ask = true } = {}) {
 }
 async function orderDelete() { return deleteCurrentOrder({ ask: true }); }
 async function orderClear() {
-    if (orderBusy || (posIsReadOnly && !orderCommercialConflict)) return;
+    if (!navigator.onLine || orderOfflinePending || orderBusy || (posIsReadOnly && !orderCommercialConflict)) return;
     if (!confirm('¿Limpiar todo el pedido y liberar la mesa?')) return;
     if (posCurrentNroTicket) return deleteCurrentOrder({ ask: false });
     posCart = []; orderDirty = false; orderFinishDeletion();
@@ -397,6 +638,7 @@ async function reviewOrderConflict() {
 }
 async function discardOrderDraft() {
     if (!confirm('¿Descartar el borrador local y cargar la versión actual?')) return;
+    await offlineOrders.remove(posCurrentTableEmpresa, posCurrentTable);
     document.getElementById('order-conflict-dialog').close(); orderDirty = false; orderConflict = false; orderSaveError = '';
     await openPOSOrder(orderMovedTo || posCurrentTable, posCurrentTableEmpresa);
 }
@@ -406,7 +648,7 @@ async function acknowledgeKitchenLine(nroTicket, lineaId) {
     catch (e) { alert(e.message); }
 }
 
-if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if (orderDirty || orderSavePromise || orderBusy) { e.preventDefault(); e.returnValue = ''; } });
+if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if ((orderDirty && !orderOfflineDurable) || orderSavePromise || orderBusy) { e.preventDefault(); e.returnValue = ''; } });
 
 if (typeof module !== 'undefined') module.exports = { orderKitchenStatus, orderKitchenHeadline };
 
@@ -491,6 +733,7 @@ function closeTableTransfer() {
     document.getElementById('btn-trasladar-mesa').focus();
 }
 async function openTableTransfer() {
+    if (!navigator.onLine || orderOfflinePending) { alert('Sincronice este pedido antes de trasladarlo.'); return; }
     const retry = pendingTransfer();
     if (retry && !transferMatches(retry)) { alert(`Confirme primero el traslado pendiente de Mesa ${retry.origen}, empresa ${retry.empresa}.`); return; }
     if (orderBusy || (!transferMatches(retry) && (posIsReadOnly || orderConflict || orderPriceConflict || orderLoadError || !posCart.length || !diningTable(posCurrentTable)))) return;

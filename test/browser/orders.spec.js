@@ -4,6 +4,7 @@ async function fixture(page, options = {}) {
     const state = { mesa: 1, transfers: [], transferRequests: [], transferUnavailable: false, transferLostResponse: false, items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
+        sessionStatus: 200, sessionNetworkError: false,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
         orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false,
         invalidCompanyError: false, orderLoads: 0, orderCompanies: [], holidayError: false, pricesAvailable: true,
@@ -53,6 +54,8 @@ async function fixture(page, options = {}) {
         if (url.pathname === '/api/events') { state.eventConnections++; return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' }); }
         if (url.pathname === '/api/session') {
             state.sessionLoads++;
+            if (state.sessionNetworkError) return route.abort('failed');
+            if (state.sessionStatus >= 500) return fulfill({ message: 'Servidor no disponible' }, state.sessionStatus);
             return state.sessionActive
                 ? fulfill({ user: { usuario: 'Mozo' }, ...(options.features ? { features: options.features } : {}) })
                 : fulfill({ message: 'No autorizado' }, 401);
@@ -206,6 +209,193 @@ test('normaliza la empresa textual de Mesas y guarda siempre el valor canónico'
     await page.locator('.pos-product-card').first().click();
     await expect.poll(() => state.saves).toBe(1);
     expect(state.orderCompanies).toEqual(['2', 2]);
+});
+
+test('dos mesas preparadas conservan borradores locales separados durante la desconexión', async ({ page }) => {
+    const state = await fixture(page, { openTable: false, tables: [
+        { Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 },
+        { Numero: 2, Empresa: 2, Ambiente: 1, Estado: 1 }
+    ] });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.locator('#btn-enviar-cocina').click();
+    await expect(page.locator('#order-kitchen-status')).toContainText('Cocina aún no lo recibió');
+    await page.locator('#pos-order-back').click();
+    await page.locator('[data-table-number="2"]').click();
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    const drafts = await page.evaluate(() => offlineOrders.list());
+    expect(drafts.filter(d => d.dirty)).toHaveLength(2);
+    expect(drafts.find(d => d.mesa === 1).send).toBe(true);
+    expect(state.saves).toBe(0);
+});
+
+test('indicador distingue comunicación, servidor y pendientes de varias mesas', async ({ page }) => {
+    const state = await fixture(page, { openTable: false, tables: [
+        { Numero: 1, Empresa: 2, Ambiente: 1, Estado: 1 },
+        { Numero: 2, Empresa: 2, Ambiente: 1, Estado: 1 }
+    ] });
+    const indicator = page.locator('#view-pos-tables [data-connectivity-indicator]');
+    await expect(indicator).toContainText('Conectado con el servidor');
+    await page.evaluate(async () => {
+        await offlineOrders.put({ empresa: 2, mesa: 1, dirty: true });
+        await offlineOrders.put({ empresa: 2, mesa: 2, send: true });
+    });
+    await expect(indicator).toContainText('Mesas pendientes: 2');
+    state.sessionStatus = 503;
+    await page.evaluate(() => posConnectivity.check());
+    await expect(indicator).toContainText('Servidor con problemas');
+    state.sessionStatus = 200;
+    state.sessionNetworkError = true;
+    await page.evaluate(() => posConnectivity.check());
+    await expect(indicator).toContainText('Sin comunicación con el servidor');
+    state.sessionNetworkError = false;
+    await page.evaluate(() => posConnectivity.check());
+    await expect(indicator).toContainText('Conectado con el servidor');
+    await page.evaluate(() => offlineOrders.remove(2, 1));
+    await expect(indicator).toContainText('Mesas pendientes: 1');
+});
+
+test('indicador acompaña al pedido y avisa si no hay almacenamiento local', async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(window, 'indexedDB', { value: undefined }));
+    await fixture(page);
+    const indicator = page.locator('#view-pos-order [data-connectivity-indicator]');
+    await expect(indicator).toContainText('Conectado con el servidor');
+    await expect(indicator).toContainText('Pendientes: almacenamiento local no disponible');
+    await page.context().setOffline(true);
+    await expect(indicator).toContainText('Sin comunicación con el servidor');
+    await page.context().setOffline(false);
+    await expect(indicator).toContainText('Conectado con el servidor');
+});
+
+test('contador reaparece tras recargar y el indicador cabe en mapa y pedido móvil', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page, { openTable: false });
+    await page.evaluate(() => offlineOrders.put({ empresa: 2, mesa: 1, dirty: true }));
+    await expect(page.locator('#view-pos-tables .pos-connectivity-pending')).toHaveText('Mesas pendientes: 1');
+    await page.reload();
+    await expect(page.locator('#view-pos-tables .pos-connectivity-pending')).toHaveText('Mesas pendientes: 1');
+    for (const view of ['view-pos-tables', 'view-pos-order']) {
+        if (view === 'view-pos-order') await page.evaluate(() => showView('pos-order'));
+        const bounds = await page.locator(`#${view} [data-connectivity-indicator]`).boundingBox();
+        expect(bounds.x).toBeGreaterThanOrEqual(0);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+        expect(bounds.height).toBeLessThan(80);
+    }
+});
+
+test('fallo de sesión al abrir muestra desconexión y recupera la app al volver el servidor', async ({ page }) => {
+    let available = false;
+    await page.route('**/api/session', route => available
+        ? route.fulfill({ json: { user: { usuario: 'Mozo' } } })
+        : route.abort('failed'));
+    await page.goto('/dashboard.html');
+    const indicator = page.locator('#view-pos-tables [data-connectivity-indicator]');
+    await expect(indicator).toContainText('Sin comunicación con el servidor');
+    await expect(indicator).toContainText('Pendientes: sesión sin verificar');
+    await expect(page).toHaveURL(/dashboard\.html$/);
+    available = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.locator('#sidebar-user-name')).toHaveText('Mozo');
+    await expect(indicator).toContainText('Conectado con el servidor');
+});
+
+test('pedido nuevo offline se guarda y envía a Cocina al recuperar conexión', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.locator('#btn-enviar-cocina').click();
+    expect(state.saves).toBe(0); expect(state.sends).toBe(0);
+    await page.context().setOffline(false);
+    await page.evaluate(() => orderSyncQueued());
+    await expect.poll(() => state.saves).toBe(1);
+    await expect.poll(() => state.sends).toBe(1);
+    await expect(page.locator('#order-kitchen-status')).toContainText('Enviado a cocina');
+    const draft = await page.evaluate(() => offlineOrders.get(2, 1));
+    expect(draft.pending).toBeFalsy(); expect(draft.send).toBe(false);
+});
+
+test('borrador offline sin intención de envío se guarda al reconectar y sigue pendiente de Cocina', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.context().setOffline(false);
+    await page.evaluate(() => runAppResumeSync());
+    await expect.poll(() => state.saves).toBe(1);
+    expect(state.sends).toBe(0);
+    const draft = await page.evaluate(() => offlineOrders.get(2, 1));
+    expect(draft.dirty).toBe(false); expect(draft.send).toBe(false);
+});
+
+test('sin IndexedDB avisa que el pedido offline no quedó persistido', async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(window, 'indexedDB', { value: undefined }));
+    await fixture(page);
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('No se pudo guardar en este dispositivo');
+    expect(await page.evaluate(() => orderOfflineDurable)).toBe(false);
+});
+
+test('preparación offline no tapa el título ni desplaza el mapa móvil', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fixture(page, { openTable: false });
+    const title = await page.locator('#view-pos-tables h1').evaluate(element => {
+        const range = document.createRange(); range.selectNodeContents(element);
+        const { x, y, width, height } = range.getBoundingClientRect(); return { x, y, width, height };
+    });
+    const prepare = await page.locator('#offline-prepare-button').boundingBox();
+    expect(title.x + title.width).toBeLessThanOrEqual(prepare.x);
+    expect(prepare.x + prepare.width).toBeLessThanOrEqual(390);
+    await expect(page.locator('.pos-table-card').first()).toBeVisible();
+});
+
+test('cambio remoto de la misma mesa detiene la cola y conserva el borrador offline', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.locator('[data-table-number="1"]').click();
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    state.ticket = 'T001-remote'; state.version = 1;
+    await page.context().setOffline(false);
+    await page.evaluate(() => orderSyncQueued());
+    await expect.poll(() => page.evaluate(() => orderConflict)).toBe(true);
+    await expect(page.locator('#order-review-conflict')).toBeVisible();
+    expect(state.saves).toBe(0);
+    const draft = await page.evaluate(() => offlineOrders.get(2, 1));
+    expect(draft.status).toBe('blocked'); expect(draft.snapshot.cart).toHaveLength(1);
+});
+
+test('servidor inaccesible con Wi-Fi conectado usa preparación y conserva intención de envío', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.route('**/api/pos/pedido?**', route => route.abort('failed'));
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.route('**/api/pos/pedido', route => route.request().method() === 'POST' ? route.abort('failed') : route.fallback());
+    await page.locator('.pos-product-card').first().click();
+    await page.locator('#btn-enviar-cocina').click();
+    await expect(page.locator('#order-kitchen-status')).toContainText('Resultado incierto');
+    const draft = await page.evaluate(() => offlineOrders.get(2, 1));
+    expect(draft.send).toBe(true); expect(draft.snapshot.cart).toHaveLength(1);
+    expect(state.saves).toBe(0); expect(state.sends).toBe(0);
 });
 
 test('mesas 220 y 230 de Empresa 2 exigen elegir PEDIDOS YA o RAPPI', async ({ page }) => {
@@ -962,6 +1152,46 @@ test('sidebar colapsado oculta el nombre y conserva el usuario accesible', async
     await expect(page.locator('#sidebar')).toHaveClass(/collapsed/);
     await expect(page.locator('#sidebar-user-name')).toBeHidden();
     await expect(page.locator('.sidebar-footer .user-info')).toHaveAttribute('aria-label', 'Usuario: Mozo');
+});
+
+test('@android @webkit sidebar abierto conserva Cerrar Sesión visible en móvil y tablet', async ({ page }) => {
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await fixture(page, { openTable: false });
+    await page.locator('.mobile-menu-btn').click();
+    await expect(page.locator('#sidebar')).toHaveClass(/open/);
+    for (const viewport of [
+        { width: 1194, height: 834 }, { width: 1024, height: 768 },
+        { width: 844, height: 390 }, { width: 390, height: 844 }
+    ]) {
+        await page.setViewportSize(viewport);
+        const metrics = await page.locator('#sidebar').evaluate(sidebar => {
+            const menu = sidebar.querySelector(':scope > ul');
+            const logout = sidebar.querySelector('.logout-btn');
+            const panel = sidebar.getBoundingClientRect();
+            const action = logout.getBoundingClientRect();
+            return { panelBottom: panel.bottom, actionBottom: action.bottom,
+                viewportBottom: window.visualViewport?.height + (window.visualViewport?.offsetTop || 0) || innerHeight,
+                menuScrollable: menu.scrollHeight > menu.clientHeight + 1 };
+        });
+        expect(metrics.panelBottom).toBeLessThanOrEqual(metrics.viewportBottom + 1);
+        expect(metrics.viewportBottom - metrics.actionBottom).toBeGreaterThanOrEqual(16);
+        if (viewport.height === 390) expect(metrics.menuScrollable).toBe(true);
+    }
+});
+
+test('sidebar de escritorio conserva el pie visible en estado normal y colapsado', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await fixture(page, { openTable: false });
+    for (const height of [720, 360]) {
+        await page.setViewportSize({ width: 1280, height });
+        for (const collapsed of [false, true]) {
+            if (collapsed) await page.locator('.toggle-btn').click();
+            const gap = await page.locator('.sidebar-footer .logout-btn').evaluate(node =>
+                innerHeight - node.getBoundingClientRect().bottom);
+            expect(gap).toBeGreaterThanOrEqual(16);
+            if (collapsed) await page.locator('.toggle-btn').click();
+        }
+    }
 });
 
 test('ticket largo de Cocina desplaza el contenido y encola una sola reimpresión', async ({ page }) => {
@@ -2285,7 +2515,7 @@ test('manual price preserves draft after save failure and retries without kitche
         ? route.fulfill({status:500,json:{message:'Fallo de guardado'}}) : route.fallback());
     await page.getByRole('button',{name:'Precio',exact:true}).click();
     await page.locator('#order-price-input').fill('15');await page.getByRole('button',{name:'Aplicar',exact:true}).click();
-    await expect(page.locator('#order-save-message')).toContainText('Fallo de guardado');
+    await expect(page.locator('#order-save-message')).toContainText('Resultado incierto');
     await expect(page.locator('.cart-item-details')).toHaveText('S/ 15.00 x 1');
     expect(state.items[0].precioManualFinal).toBeNull();
     await page.unroute('**/api/pos/pedido');await page.evaluate(()=>orderFlush());

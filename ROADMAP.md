@@ -1757,3 +1757,34 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Pendiente: instalar/recargar CSS versión 67 siguiendo `ACTUALIZACION_CLIENTE.md` y comprobar visualmente tablet/celular/computadora, ambas orientaciones y navegadores reales. Registrar aceptación; esta fase no se declara instalada ni validada físicamente. Se conservan las pendientes anteriores.
 
 ---
+
+## Fase 68: Pedidos offline y guardado recuperable (Implementada en código; piloto y diagnóstico en cliente pendientes)
+
+- El mapa permite **Preparar offline**: descarga en serie mesas, productos con precios vigentes, categorías y mozos para los tres tipos de mesa de cada empresa. IndexedDB muestra la fecha de preparación. Las mesas ocupadas requieren además una lectura previa del pedido en ese dispositivo; sin datos suficientes se bloquea su apertura offline.
+- Los borradores locales se separan por usuario, empresa y mesa. Cada edición persiste una instantánea y el intento de envío antes de indicar que quedó guardada en el dispositivo. El mozo puede cambiar de mesa durante la desconexión. Preventa, traslado, eliminación y reserva/liberación requieren conexión y ausencia de cambios pendientes de esa mesa.
+- `POST /api/pos/pedido` acepta `clave` GUID opcional. `015_order_save_attempts.sql` crea `Pedido_guardados`: misma clave y mismo contenido recuperan la respuesta de la transacción original; contenido distinto se rechaza con `SAVE_KEY_REUSED`. La cola reintenta el mismo guardado antes del envío idempotente a Cocina. Los intentos offline conservan su fecha de negocio y se detienen si ya cambió el día. Una respuesta perdida o demora de más de 8 segundos se muestra como incierta; los conflictos conservan el borrador para revisión explícita.
+- La sincronización se activa al volver la red, al reabrir la app con sesión válida y periódicamente mientras está visible. «Envío registrado en Cocina» exige respuesta del servidor; el estado de impresión permanece separado. No hay service worker ni trabajo con la app cerrada.
+- El diagnóstico productivo sigue pendiente: registrar versión y dispositivo, medir navegador y `X-Request-Id` frente a `elapsedMs`, `sqlMs` y pool, y separar conectividad dispositivo→servidor y servidor→SQL. El piloto empezará en un dispositivo, con verificación de Cocina, p95 de guardado/envío para hasta 20 líneas y cero pérdidas o duplicados antes de ampliar.
+- Verificación local: `npm run check`, `git diff --check`, 79/79 pruebas unitarias, 45/45 escenarios SQL en `tempdb` aislado y 173/173 casos de navegador en la suite completa, incluido servidor inaccesible con Wi-Fi conectado.
+- La migración y la aplicación requieren instalación conjunta. Producción no se declara actualizada ni validada; siguen vigentes las pendientes físicas y contables anteriores.
+
+---
+
+## Fase 69: Indicador de conexión y mesas pendientes (Implementada en código; piloto en cliente pendiente)
+
+- El mapa y el pedido muestran «Verificando conexión», «Conectado con el servidor», «Sin comunicación con el servidor» o «Servidor con problemas». «Conectado» requiere una respuesta reciente del servidor; el estado de Wi-Fi del dispositivo solo permite avisar de una desconexión inmediata. El `401` conserva la redirección por sesión vencida.
+- Si la primera consulta de sesión no responde, el panel muestra la falta de comunicación y deja el contador como «sesión sin verificar»; no confunde ese fallo con credenciales vencidas. Al restablecerse la comunicación y validarse la sesión, recarga el panel para iniciar sus datos y permisos. No habilita el uso de borradores de otro usuario antes de verificar la sesión.
+- Se reutiliza `/api/session` con límite de 5 segundos, una sola comprobación simultánea y revisión cada 15 segundos mientras la app está visible. La reanudación y la cola comparten esa comprobación; las respuestas y fallos de guardado/envío actualizan también el indicador. Esta consulta no ejecuta operaciones comerciales.
+- Un contador separado muestra las mesas con borradores pendientes del usuario actual y se actualiza al guardar, sincronizar o eliminar un borrador. Si IndexedDB falla, informa que el almacenamiento local no está disponible en lugar de mostrar cero. Los estados de Cocina e impresión siguen siendo independientes.
+- La instalación requiere recargar `style.css`, `offline-orders.js`, `connectivity.js`, `orders-ui.js` y `script.js` versión 69. No hay migración SQL ni service worker nuevos. En el piloto, comprobar en tablets reales la pérdida y recuperación de red, servidor inaccesible con Wi-Fi activo, error 5xx, sesión vencida, recuento de varias mesas y legibilidad en ambos temas y orientaciones. Las pendientes de la Fase 68 siguen abiertas.
+- Verificación local: `npm run check`, `git diff --check`, 79/79 pruebas unitarias y 177/177 escenarios de la suite completa de interfaz, incluidos arranque sin servidor, recarga, varias mesas y diseño móvil. Tras consolidar las consultas de recuperación se repitieron 7/7 escenarios focalizados. No se ejecutó integración SQL para esta fase, que no cambia backend ni esquema.
+
+---
+
+## Fase 70: Pie del sidebar visible en horizontal (Implementada en código; revisión física en cliente pendiente)
+
+- El drawer lateral usa `100dvh` con respaldo `100vh` y `box-sizing: border-box`: su relleno queda dentro de la altura visible. El pie reserva espacio adicional y respeta `safe-area-inset-bottom`, para que «Cerrar Sesión» no toque ni sobrepase el borde inferior.
+- La lista principal del menú puede desplazarse en pantallas bajas; la cabecera y el pie permanecen accesibles. Las reglas de flex y desplazamiento se limitan a esa lista, sin alterar submenús ni el panel de detalle del pedido. No cambia la navegación ni la autenticación.
+- `style.css` pasa a versión 70; `responsive.css` y scripts mantienen sus versiones. Las pruebas focalizadas de navegador aprobaron 7/7 casos en escritorio, Chrome móvil y WebKit tablet, con horizontal/vertical, altura reducida, escritorio normal/colapsado y regresiones cercanas de navegación. `npm run check` y `git diff --check` también pasaron. Pendiente comprobar Safari en iPad real, ambas orientaciones y temas, durante la instalación; no se declara desplegada.
+
+---

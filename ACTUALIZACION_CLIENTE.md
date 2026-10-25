@@ -230,3 +230,31 @@ Esta actualización corrige únicamente los colores y el foco del selector de me
 4. Conserve la imagen anterior; ante una regresión visual, restaure esa versión y recargue. No es necesario modificar ni revertir datos. Registre la aceptación visual del cliente tras instalar.
 
 El cliente reporta conformidad con Fase 66. Este registro conserva esa conformidad sin atribuir mediciones físicas adicionales de rendimiento. La revisión automatizada de Fase 67 no acredita instalación ni comprobación en los dispositivos físicos del restaurante.
+
+## Fase 68 — piloto de pedidos offline
+
+1. Registre la versión realmente instalada antes del cambio y conserve respaldo e imagen anterior. Instale juntos la aplicación y la migración `015_order_save_attempts.sql`; confirme `/healthz` y que `offline-orders.js?v=68`, `orders-ui.js?v=68`, `script.js?v=68` y `style.css?v=68` se descargan en el dispositivo piloto.
+2. Con conexión, inicie sesión y pulse **Preparar offline** en el mapa. Espere la confirmación de las tres empresas. Abra con conexión cualquier mesa ocupada que se necesite consultar offline; una mesa ocupada no leída quedará bloqueada para evitar crear un pedido paralelo.
+3. En una mesa de prueba, desactive Wi‑Fi, tome un pedido y pulse **Enviar a Cocina**. Confirme que el dispositivo indica guardado local y que Cocina **aún no lo recibió**. Repita con otra mesa. Reactive Wi‑Fi y confirme un solo ticket y un solo envío por mesa; compruebe los trabajos de impresión por separado.
+4. Simule respuesta perdida, sesión vencida y cambio desde otro dispositivo únicamente con pedidos de prueba. Verifique que la cola conserva el borrador y exige revisión ante conflicto. No cierre turno ni revierta la versión mientras haya mesas pendientes en el dispositivo piloto; primero sincronice o documente y resuelva cada borrador.
+5. Durante atención normal y hora punta, anote hora, dispositivo, mesa y `X-Request-Id` de guardado y envío. Compare tiempos del navegador con `elapsedMs`, `sqlMs` y `pool` del servidor; mida conectividad dispositivo→servidor y servidor→SQL por separado. La meta existente para pedidos de hasta 20 líneas es p95 <1,5 s. Registre confirmación de Cocina y ausencia de pérdidas o duplicados antes de ampliar a otros dispositivos.
+
+La cola solo sincroniza con la aplicación abierta o al volver a abrirla con conexión. Si falla IndexedDB, la pantalla avisa y no garantiza conservar el borrador al cerrar. No hay sincronización en segundo plano con la app cerrada.
+El almacenamiento pertenece a la dirección exacta de la aplicación en ese navegador: mantenga la misma IP/puerto durante el piloto y no borre los datos del sitio mientras haya pedidos pendientes.
+
+## Fase 69 — indicador de conexión del dispositivo
+
+1. Después de instalar la aplicación, recargue completamente la tablet piloto y confirme que descargó `style.css?v=69`, `offline-orders.js?v=69`, `connectivity.js?v=69`, `orders-ui.js?v=69` y `script.js?v=69`. Esta fase no agrega migración SQL; si la Fase 68 aún no se instaló, mantenga su migración y aplicación juntas.
+2. En el mapa y en un pedido, compruebe que aparece «Conectado con el servidor» tras iniciar sesión. Desactive Wi-Fi y confirme «Sin comunicación con el servidor». Vuelva a activarlo: debe aparecer «Verificando conexión» hasta responder el servidor. Repita con Wi-Fi activo pero servidor inaccesible y con una respuesta 5xx de prueba.
+3. Con pedidos de prueba de dos mesas, confirme el contador «Mesas pendientes: 2» antes de sincronizar y su descenso al confirmar cada mesa. Si el almacenamiento local está bloqueado, debe mostrar «Pendientes: almacenamiento local no disponible». El contador no reemplaza el estado de cada pedido ni prueba recepción física de impresión.
+4. Compruebe legibilidad en tablet y celular, ambos temas y orientaciones, sin controles tapados. Registre hora, dispositivo y estado mostrado junto a los diagnósticos de la Fase 68; esto permite comprobar si el aviso coincide con la pérdida real de comunicación, sin atribuir automáticamente el fallo al Wi-Fi.
+
+La comprobación consulta la sesión cada 15 segundos mientras la app está visible y usa un límite de 5 segundos. Con la app cerrada no hay comprobación ni sincronización. Producción queda pendiente de instalación y verificación física.
+
+## Fase 70 — espacio inferior del menú lateral
+
+1. Recargue la app en el dispositivo piloto y confirme `style.css?v=70`. No hay cambios de scripts, API, SQL ni migración por esta fase.
+2. En iPad Safari horizontal, abra el menú y compruebe que **Cerrar Sesión** se ve completo con espacio bajo el botón. Gire a vertical y repita; pruebe también tema oscuro, un celular horizontal y otro vertical.
+3. Con poca altura visible, desplace las opciones del centro del menú y confirme que el usuario y **Cerrar Sesión** siguen accesibles. Compruebe que cerrar el menú, navegar y el menú colapsado de escritorio conservan su funcionamiento.
+
+La comprobación automatizada no sustituye esta revisión en el Safari y la barra de navegador reales del restaurante. Conserve la versión anterior del CSS para recuperación si aparece una regresión visual.

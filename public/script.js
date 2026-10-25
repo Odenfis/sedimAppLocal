@@ -14,6 +14,7 @@ let prodPage = 1;
 let GLOBAL_IGV_PCT = 18;
 let GLOBAL_IGVV_PCT = 10;
 let APP_FEATURES = { printerEnabled: true, barPrinterEnabled: false, closuresEnabled: true };
+let appSessionBootstrapFailed = false;
 
 function applyFeatureFlags(features = {}) {
     APP_FEATURES = { ...APP_FEATURES, ...features };
@@ -105,12 +106,14 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
     }
 
+    posConnectivity.start(() => { if (appSessionBootstrapFailed) window.location.reload(); });
     try {
-        const res = await fetch('/api/session');
-        if (!res.ok) window.location.href = '/login.html';
+        const data = await posConnectivity.check();
+        if (!data) appSessionBootstrapFailed = !sessionRedirecting;
         else {
-            const data = await res.json();
             const user = data.user;
+            offlineOrders.setUser(user.usuario);
+            orderSyncQueued().catch(error => console.warn('Sincronización offline:', error.message));
             applyFeatureFlags(data.features || {});
             if (user.permisos) aplicarPermisos(user.permisos);
             if (user.permisos && user.permisos.includes('equipos')) fetchData();
@@ -127,7 +130,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 loadPOSTables();
             }
         }
-    } catch (e) { window.location.href = '/login.html'; }
+    } catch (e) { appSessionBootstrapFailed = true; posConnectivity.failure(); console.warn('Inicio: no se pudo verificar la sesión:', e.message); }
 
     // Eventos Filtros Reporte
     document.querySelectorAll('.col-filter').forEach(input => {
@@ -796,6 +799,7 @@ async function loadPOSTablesOnce() {
         const tables = await fetchViewJson(`/api/pos/tables?empresa=${encodeURIComponent(empresa)}`, controller.signal);
         if (generation !== posTablesLoadGeneration || empresaSelect?.value !== empresa || posCurrentTurnoLabel !== turno) return;
         posAllTables = tables;
+        renderOfflinePreparation();
         setLoadNotice('tables', grid, '');
         console.log(`POS: Mesas recibidas: ${posAllTables.length}`);
         
@@ -805,6 +809,14 @@ async function loadPOSTablesOnce() {
         if (e.name === 'AbortError') return;
         console.error("POS: Error en loadPOSTables:", e);
         if (generation === posTablesLoadGeneration) {
+            const cached = await offlineOrders.prepared(empresa).catch(() => null);
+            if (cached) {
+                posAllTables = cached.tables;
+                renderTableGroupFilters(empresa);
+                renderPOSTables(posAllTables);
+                renderOfflinePreparation();
+                return;
+            }
             const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
             setLoadNotice('tables', grid, `No se pudieron actualizar las mesas. ${e.message}${ref}`, () => loadPOSTables());
             if (!posAllTables.length) grid.innerHTML = '<div class="pos-tables-empty">No hay datos de mesas disponibles.</div>';
@@ -831,6 +843,25 @@ function loadPOSTables() {
         }
     })().finally(() => { posTablesLoadPromise = null; });
     return posTablesLoadPromise;
+}
+
+async function prepareOfflineShift() {
+    const button = document.getElementById('offline-prepare-button');
+    const label = document.getElementById('offline-preparation-status');
+    if (!navigator.onLine || !offlineOrders.userName()) { label.textContent = 'Conéctese e inicie sesión para preparar el turno.'; return; }
+    button.disabled = true;
+    button.textContent = 'Preparando…';
+    try {
+        for (const option of document.getElementById('pos-empresa-select').options) {
+            if (!option.value) continue;
+            label.textContent = `Preparando ${option.textContent}…`;
+            const response = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(option.value)}`, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`No se pudieron leer las mesas de ${option.textContent}`);
+            await offlineOrders.prepare(option.value, await response.json());
+        }
+        label.textContent = 'Tres empresas preparadas para uso sin conexión en este dispositivo.';
+    } catch (error) { label.textContent = `Preparación incompleta: ${error.message}`; }
+    finally { button.disabled = false; renderOfflinePreparation(label.textContent); }
 }
 
 function renderTableGroupFilters(empresa) {
@@ -908,6 +939,14 @@ function renderPOSTables(tables) {
         card.onclick = () => openPOSOrder(t.Numero, t.Empresa);
         grid.appendChild(card);
     });
+    const renderedCompany = Number(document.getElementById('pos-empresa-select')?.value);
+    offlineOrders.list().then(drafts => {
+        if (Number(document.getElementById('pos-empresa-select')?.value) !== renderedCompany) return;
+        for (const draft of drafts.filter(d => d.empresa === renderedCompany && (d.dirty || d.send || d.pending))) {
+            const card = grid.querySelector(`[data-table-number="${draft.mesa}"] .pos-table-info`);
+            if (card) card.textContent = 'Pendiente de sincronizar';
+        }
+    }).catch(() => {});
 }
 
 // Opt-in, session-local performance diagnostics. Never retain payloads or URLs.
@@ -1068,6 +1107,13 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
         setLoadNotice('tables', tableGrid, 'La mesa no corresponde a la empresa seleccionada. Actualice el mapa antes de continuar.', () => loadPOSTables());
         return;
     }
+    if (!navigator.onLine) return openOfflinePOSOrder(tableNum, selectedCompany);
+    const localDraft = await offlineOrders.get(selectedCompany, tableNum).catch(() => null);
+    if (localDraft?.dirty || localDraft?.pending || localDraft?.send) {
+        await openOfflinePOSOrder(tableNum, selectedCompany);
+        orderSyncQueued().catch(() => {});
+        return;
+    }
     if (!await orderBeforeOpen()) return;
     preserveUI = preserveUI && Number(posCurrentTable) === Number(tableNum) && posCurrentTableEmpresa === selectedCompany && isViewVisible('view-pos-order');
     const refreshCatalog = !preserveUI || posIsReadOnly || !posCatalogReady;
@@ -1147,14 +1193,20 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
                 posIsReadOnly = data.pedido.Estado === 2 || data.conciliacionComercial?.status === 'conflict';
                 document.getElementById('btn-guardar-mesa').classList.add('active-state');
                 updatePOSViewMode();
+                orderCacheServerSnapshot(data, empresa, tableNum).catch(() => {});
             } else {
                 resolvePOSWaiter(null, false, employeesLoaded);
                 posCart = []; posCurrentNroTicket = null;
                 posIsReadOnly = false;
                 updatePOSViewMode();
+                orderCacheServerSnapshot(data, empresa, tableNum).catch(() => {});
             }
         } catch (e) {
             if (e.name === 'AbortError' || generation !== posOrderLoadGeneration) return;
+            if (!e.status || e.status >= 500) {
+                const prepared = await offlineOrders.prepared(empresa).catch(() => null);
+                if (prepared) { controller.abort(); return openOfflinePOSOrder(tableNum, empresa); }
+            }
             console.error('Error al cargar pedido:', e);
             orderConflict = false; orderSaveError = ''; orderLoadError = e.message;
             posIsReadOnly = true;
@@ -1402,6 +1454,11 @@ async function loadMozos(empresa, mesa, generation = posOrderLoadGeneration, sig
         return true;
     } catch (e) {
         if (e.name === 'AbortError') return false;
+        const cached = await offlineOrders.prepared(empresa).catch(() => null);
+        if (cached && current()) {
+            posMozosList = offlineOrders.mozos(cached, empresa, mesa);
+            return true;
+        }
         console.error('Error al cargar mozos:', e);
         if (current()) posMozosList = [];
         return false;
@@ -1466,7 +1523,7 @@ async function guardarMesa() {
 }
 
 async function reservarMesa() {
-    if (posIsReadOnly) return;
+    if (!navigator.onLine || orderOfflinePending || posIsReadOnly) return;
     if (!posCurrentTable || !posCurrentTableEmpresa) {
         alert('Error: No se ha seleccionado una mesa');
         return;
@@ -1493,7 +1550,7 @@ async function reservarMesa() {
 }
 
 async function liberarMesa() {
-    if (posIsReadOnly) return;
+    if (!navigator.onLine || orderOfflinePending || posIsReadOnly) return;
     if (!posCurrentTable || !posCurrentTableEmpresa) {
         alert('Error: No se ha seleccionado una mesa');
         return;
@@ -1552,6 +1609,8 @@ async function loadPOSCategories(generation = posOrderLoadGeneration, signal = p
         renderPOSCategories(categories);
     } catch (e) {
         if (e.name === 'AbortError' || generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        const cached = await offlineOrders.prepared(empresa).catch(() => null);
+        if (cached) { renderPOSCategories(cached.categories); return; }
         console.error("POS: Error cargando categorías:", e);
         container.innerHTML = `<div style="color:red; padding:10px;">Error: ${e.message}</div>`;
     }
@@ -1643,6 +1702,11 @@ async function loadPOSProducts(generation = posOrderLoadGeneration) {
         markPOSCatalogUsable();
     } catch (e) {
         if (e.name === 'AbortError' || sequence !== posProductsLoadSequence || generation !== posOrderLoadGeneration || !isViewVisible('view-pos-order')) return;
+        const cached = await offlineOrders.prepared(empresa).catch(() => null);
+        if (cached) {
+            posProducts = cached.products; posCatalogReady = true; posProductCards.clear();
+            searchPOSProducts(); markPOSCatalogUsable(); return;
+        }
         finishPOSPerformance('catalog_error');
         console.error("POS: Error detallando la carga de productos:", e);
         grid.innerHTML = `<div style="color:red; text-align:center; width:100%; padding:20px;">
@@ -2318,17 +2382,8 @@ function redirectExpiredSession() {
 }
 
 async function verifyActiveSession() {
-    try {
-        const res = await fetch('/api/session', { cache: 'no-store' });
-        if (res.status === 401) {
-            redirectExpiredSession();
-            return false;
-        }
-        return res.ok;
-    } catch (error) {
-        console.warn('Sesión: no se pudo verificar al reactivar:', error.message);
-        return false;
-    }
+    const session = await posConnectivity.check();
+    return Boolean(session && !appSessionBootstrapFailed);
 }
 
 function scheduleSSEReconnect() {
@@ -2434,6 +2489,7 @@ async function runAppResumeSync() {
             if (!sessionRedirecting) scheduleAppResumeSync(3000);
             return;
         }
+        await orderSyncQueued();
         connectSSE(true);
         await reconcileActiveView();
         lastAppResumeAt = Date.now();
@@ -2470,6 +2526,10 @@ window.addEventListener('pageshow', event => { if (event.persisted) scheduleAppR
 window.addEventListener('online', () => scheduleAppResumeSync());
 window.addEventListener('offline', () => { closeSSE(); clearCocinaRecovery(false); });
 window.addEventListener('focus', () => scheduleAppResumeSync());
+setInterval(() => {
+    if (!appCanUseNetwork()) return;
+    orderSyncQueued().catch(() => {});
+}, 15000);
 
 function handleSSEEvent(data) {
     if (data.type === 'precios_feriado_updated') { syncHolidayPrices(data.empresa); return; }
