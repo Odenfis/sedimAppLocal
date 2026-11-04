@@ -1795,6 +1795,86 @@ test('X elimina grupo enviado y nuevo, conserva otra nota y no duplica guardado'
     expect(state.deletes).toBe(0);
 });
 
+test('impide salir con una anulación pendiente y permite salir después de enviarla', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect.poll(() => state.sends).toBe(1);
+    await page.evaluate(() => {
+        posCart.push({ ...posCart[0], lineaId: newOrderId(), enviada: null, nota: 'Sin sal' });
+        updateCartUI(); scheduleAutoSave();
+    });
+    await expect.poll(() => state.items.length).toBe(2);
+    await page.locator('[data-action="del"]').first().click();
+    await page.locator('#order-remove-confirm').click();
+    await expect.poll(() => state.items.length).toBe(1);
+    let message = '';
+    page.once('dialog', dialog => { message = dialog.message(); return dialog.accept(); });
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    expect(message).toContain('anulaciones pendientes');
+    page.once('dialog', dialog => dialog.accept());
+    await page.evaluate(() => openPOSOrder(2, 2));
+    expect(await page.evaluate(() => posCurrentTable)).toBe(1);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect.poll(() => state.sends).toBe(2);
+    await page.locator('#pos-order-back').click();
+    await expect(page.locator('#view-pos-tables')).toBeVisible();
+});
+
+test('sin conexión bloquea la salida con una reducción de unidades enviadas', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await page.locator('[data-action="inc"]').click();
+    await expect.poll(() => state.items[0]?.cantidad).toBe(2);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect.poll(() => state.sends).toBe(1);
+    await page.context().setOffline(true);
+    await page.locator('[data-action="dec"]').click();
+    let message = '';
+    page.once('dialog', dialog => { message = dialog.message(); return dialog.accept(); });
+    await page.locator('#pos-order-back').click();
+    expect(message).toContain('Si no hay conexión');
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    await page.context().setOffline(false);
+});
+
+test('una anulación guardada vuelve a proteger la mesa tras recargar', async ({ page }) => {
+    const state = await fixture(page);
+    await page.locator('.pos-product-card').first().click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.locator('#btn-enviar-cocina').click();
+    await expect.poll(() => state.sends).toBe(1);
+    await page.evaluate(() => { posCart.push({ ...posCart[0], lineaId: newOrderId(), enviada: null, nota: 'Sin sal' }); updateCartUI(); scheduleAutoSave(); });
+    await expect.poll(() => state.items.length).toBe(2);
+    await page.locator('[data-action="del"]').first().click();
+    await page.locator('#order-remove-confirm').click();
+    await expect.poll(() => state.items.length).toBe(1);
+    await page.reload();
+    await page.selectOption('#pos-empresa-select', '02');
+    await page.getByRole('button', { name: 'Mañana', exact: true }).click();
+    await page.locator('.pos-table-card').first().click();
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+    let message = '';
+    page.once('dialog', dialog => { message = dialog.message(); return dialog.accept(); });
+    await page.locator('#pos-order-back').click();
+    expect(message).toContain('anulaciones pendientes');
+    await expect(page.locator('#view-pos-order')).toBeVisible();
+});
+
+test('avisa si la impresora falla después de liberar la mesa', async ({ page }) => {
+    await fixture(page);
+    await page.evaluate(() => sessionStorage.setItem('sedim-cancellation-prints', JSON.stringify({
+        '11111111-1111-4111-8111-111111111111': { mesa: 1, ticket: 'T001-000001' }
+    })));
+    let message = '';
+    page.once('dialog', dialog => { message = dialog.message(); return dialog.accept(); });
+    await page.evaluate(() => handleSSEEvent({ type: 'impresion_updated', estado: 'error', destino: 'cocina', envioId: '11111111-1111-4111-8111-111111111111' }));
+    expect(message).toContain('Mesa 1');
+    expect(message).toContain('historial de Cocina');
+});
+
 test('confirmación rechaza cambio de mesa y solo lectura', async ({ page }) => {
     const state = await fixture(page);
     await page.locator('.pos-product-card').first().click();

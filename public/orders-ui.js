@@ -31,6 +31,21 @@ let orderVersion = 0, orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'S
 let orderDirty = false, orderConflict = false, orderBusy = false, orderSavePromise = null;
 let orderSaveError = '', orderLoadError = '', orderNavigationMessage = '', orderConfirmation = '', orderGeneration = 0;
 let orderSendAttempt = null, orderPrinting = null, orderPrintings = [], orderPendingCancellations = [];
+let orderSentLines = new Map();
+function orderRememberSent(data) {
+    orderSentLines = new Map((data?.items || []).filter(line => line.enviada).map(line => [line.lineaId, line.enviada]));
+    for (const line of data?.cocina?.anulaciones || []) if (line.lineaId) orderSentLines.set(line.lineaId, line);
+}
+function orderUnsentCancellations() {
+    const pending = new Map(orderPendingCancellations.map(line => [line.lineaId, line]));
+    for (const [id, sent] of orderSentLines) {
+        const current = posCart.find(line => line.lineaId === id);
+        if (!current) pending.set(id, sent);
+        else if (Number(current.cantidad) < Number(sent.cantidad)) pending.set(id, { ...sent, cantidad: Number(sent.cantidad) - Number(current.cantidad) });
+        else pending.delete(id);
+    }
+    return [...pending.values()];
+}
 let orderCommercialConflict = false;
 let orderCompanyContextError = false;
 let orderDeleteRetry = false;
@@ -99,7 +114,7 @@ async function openOfflinePOSOrder(mesa, empresa) {
         return false;
     }
     setLoadNotice('offline-table', document.getElementById('pos-tables-grid'), '');
-    if (!await orderBeforeOpen()) return;
+    if (!await orderBeforeOpen(mesa, empresa)) return;
     cancelPOSOrderLoad(); orderReset();
     posCurrentTable = mesa; posCurrentTableEmpresa = empresa; posCurrentNroTicket = draft?.snapshot?.nroTicket || draft?.server?.pedido?.NroTicket || null;
     document.getElementById('pos-current-table').textContent = mesa;
@@ -110,6 +125,7 @@ async function openOfflinePOSOrder(mesa, empresa) {
     const saved = draft?.server;
     if (saved?.pedido) {
         orderVersion = saved.version || 0; orderSummary = saved.cocina || orderSummary;
+        orderPendingCancellations = saved.cocina?.anulaciones || []; orderRememberSent(saved);
         orderCode = saved.pedido.CodigoPedido || '';
     }
     const snapshot = draft?.snapshot;
@@ -194,6 +210,13 @@ async function orderSyncOne(draft) {
     }
     if (pending) {
         const saved = await orderRequest('/api/pos/pedido', 'POST', pending);
+        if (saved.pedidoEliminado) {
+            await offlineOrders.remove(latest.empresa, latest.mesa);
+            if (Number(posCurrentTable) === latest.mesa && Number(posCurrentTableEmpresa) === latest.empresa) {
+                orderDeletionNotice(saved); orderFinishDeletion();
+            }
+            return;
+        }
         const currentDraft = await offlineOrders.get(latest.empresa, latest.mesa) || latest;
         currentDraft.server = saved; currentDraft.pending = null;
         currentDraft.dirty = currentDraft.revision !== latest.pendingRevision;
@@ -303,6 +326,7 @@ async function orderRequest(url, method = 'GET', body) {
     return data;
 }
 function orderReset() {
+    orderSentLines.clear();
     orderMovedTo = null; orderTransferNotices = []; orderTransferContext = null; document.getElementById('order-transfer-dialog')?.close();
     orderSavedPriceIds.clear(); orderPriceConflict = false; document.getElementById('holiday-review-dialog')?.close();
     orderCode = ''; orderCodeRevision++; orderCodeError = '';
@@ -327,6 +351,7 @@ function orderAccept(data, codeRevision = null, savedGeneration = null) {
     orderPrintings = Array.isArray(data.impresiones) ? data.impresiones : (orderPrinting ? [{ ...orderPrinting, destino: 'cocina' }] : []);
     orderTransferNotices = data.avisosTraslado || [];
     orderPendingCancellations = data.cocina?.anulaciones || [];
+    orderRememberSent(data);
     if (data.nroTicket) posCurrentNroTicket = data.nroTicket;
     for (const saved of data.items || []) orderSavedPriceIds.add(saved.lineaId);
     for (const l of posCart) {
@@ -352,6 +377,7 @@ function orderFinishDeletion() {
     clearTimeout(posAutoSaveTimer);
     orderDirty = false; orderConflict = false; orderCommercialConflict = false; orderDeleteRetry = false; orderSaveError = ''; orderLoadError = ''; orderNavigationMessage = ''; orderConfirmation = ''; orderPrinting = null; orderPrintings = [];
     orderCompanyContextError = false; orderVersion = 0; orderSummary = { pendientes: 0, ultimoEnvio: 0, estado: 'Sin enviar' };
+    orderPendingCancellations = []; orderSentLines.clear();
     posCurrentNroTicket = null; posCart = []; posIsReadOnly = false;
     updateCartUI(); showView('pos-tables'); closeCartSheet(); loadPOSTables();
 }
@@ -419,7 +445,7 @@ async function orderFlush() {
     orderSavePromise = (async () => {
         try {
             const data = await orderRequest('/api/pos/pedido', 'POST', payload);
-            if (data.pedidoEliminado) { orderFinishDeletion(); return; }
+            if (data.pedidoEliminado) { orderDeletionNotice(data); orderFinishDeletion(); return; }
             if (orderMovedTo) throw new Error(`El pedido se trasladó a Mesa ${orderMovedTo}. Su borrador se conserva para revisión.`);
             orderAccept(data, codeRevision, generation); orderDirty = generation !== orderGeneration; orderSaveError = ''; updateCartUI();
             const currentDraft = await offlineOrders.get(posCurrentTableEmpresa, posCurrentTable).catch(() => null);
@@ -480,8 +506,13 @@ function renderOrderStatus() {
     setOrderUIProperty(pay, 'disabled', !navigator.onLine || orderOfflinePending || posIsReadOnly || posWaiterLoading || Boolean(posWaiterError) || orderBusy || orderConflict || orderPriceConflict || orderDirty || !!orderSummary.pendientes || !posCart.length);
     setOrderUIProperty(document.getElementById('order-envios'), 'disabled', !posCurrentNroTicket || orderBusy);
 }
-async function orderBeforeOpen() {
+async function orderBeforeOpen(mesa, empresa) {
     if (orderBusy) return false;
+    if (typeof isViewVisible === 'function' && isViewVisible('view-pos-order') && posCurrentTable != null &&
+        (Number(posCurrentTable) !== Number(mesa) || Number(posCurrentTableEmpresa) !== Number(empresa)) && orderUnsentCancellations().length) {
+        orderNavigationMessage = 'Hay anulaciones pendientes. Envíe los cambios a Cocina antes de cambiar de mesa.';
+        renderOrderStatus(); alert(orderNavigationMessage); return false;
+    }
     if (orderDirty || orderSavePromise) {
         try { await orderFlush(); } catch {
             if (orderOfflineDurable && orderOfflinePending && !orderConflict) return true;
@@ -540,7 +571,7 @@ async function orderPay() {
 }
 async function deleteCurrentOrder({ ask = true } = {}) {
     if (!navigator.onLine || orderOfflinePending || orderBusy || (posIsReadOnly && !orderCommercialConflict) || !posCurrentNroTicket) return false;
-    if (ask && !confirm('Se eliminará el pedido y la mesa quedará libre. El historial previo de Cocina se conservará. ¿Continuar?')) return false;
+    if (ask && !confirm('Se cancelarán los productos enviados en Cocina, Bebidas o Barra y se liberará la mesa. Revise la impresión en el historial. ¿Continuar?')) return false;
     orderBusy = true; orderDeleteRetry = false;
     try {
         clearTimeout(posAutoSaveTimer);
@@ -552,15 +583,41 @@ async function deleteCurrentOrder({ ask = true } = {}) {
             { ...attempt, operacionId: orderOperation() });
         sessionStorage.removeItem(retryKey);
         orderDirty = false;
-        alert('Pedido eliminado y mesa liberada.');
+        orderDeletionNotice(data);
         orderBusy = false; orderFinishDeletion();
         return true;
     } catch (e) { orderDeleteRetry = true; orderSaveError = e.message; return false; } finally { orderBusy = false; renderOrderStatus(); }
 }
 async function orderDelete() { return deleteCurrentOrder({ ask: true }); }
+function orderDeletionNotice(data) {
+    if (data.envioCancelacionId || data.anulaciones) {
+        if (data.envioCancelacionId) {
+            try {
+                const tracked = JSON.parse(sessionStorage.getItem('sedim-cancellation-prints') || '{}');
+                tracked[data.envioCancelacionId.toLowerCase()] = { mesa: posCurrentTable, ticket: posCurrentNroTicket };
+                sessionStorage.setItem('sedim-cancellation-prints', JSON.stringify(Object.fromEntries(Object.entries(tracked).slice(-30))));
+            } catch {}
+        }
+        alert('Cancelación registrada y mesa liberada. Revise la impresión de Cocina, Bebidas y Barra en el historial de Cocina; si falla o no hay impresora habilitada, avise al personal y gestione la reimpresión.');
+    }
+    else alert('Pedido eliminado y mesa liberada.');
+}
+function warnCancellationPrint(data) {
+    if (!['error', 'incierto'].includes(data.estado) || !data.envioId) return;
+    try {
+        const tracked = JSON.parse(sessionStorage.getItem('sedim-cancellation-prints') || '{}');
+        const entry = tracked[String(data.envioId).toLowerCase()];
+        if (!entry) return;
+        const key = `${data.destino || 'cocina'}:${data.estado}`;
+        entry.warned ||= [];
+        if (entry.warned.includes(key)) return;
+        entry.warned.push(key); sessionStorage.setItem('sedim-cancellation-prints', JSON.stringify(tracked));
+        alert(`La impresión de la cancelación de Mesa ${entry.mesa} (${entry.ticket}) tiene estado ${data.estado} en ${data.destino || 'cocina'}. Avise al personal y revise el historial de Cocina antes de reimprimir.`);
+    } catch {}
+}
 async function orderClear() {
     if (!navigator.onLine || orderOfflinePending || orderBusy || (posIsReadOnly && !orderCommercialConflict)) return;
-    if (!confirm('¿Limpiar todo el pedido y liberar la mesa?')) return;
+    if (!confirm('¿Cancelar los productos enviados a Cocina, Bebidas o Barra y liberar la mesa? Revise la impresión en el historial de Cocina.')) return;
     if (posCurrentNroTicket) return deleteCurrentOrder({ ask: false });
     posCart = []; orderDirty = false; orderFinishDeletion();
     return true;
@@ -669,7 +726,7 @@ async function acknowledgeKitchenLine(nroTicket, lineaId) {
     catch (e) { alert(e.message); }
 }
 
-if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if ((orderDirty && !orderOfflineDurable) || orderSavePromise || orderBusy) { e.preventDefault(); e.returnValue = ''; } });
+if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if (orderUnsentCancellations().length || (orderDirty && !orderOfflineDurable) || orderSavePromise || orderBusy) { e.preventDefault(); e.returnValue = ''; } });
 
 if (typeof module !== 'undefined') module.exports = { orderKitchenStatus, orderKitchenHeadline };
 

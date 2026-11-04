@@ -243,6 +243,30 @@ async function main() {
             assert.deepEqual(onlyDestinations.map(row => row.Destino),['bebidas']);
             assert.equal((await pool.request().input('envio',beverageOnlySend.envioId).query('SELECT COUNT(*) n FROM Impresion_barra_trabajos WHERE EnvioId=@envio')).recordset[0].n,0);
             await call('delete','/api/pos/comanda/:nro',{version:beverageOnlySend.version,clave:randomUUID()},{nro:beverageOnly.nroTicket},{empresa:2});
+            const all = await save([kitchenLine,beverageLine,barLine].map(line => ({...line,lineaId:randomUUID()})),undefined,undefined,3);
+            const allSent = await call('post','/api/pos/pedido/:nro/enviar-cocina',{empresa:2,version:all.version,clave:randomUUID()},{nro:all.nroTicket});
+            const extra = await save([...allSent.items,{...kitchenLine,lineaId:randomUUID(),nota:'Nunca enviado'}],allSent.version,all.nroTicket,3);
+            await pool.request().query(`CREATE TRIGGER [${schema}].[RejectCancellation] ON Impresion_trabajos AFTER INSERT AS THROW 51000,'Injected cancellation failure',1;`);
+            const failedCancel = await call('delete','/api/pos/comanda/:nro',{version:extra.version,clave:randomUUID()},{nro:all.nroTicket},{empresa:2});
+            assert.equal(failedCancel.status,500); assert.equal((await get(3)).items.length,4);
+            await pool.request().query(`DROP TRIGGER [${schema}].[RejectCancellation]`);
+            const allDeleted = await call('delete','/api/pos/comanda/:nro',{version:extra.version,clave:randomUUID()},{nro:all.nroTicket},{empresa:2});
+            assert.equal(allDeleted.status,200,JSON.stringify(allDeleted)); assert.equal(allDeleted.anulaciones,3);
+            const cancellationDocs = (await pool.request().input('envio',allDeleted.envioCancelacionId).query(`SELECT d.Destino,j.Documento
+                FROM Impresion_trabajos j JOIN Impresion_trabajo_destinos d ON d.TrabajoId=j.Id WHERE j.EnvioId=@envio
+                UNION ALL SELECT 'barra',Documento FROM Impresion_barra_trabajos WHERE EnvioId=@envio`)).recordset;
+            assert.deepEqual(cancellationDocs.map(j=>j.Destino).sort(),['barra','bebidas','cocina']);
+            for (const job of cancellationDocs) { assert.match(job.Documento,/ANULACIÓN/); assert.doesNotMatch(job.Documento,/Nunca enviado/); }
+            assert.match(cancellationDocs.find(j=>j.Destino==='cocina').Documento,/Arroz con mariscos/);
+            assert.match(cancellationDocs.find(j=>j.Destino==='bebidas').Documento,/Chicha morada/);
+            assert.match(cancellationDocs.find(j=>j.Destino==='barra').Documento,/Pisco sour/);
+            await pool.request().input('envio',allDeleted.envioCancelacionId).query(`UPDATE Impresion_trabajos SET Estado='error' WHERE EnvioId=@envio;
+                UPDATE Impresion_barra_trabajos SET Estado='error' WHERE EnvioId=@envio`);
+            for (const destino of ['cocina','bebidas','barra']) {
+                const retry = await call('post','/api/pos/pedido/:nro/envios/:envio/reimprimir',
+                    {empresa:2,clave:randomUUID(),destino},{nro:all.nroTicket,envio:allDeleted.envioCancelacionId});
+                assert.equal(retry.status,200,JSON.stringify(retry));
+            }
         } finally {
             if(previousBarEnabled===undefined) delete process.env.BAR_PRINTER_ENABLED; else process.env.BAR_PRINTER_ENABLED=previousBarEnabled;
             if(previousBarHost===undefined) delete process.env.BAR_PRINTER_HOST; else process.env.BAR_PRINTER_HOST=previousBarHost;
@@ -256,6 +280,8 @@ async function main() {
         kds = await call('get','/api/cocina/pedidos',{}, {}, { empresa:2 }); const operative = kds.pedidos.flatMap(p=>p.lineas).find(l=>l.lineaId===lineId);
         assert.ok(operative.correccionPendiente); assert.notEqual(operative.nota,'Sin azúcar');
         const blocked = await save(edits.map(l=>({...l,nota:'Otro cambio'})),correction.version,nro); assert.equal(blocked.status,409);
+        const blockedCancellation = await call('delete','/api/pos/comanda/:nro',{version:correction.version,clave:randomUUID()},{nro},{empresa:2});
+        assert.equal(blockedCancellation.status,409); assert.equal((await get(2)).items.length,2);
         const delivered = await call('put','/api/cocina/ticket/:nro/entregado',{empresa:2},{nro}); assert.equal(delivered.status,409);
         const ack = await call('put','/api/cocina/linea/:linea/reconocer',{empresa:2,nroTicket:nro},{linea:lineId}); assert.equal(ack.status,200);
         kds = await call('get','/api/cocina/pedidos',{}, {}, { empresa:2 }); const recognized = kds.pedidos.flatMap(p=>p.lineas).find(l=>l.lineaId===lineId);
@@ -287,12 +313,19 @@ async function main() {
             (SELECT COUNT(*) FROM Pedido_lineas WHERE NroTicket=@nro AND Baja=1) Bajas,
             (SELECT COUNT(*) FROM Cocina_estados WHERE NroTicket=@nro AND Anulada=1 AND PendienteId IS NULL) Anuladas,
             (SELECT COUNT(*) FROM Cocina_envios WHERE NroTicket=@nro AND Historico=1) Historicos`)).recordset[0];
-        assert.equal(archivedLines.Bajas,2); assert.equal(archivedLines.Anuladas,2); assert.equal(archivedLines.Historicos,2);
+        assert.equal(archivedLines.Bajas,2); assert.equal(archivedLines.Anuladas,1); assert.equal(archivedLines.Historicos,3);
+        assert.ok(deleted.envioCancelacionId); assert.equal(deleted.anulaciones,2);
+        const cancellationAudit = (await pool.request().input('envio',deleted.envioCancelacionId).query(`SELECT
+            (SELECT COUNT(*) FROM Cocina_envio_detalles WHERE EnvioId=@envio AND JSON_VALUE(Movimiento,'$.tipo')='ANULACIÓN') Movimientos,
+            (SELECT COUNT(*) FROM Impresion_trabajos WHERE EnvioId=@envio AND Documento LIKE '%ANULACIÓN%') Trabajos`)).recordset[0];
+        assert.deepEqual(cancellationAudit,{Movimientos:2,Trabajos:1});
+        const pendingCancel = await call('get','/api/cocina/pedidos',{}, {}, {empresa:2});
+        assert.ok(pendingCancel.pedidos.flatMap(p=>p.lineas).some(l=>l.lineaId===lineId && l.correccionPendiente?.tipo==='ANULACIÓN'));
         const retriedCancel = await call('delete','/api/pos/comanda/:nro',{version:reopened.version,clave:cancelKey},{nro},{empresa:2});
-        assert.equal(retriedCancel.status,200); assert.equal(retriedCancel.yaEliminado,true);
+        assert.equal(retriedCancel.status,200); assert.equal(retriedCancel.yaEliminado,true); assert.equal(retriedCancel.envioCancelacionId,deleted.envioCancelacionId);
         assert.equal((await get(2)).pedido,null);
         const audit = (await pool.request().input('nro',nro).query('SELECT COUNT(*) n FROM Cocina_envios WHERE NroTicket=@nro')).recordset[0].n;
-        assert.equal(audit,2);
+        assert.equal(audit,3);
         const day = new Date().toLocaleDateString('en-CA',{timeZone:'America/Lima'});
         const kitchenHistory = await call('get','/api/cocina/historial',{}, {}, {empresa:2,desde:day,hasta:day,estado:'anulado',pagina:1,tamano:20});
         assert.equal(kitchenHistory.status,200); assert.ok(kitchenHistory.envios.some(e => e.nroTicket === nro && e.estadoPedido === 'anulado'));

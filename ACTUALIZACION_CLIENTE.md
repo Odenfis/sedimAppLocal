@@ -25,6 +25,14 @@ No se necesita ejecutar `git pull`, `git clone`, `npm install` ni comandos de Do
 - Envíe una comanda a Cocina y confirme que aparece en KDS y sale por la impresora.
 - Compruebe desde un celular que la dirección `http://IP_FIJA_DEL_SERVIDOR:PUERTO` continúa disponible.
 
+## Fase 72 — cancelaciones de mesa
+
+- Antes de instalar, confirme la versión actual y un respaldo disponible. Actualice la aplicación y recargue los dispositivos para obtener `orders-ui.js` y `script.js` versión 72; no hay migración SQL nueva.
+- En una mesa de prueba, envíe varios productos, elimine uno e intente salir: el POS debe avisar y mantener abierta la mesa hasta enviar la anulación. Repita con una reducción de cantidad y con la conexión interrumpida.
+- En otra mesa de prueba envíe productos de Cocina, Bebidas y Barra, agregue uno sin enviar y pulse Limpiar. Compruebe que los papeles de cada destino muestran solamente sus productos enviados como ANULACIÓN, y que el producto nunca enviado no aparece. Repita con Borrar comanda y con el último producto.
+- Simule una impresora indisponible y revise los estados y la reimpresión desde Cocina → Historial después de liberar la mesa. El aviso en pantalla depende de recibir el evento en la pestaña; si estuvo cerrada o desconectada, consulte el historial. Si impresión está deshabilitada, comunique la cancelación al personal.
+- Compruebe que una corrección pendiente de reconocimiento bloquea la cancelación total, y que una anulación de un plato en preparación permanece en el tablero hasta que Cocina la reconoce. Haga el piloto fuera del servicio normal antes de ampliarlo.
+
 ## Configuración que debe permanecer en `.env`
 
 No escriba aquí los valores reales. El archivo privado del cliente debe conservar:

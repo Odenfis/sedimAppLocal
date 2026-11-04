@@ -424,7 +424,7 @@
         <p id="order-remove-product"></p>
         <p id="order-remove-description"></p>
         <p id="order-remove-empty" hidden>El pedido quedará vacío y se eliminará. La mesa se liberará si no tiene otro pedido activo.</p>
-        <p id="order-remove-sent" hidden>Se conserva el flujo de anulaciones y el historial de Cocina.</p>
+        <p id="order-remove-sent" hidden>Si queda vacío, se enviará la cancelación a Cocina y a los demás destinos correspondientes. Revise la impresión en el historial.</p>
         <div class="order-dialog-actions"><button type="button" id="order-remove-cancel" autofocus onclick="closeProductRemoval()">Cancelar</button><button type="button" id="order-remove-confirm" onclick="confirmProductRemoval()">Eliminar</button></div>
     </dialog>
     <dialog id="order-notes-dialog" class="order-dialog" aria-labelledby="order-notes-title">
@@ -464,8 +464,8 @@
     <script src="order-math.js?v=59"></script>
     <script src="offline-orders.js?v=69"></script>
     <script src="connectivity.js?v=69"></script>
-    <script src="orders-ui.js?v=71"></script>
-    <script src="script.js?v=71"></script>
+    <script src="orders-ui.js?v=72"></script>
+    <script src="script.js?v=72"></script>
 </body>
 
 </html>

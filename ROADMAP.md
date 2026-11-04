@@ -1799,3 +1799,14 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Pendiente en producción: confirmar versión instalada y conservar respaldo, recoger registros con marca de tiempo y `X-Request-Id`, identificar la consulta lenta, esperas/bloqueos y recursos de SQL Server en el equipo Windows, aplicar una corrección dirigida y repetir el piloto en una tablet con Cocina. Esta fase no se declara instalada ni resuelta en producción.
 
 ---
+
+## Fase 72: Cancelaciones protegidas y aviso físico (Implementada en código; validación física pendiente)
+
+- Salir de una mesa queda bloqueado mientras haya una anulación o reducción de cantidad enviada que aún no se haya registrado en Cocina. El aviso indica los productos y pide enviar los cambios; sin conexión se conserva el borrador. El navegador advierte al cerrar o recargar, aunque no puede impedir todos los cierres.
+- Limpiar, Borrar comanda y eliminar la última línea generan una anulación por cada línea previamente enviada, con documentos separados por Cocina, Bebidas y Barra. Las líneas nunca enviadas no generan aviso. Envío, cola y eliminación comercial se confirman en una sola transacción; un fallo revierte todo y un reintento no duplica el envío.
+- Una corrección anterior aún pendiente de reconocimiento impide cancelar el pedido hasta que Cocina la reconozca. Las anulaciones de platos ya en preparación permanecen visibles en Cocina para reconocimiento incluso después de liberar la mesa.
+- El registro del envío no confirma que haya salido papel: se pide revisar el historial de Cocina, que muestra el estado por destino y permite reimprimir. Los errores posteriores comunicados por SSE generan un aviso en la misma pestaña; si el navegador está cerrado o desconectado, se debe consultar el historial. Con impresión deshabilitada no se crea trabajo para ese destino y se debe avisar al personal.
+- Verificación local: 79 pruebas unitarias, 45 escenarios SQL en un esquema temporal aislado y 167 pruebas de interfaz de escritorio; además, cuatro pruebas focalizadas posteriores cubrieron cambio directo de mesa, desconexión, recarga y alerta de impresión.
+- No requiere migración SQL. Pendiente confirmar la versión instalada, respaldar y validar en el cliente el papel físico por destino, fallos y reimpresión antes de ampliar su uso. No se declara instalado en producción.
+
+---

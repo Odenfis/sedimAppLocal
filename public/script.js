@@ -1127,7 +1127,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
         }
     }
     setLoadNotice('offline-table', tableGrid, '');
-    if (!await orderBeforeOpen()) return;
+    if (!await orderBeforeOpen(tableNum, selectedCompany)) return;
     preserveUI = preserveUI && Number(posCurrentTable) === Number(tableNum) && posCurrentTableEmpresa === selectedCompany && isViewVisible('view-pos-order');
     const refreshCatalog = !preserveUI || posIsReadOnly || !posCatalogReady;
     cancelPOSOrderLoad();
@@ -2217,6 +2217,14 @@ async function leavePOSOrder(viewName = 'pos-tables') {
         renderOrderStatus();
         return false;
     }
+    const pendingCancellations = orderUnsentCancellations();
+    if (pendingCancellations.length) {
+        const names = pendingCancellations.map(line => `${line.cantidad} × ${line.nombre}`).join(', ');
+        orderNavigationMessage = `Hay anulaciones pendientes de enviar: ${names}. Envíe los cambios a Cocina antes de salir. Si no hay conexión, espere a recuperarla.`;
+        renderOrderStatus();
+        alert(orderNavigationMessage);
+        return false;
+    }
     if (orderCompanyContextError && orderDirty) {
         if (!confirm('La empresa del pedido cambió o no es válida. ¿Descartar únicamente este borrador local y regresar al mapa?')) {
             orderNavigationMessage = 'El borrador local continúa abierto.';
@@ -2590,6 +2598,7 @@ function handleSSEEvent(data) {
         }
     }
 
+    if (data.type === 'impresion_updated') warnCancellationPrint(data);
     if (data.type === 'impresion_updated' && posCurrentNroTicket && !orderDirty && !orderBusy && !orderLoadError) {
         const generation = posOrderLoadGeneration;
         const table = posCurrentTable;
@@ -3211,6 +3220,11 @@ async function loadCocinaHistorial(page = 1) {
             const meta = document.createElement('p');
             meta.textContent = `Mesa ${envio.NroMesa} · ${new Date(envio.Fecha).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: false })} · ${envio.estadoPedido}`;
             const audit = document.createElement('p'); audit.textContent = `${envio.Movimientos} movimiento(s) · ${envio.Reconocidos} reconocimiento(s)`;
+            const printing = document.createElement('p');
+            printing.textContent = PRINT_DESTINATIONS.map(destination => {
+                const job = [...envio.trabajos].reverse().find(item => (item.Destino || 'cocina') === destination);
+                return job ? estadoImpresionCocina(job, destination) : '';
+            }).filter(Boolean).join(' · ') || 'Sin trabajos de impresión para este envío.';
             const actions = document.createElement('div'); actions.className = 'cocina-history-actions';
             const view = document.createElement('button'); view.type = 'button'; view.textContent = 'Ver ticket';
             const latestKitchenJob = [...envio.trabajos].reverse().find(j => (j.Destino || 'cocina') === 'cocina') || null;
@@ -3233,7 +3247,7 @@ async function loadCocinaHistorial(page = 1) {
                 };
                 actions.appendChild(reprint);
             }
-            article.append(heading, meta, audit, actions); results.appendChild(article);
+            article.append(heading, meta, audit, printing, actions); results.appendChild(article);
         }
         const pages = Math.max(1, Math.ceil(data.total / data.tamano));
         const pager = document.getElementById('cocina-history-pagination'); pager.replaceChildren();
