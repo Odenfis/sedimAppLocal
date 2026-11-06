@@ -2835,7 +2835,7 @@ function observeCocinaEnvios(empresa, pedidos, stale) {
 
 function setCocinaFiltro(f) {
     cocinaFiltro = f;
-    document.querySelectorAll('.cocina-chip').forEach(c => c.classList.toggle('active', c.dataset.filtro === f));
+    document.querySelectorAll('#cocina-chips .cocina-chip').forEach(c => c.classList.toggle('active', c.dataset.filtro === f));
     renderCocinaBoard();
 }
 
@@ -2893,6 +2893,7 @@ function cocinaSyncTime(value) {
             : `hace ${Math.floor(seconds / 3600)} h`;
     return `${date.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (${age})`;
 }
+let cocinaSnapshotStale = true, cocinaVisibilityBusy = false;
 
 async function loadCocinaPedidosOnce() {
     const empresaSelect = document.getElementById('cocina-empresa-select');
@@ -2902,6 +2903,7 @@ async function loadCocinaPedidosOnce() {
     if (!empresaSelect || !board) return;
     if (typeof cocinaVista !== 'undefined' && cocinaVista === 'historial') return loadCocinaHistorial(1);
     if (!empresaSelect.value) {
+        cocinaSnapshotStale = true;
         cocinaData = [];
         setLoadNotice('kitchen', board, '');
         renderCocinaBoard();
@@ -2910,11 +2912,13 @@ async function loadCocinaPedidosOnce() {
 
     try {
         const company = empresaSelect.value;
+        cocinaSnapshotStale = true; renderCocinaBoard();
         controller = new AbortController();
         cocinaAbortController = controller;
         const data = await fetchViewJson(`/api/cocina/pedidos?empresa=${company}`, controller.signal);
         if (generation !== cocinaLoadGeneration || empresaSelect.value !== company || !isCocinaViewVisible()) return;
         const synchronization = data.sincronizacion || { desactualizado: false, actualizadaEn: new Date().toISOString() };
+        cocinaSnapshotStale = Boolean(synchronization.desactualizado);
         // Normaliza el contrato agrupado de la API al modelo interno del tablero.
         cocinaData = (data.pedidos || []).flatMap(p => (p.lineas || []).map(l => ({
             Traslado: p.traslado, NroTicket: p.nroTicket, NroMesa: p.mesa, EnvioId: p.envioId, NumeroEnvio: p.numeroEnvio, Mozo: p.mozo,
@@ -2922,7 +2926,8 @@ async function loadCocinaPedidosOnce() {
             Impresion: p.impresion, Impresiones: p.impresiones || (p.impresion ? [{ ...p.impresion, destino: 'cocina' }] : []),
             EstadoCocina: l.estado, LineaId: l.lineaId, Codpro: l.codPro, Cantidad: l.cantidad,
             Descripcion: l.nombre, notasRapidas: l.notasRapidas || [], nota: l.nota || '',
-            Categoria: l.Categoria, datosIncompletos: Boolean(l.datosIncompletos), pendiente: l.correccionPendiente || null
+            Categoria: l.Categoria, datosIncompletos: Boolean(l.datosIncompletos), pendiente: l.correccionPendiente || null,
+            oculta: Boolean(l.oculta), revisionEnvio: l.revisionEnvio || null
         })));
         const synchronizedAt = new Date(synchronization.actualizadaEn).valueOf();
         cocinaFetchTime = Number.isNaN(synchronizedAt) ? Date.now() : synchronizedAt;
@@ -2944,6 +2949,7 @@ async function loadCocinaPedidosOnce() {
         if (e.name === 'AbortError') return;
         console.error(e);
         if (generation === cocinaLoadGeneration && isCocinaViewVisible()) {
+            cocinaSnapshotStale = true; renderCocinaBoard();
             const ref = e.diagnosticId ? ` Referencia: ${e.diagnosticId}.` : '';
             const prefix = cocinaUpdateExpected ? 'Envío registrado, actualización pendiente. ' : 'No se pudo actualizar Cocina. ';
             const retrying = e.retryable === true || e.status == null;
@@ -2975,7 +2981,7 @@ function loadCocinaPedidos() {
 
 function agruparCocinaPorTicket() {
     const mapa = new Map();
-    cocinaData.forEach(r => {
+    cocinaData.filter(r => !r.oculta || r.pendiente).forEach(r => {
         if (!mapa.has(r.NroTicket)) {
             mapa.set(r.NroTicket, {
                 NroTicket: r.NroTicket,
@@ -3012,6 +3018,29 @@ function renderCocinaBoard() {
     Object.values(columnas).forEach(b => { if (b) b.innerHTML = ''; });
 
     const tickets = agruparCocinaPorTicket();
+    const hidden = document.getElementById('cocina-hidden');
+    if (hidden) {
+        hidden.replaceChildren();
+        const rows = cocinaData.filter(line => line.oculta && !line.pendiente);
+        if (!rows.length) hidden.textContent = 'No hay platos ocultos activos en esta empresa.';
+        for (const line of rows) {
+            const card = document.createElement('article'); card.className = 'cocina-history-card';
+            const label = document.createElement('p');
+            label.textContent = `Mesa ${line.NroMesa} · ${line.NroTicket} · ${fmtCantCocina(line.Cantidad)} × ${line.Descripcion}`;
+            const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = 'Restaurar';
+            restore.disabled = cocinaVisibilityBusy || cocinaSnapshotStale;
+            restore.onclick = () => changeKitchenVisibility('restaurar', [line]);
+            card.append(label, restore); hidden.append(card);
+        }
+    }
+    const clear = document.getElementById('cocina-clear-board');
+    if (clear) { clear.hidden = cocinaVista !== 'tablero'; clear.disabled = cocinaVisibilityBusy || cocinaSnapshotStale || !document.getElementById('cocina-empresa-select')?.value; }
+    const retry = document.getElementById('cocina-visibility-retry');
+    if (retry) {
+        let pending = null; try { pending = JSON.parse(sessionStorage.getItem('sedim-kitchen-visibility') || 'null'); } catch {}
+        retry.hidden = !pending;
+        retry.disabled = cocinaVisibilityBusy || cocinaSnapshotStale || Number(document.getElementById('cocina-empresa-select')?.value) !== pending?.empresa;
+    }
 
     document.querySelectorAll('.cocina-columna').forEach(col => {
         const colKey = col.dataset.col;
@@ -3021,7 +3050,7 @@ function renderCocinaBoard() {
         if (countEl) countEl.innerText = count;
     });
 
-    if (!cocinaData.length) {
+    if (!tickets.length) {
         columnas.pendiente.innerHTML =
             '<div class="cocina-vacio"><i class="fas fa-mug-hot"></i><p>Sin comandas pendientes</p></div>';
         return;
@@ -3095,7 +3124,9 @@ function construirTarjetaCocina(t) {
 
     const actions = document.createElement('div');
     actions.className = 'cocina-card-actions';
-    if (todosListos) {
+    if (cocinaData.some(line => line.NroTicket === t.NroTicket && line.oculta && !line.pendiente)) {
+        const note = document.createElement('span'); note.textContent = 'Restaure los platos ocultos para completar el pedido.'; actions.append(note);
+    } else if (todosListos) {
         actions.innerHTML = `<button type="button" class="cocina-btn-entregar" onclick="entregarCocina('${t.NroTicket}')">
             <i class="fas fa-check-double"></i> ENTREGAR</button>`;
     } else {
@@ -3186,33 +3217,87 @@ let cocinaVista = 'tablero';
 function limaDateInput() {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
 }
+function setKitchenVisibilityStatus(message, scope = 'global') {
+    const status = document.getElementById('cocina-visibility-status');
+    status.textContent = message;
+    status.dataset.scope = scope;
+    status.hidden = scope === 'tablero' && cocinaVista !== 'tablero';
+}
 function setCocinaVista(vista) {
-    cocinaVista = vista === 'historial' ? 'historial' : 'tablero';
+    cocinaVista = ['historial','ocultos'].includes(vista) ? vista : 'tablero';
     document.querySelectorAll('.cocina-view-tab').forEach(b => b.classList.toggle('active', b.dataset.vista === cocinaVista));
     document.getElementById('cocina-board').hidden = cocinaVista !== 'tablero';
     document.getElementById('cocina-chips').hidden = cocinaVista !== 'tablero';
     document.getElementById('cocina-history').hidden = cocinaVista !== 'historial';
+    document.getElementById('cocina-hidden').hidden = cocinaVista !== 'ocultos';
+    document.getElementById('cocina-clear-board').hidden = cocinaVista !== 'tablero';
+    const visibilityStatus = document.getElementById('cocina-visibility-status');
+    visibilityStatus.hidden = visibilityStatus.dataset.scope === 'tablero' && cocinaVista !== 'tablero';
     if (cocinaVista === 'historial') {
         const from = document.getElementById('cocina-history-from'), to = document.getElementById('cocina-history-to');
         if (!from.value) from.value = limaDateInput();
         if (!to.value) to.value = limaDateInput();
         loadCocinaHistorial(1);
+    } else loadCocinaPedidos();
+}
+async function changeKitchenVisibility(accion, selected = null) {
+    const empresa = Number(document.getElementById('cocina-empresa-select')?.value);
+    if (!empresa || cocinaVisibilityBusy || cocinaSnapshotStale) return;
+    let attempt;
+    try { attempt = JSON.parse(sessionStorage.getItem('sedim-kitchen-visibility') || 'null'); } catch { attempt = null; }
+    if (attempt && (attempt.empresa !== empresa || attempt.accion !== accion)) {
+        setKitchenVisibilityStatus('Hay una operación sin confirmar. Vuelva a la empresa y acción anteriores para reintentar.'); return;
     }
+    if (attempt && selected && (selected.length !== attempt.lineas.length || selected.some(line => !attempt.lineas.some(item => item.lineaId === line.LineaId)))) {
+        setKitchenVisibilityStatus('Hay una operación sin confirmar. Use «Reintentar operación de Cocina» antes de continuar.'); return;
+    }
+    if (!attempt) {
+        const lines = selected || cocinaData.filter(line => !line.oculta && !line.pendiente);
+        const pending = cocinaData.filter(line => line.pendiente).length;
+        if (!lines.length) { setKitchenVisibilityStatus('No hay platos disponibles para esta acción.', 'tablero'); return; }
+        const message = accion === 'ocultar'
+            ? `Se ocultarán ${lines.length} platos de esta empresa sin marcarlos entregados. ${pending} avisos pendientes permanecerán visibles. ¿Continuar?`
+            : `¿Restaurar ${lines.length} plato(s) al tablero?`;
+        if (!confirm(message)) return;
+        attempt = { empresa, accion, clave: newOrderId(), lineas: lines.map(line => ({ nroTicket: line.NroTicket, lineaId: line.LineaId, revisionEnvio: line.revisionEnvio })) };
+        try { sessionStorage.setItem('sedim-kitchen-visibility', JSON.stringify(attempt)); }
+        catch { setKitchenVisibilityStatus('No se pudo guardar la operación para un reintento seguro en este dispositivo.'); return; }
+    }
+    cocinaVisibilityBusy = true; renderCocinaBoard();
+    try {
+        const result = await orderRequest('/api/cocina/visibilidad', 'POST', attempt);
+        sessionStorage.removeItem('sedim-kitchen-visibility');
+        const omitted = (result.noModificadas || []).map(item => {
+            const line = cocinaData.find(row => row.LineaId === item.lineaId);
+            return `${item.nroTicket}${line ? `: ${line.Descripcion}` : ''}`;
+        }).join(', ');
+        setKitchenVisibilityStatus(`${result.procesadas} plato(s) ${accion === 'ocultar' ? 'ocultados' : 'restaurados'}; ${result.omitidas} no se modificaron porque cambiaron o ya no estaban disponibles.${omitted ? ` Revise: ${omitted}.` : ''}`, result.omitidas ? 'global' : (accion === 'ocultar' ? 'tablero' : 'global'));
+        await loadCocinaPedidos();
+    } catch (error) {
+        if (error.status && error.status < 500) sessionStorage.removeItem('sedim-kitchen-visibility');
+        setKitchenVisibilityStatus(`No se confirmó la operación. Reintente la misma acción. ${error.message}`);
+    } finally { cocinaVisibilityBusy = false; renderCocinaBoard(); }
+}
+function retryKitchenVisibility() {
+    let attempt; try { attempt = JSON.parse(sessionStorage.getItem('sedim-kitchen-visibility') || 'null'); } catch { return; }
+    if (attempt) return changeKitchenVisibility(attempt.accion);
 }
 async function loadCocinaHistorial(page = 1) {
     const empresa = document.getElementById('cocina-empresa-select').value;
     const results = document.getElementById('cocina-history-results');
-    if (!empresa) { results.textContent = 'Seleccione una empresa.'; return; }
+    if (!empresa) { results.dataset.state = 'empty'; results.textContent = 'Seleccione una empresa.'; document.getElementById('cocina-history-pagination').replaceChildren(); return; }
     const params = new URLSearchParams({ empresa, pagina: page, tamano: 20,
         desde: document.getElementById('cocina-history-from').value,
         hasta: document.getElementById('cocina-history-to').value,
         mesa: document.getElementById('cocina-history-table').value,
         ticket: document.getElementById('cocina-history-ticket').value,
         estado: document.getElementById('cocina-history-state').value });
-    results.textContent = 'Cargando historial…';
+    results.dataset.state = 'loading'; results.textContent = 'Cargando historial…';
+    document.getElementById('cocina-history-pagination').replaceChildren();
     try {
         const data = await orderRequest(`/api/cocina/historial?${params}`);
         results.replaceChildren();
+        results.dataset.state = data.envios.length ? 'results' : 'empty';
         if (!data.envios.length) results.textContent = 'No hay envíos para estos filtros.';
         for (const envio of data.envios) {
             const article = document.createElement('article'); article.className = 'cocina-history-card';
@@ -3255,7 +3340,7 @@ async function loadCocinaHistorial(page = 1) {
         const label = document.createElement('span'); label.textContent = `Página ${data.pagina} de ${pages}`;
         const next = document.createElement('button'); next.textContent = 'Siguiente'; next.disabled = data.pagina >= pages; next.onclick = () => loadCocinaHistorial(data.pagina + 1);
         pager.append(previous, label, next);
-    } catch (e) { results.textContent = e.message; }
+    } catch (e) { results.dataset.state = 'error'; results.textContent = e.message; }
 }
 
 async function ciclarCocinaLinea(nroTicket, lineaId, estadoActual) {

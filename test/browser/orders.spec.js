@@ -3,6 +3,7 @@ const product = { CodPro: '02001', Nombre: 'Arroz con mariscos', PventaMa: 20, A
 async function fixture(page, options = {}) {
     const state = { mesa: 1, transfers: [], transferRequests: [], transferUnavailable: false, transferLostResponse: false, items: [], sent: new Map(), kitchenStates: new Map(), version: 0, sends: 0, saves: 0, deletes: 0, reprints: 0, reprintDestinations: [],
         conflict: false, delaySave: 0, ticket: null, requestOrder: [], kds: [], closure: null, closes: 0,
+        history: [], historyTotal: 0, historyRequests: [], historyError: false,
         tableLoads: 0, kitchenLoads: 0, sessionLoads: 0, eventConnections: 0, sessionActive: true,
         sessionStatus: 200, sessionNetworkError: false,
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
@@ -161,6 +162,11 @@ async function fixture(page, options = {}) {
         }
         if (url.pathname.endsWith('/estados-cocina')) return fulfill({ success:true, version:state.version,
             estados:state.items.map(l=>({lineaId:l.lineaId,estadoCocina:state.kitchenStates.get(l.lineaId)||null,pendienteId:null,anulada:false})) });
+        if (url.pathname === '/api/cocina/historial') {
+            state.historyRequests.push(Object.fromEntries(url.searchParams));
+            if (state.historyError) return fulfill({success:false,message:'No se pudo cargar el historial'},500);
+            return fulfill({success:true,pagina:Number(url.searchParams.get('pagina')) || 1,tamano:20,total:state.historyTotal,envios:state.history});
+        }
         if (url.pathname === '/api/cocina/pedidos') state.kitchenLoads++;
         if (url.pathname === '/api/cocina/pedidos' && state.kitchenTransientFailures > 0) {
             state.kitchenTransientFailures--;
@@ -174,8 +180,16 @@ async function fixture(page, options = {}) {
                 envioId:l.EnvioId || '22222222-2222-4222-8222-222222222222',numeroEnvio:1,mozo:'José',fechaEnvio:l.FechaTicket,
                 minutosEspera:l.MinutosEspera,documento:l.Documento || 'COMANDA DE COCINA',impresion:l.Impresion || {estado:'enviado'},
                 impresiones:l.Impresiones || [{...(l.Impresion || {estado:'enviado'}),destino:'cocina'}],
-                lineas:[{ lineaId:l.LineaId,codPro:l.Codpro,cantidad:l.Cantidad,nombre:l.Descripcion,notasRapidas:l.notasRapidas,nota:l.nota,estado:l.EstadoCocina,Categoria:l.Categoria,correccionPendiente:l.pendiente }] })),
+                lineas:[{ lineaId:l.LineaId,codPro:l.Codpro,cantidad:l.Cantidad,nombre:l.Descripcion,notasRapidas:l.notasRapidas,nota:l.nota,estado:l.EstadoCocina,Categoria:l.Categoria,correccionPendiente:l.pendiente,oculta:Boolean(l.oculta),revisionEnvio:l.revisionEnvio || null }] })),
                 sincronizacion: { desactualizado: stale, actualizadaEn: '2026-09-28T13:07:00.000Z', ...(stale ? { diagnosticId:'diag-stale-45' } : {}) } });
+        }
+        if (url.pathname === '/api/cocina/visibilidad') {
+            for (const line of body.lineas) {
+                const row = state.kds.find(item => item.LineaId === line.lineaId && item.NroTicket === line.nroTicket);
+                if (row && !row.pendiente) row.oculta = body.accion === 'ocultar';
+            }
+            if (state.visibilityLostResponse) { state.visibilityLostResponse = false; return route.abort('failed'); }
+            return fulfill({success:true,procesadas:body.lineas.length,omitidas:0});
         }
         if (url.pathname.endsWith('/reconocer')) { const l=state.kds.find(l=>url.pathname.includes(l.LineaId)); l.nota=l.pendiente.nueva.nota; l.pendiente=null; return fulfill({success:true}); }
         if (url.pathname.endsWith('/reimprimir')) { state.reprints++; state.reprintDestinations.push(body.destino || 'cocina'); return fulfill({success:true,trabajoId:'33333333-3333-4333-8333-333333333333'}); }
@@ -823,6 +837,135 @@ test('Cocina conserva datos y muestra referencia al fallar sin alert modal', asy
     await page.evaluate(() => loadCocinaPedidos());
     await expect(page.locator('#load-notice-kitchen')).toContainText('diag-kds-123');
     await expect(page.locator('#cocina-board')).toContainText('Plato persistente');
+});
+
+test('Historial de Cocina alinea filtros y conserva búsqueda, paginación y reimpresión', async ({ page }, testInfo) => {
+    await page.setViewportSize({width:1608,height:900});
+    const state = await fixture(page,{openTable:false,features:{printerEnabled:true,barPrinterEnabled:true}});
+    state.history = [{Id:'22222222-2222-4222-8222-222222222222',nroTicket:'T001-000010',Numero:2,NroMesa:10,
+        Fecha:'2026-11-06T20:00:00Z',estadoPedido:'anulado',Movimientos:2,Reconocidos:1,Documento:'COMANDA DE COCINA\nANULACIÓN\n',
+        trabajos:[{Id:'33333333-3333-4333-8333-333333333333',Estado:'enviado',Destino:'cocina'}]}];
+    state.historyTotal = 25;
+    await page.evaluate(() => { showView('cocina'); setKitchenVisibilityStatus('No hay platos disponibles para esta acción.','tablero'); });
+    await page.selectOption('#cocina-empresa-select','02');
+    await page.locator('[data-vista="historial"]').click();
+    await expect(page.locator('[data-vista="historial"]')).toHaveClass(/active/);
+    await expect(page.locator('#cocina-visibility-status')).toBeHidden();
+    await expect(page.locator('#cocina-history-results')).toContainText('T001-000010');
+    const positions = await page.locator('#cocina-history-filters > *').evaluateAll(nodes => nodes.map(node => ({top:node.getBoundingClientRect().top,bottom:node.getBoundingClientRect().bottom})));
+    expect(Math.max(...positions.map(x=>x.bottom))-Math.min(...positions.map(x=>x.bottom))).toBeLessThan(2);
+    await page.locator('#cocina-history-from').fill('2026-11-01');
+    await page.locator('#cocina-history-to').fill('2026-11-06');
+    await page.locator('#cocina-history-table').fill('10');
+    await page.locator('#cocina-history-ticket').fill('T001');
+    await page.locator('#cocina-history-state').selectOption('anulado');
+    await page.locator('#cocina-history-filters button').click();
+    await expect.poll(() => state.historyRequests.at(-1)).toMatchObject({empresa:'02',desde:'2026-11-01',hasta:'2026-11-06',mesa:'10',ticket:'T001',estado:'anulado',pagina:'1'});
+    await page.locator('#cocina-history-pagination button').last().click();
+    await expect.poll(() => state.historyRequests.at(-1).pagina).toBe('2');
+    await page.locator('#cocina-history-results').getByRole('button',{name:'Ver ticket'}).click();
+    await expect(page.locator('#cocina-ticket-dialog')).toBeVisible();
+    await page.locator('#cocina-ticket-dialog button[aria-label="Cerrar"]').click();
+    page.once('dialog',dialog=>dialog.accept());
+    await page.locator('#cocina-history-results').getByRole('button',{name:'Reimprimir Cocina'}).click();
+    await expect.poll(()=>state.reprints).toBe(1);
+    await page.screenshot({path:testInfo.outputPath('cocina-historial-escritorio.png'),animations:'disabled'});
+    await page.evaluate(() => setKitchenVisibilityStatus('No se confirmó la operación. Reintente la misma acción.'));
+    await expect(page.locator('#cocina-visibility-status')).toBeVisible();
+    state.history = []; state.historyTotal = 0;
+    await page.locator('#cocina-history-filters button').click();
+    await expect(page.locator('#cocina-history-results')).toHaveAttribute('data-state','empty');
+    await expect(page.locator('#cocina-history-results')).toContainText('No hay envíos');
+    state.historyError = true;
+    await page.locator('#cocina-history-filters button').click();
+    await expect(page.locator('#cocina-history-results')).toHaveAttribute('data-state','error');
+    await expect(page.locator('#cocina-history-pagination button')).toHaveCount(0);
+    await page.evaluate(() => { setCocinaVista('tablero'); setCocinaFiltro('pendiente'); });
+    await expect(page.locator('[data-vista="tablero"]')).toHaveClass(/active/);
+    await expect(page.locator('#cocina-visibility-status')).toBeVisible();
+});
+
+test('@android @webkit Historial de Cocina se adapta a pantallas y temas sin desbordar', async ({ page }, testInfo) => {
+    await fixture(page,{openTable:false});
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await page.evaluate(() => setCocinaVista('historial'));
+    await expect(page.locator('[data-vista="historial"]')).toHaveClass(/active/);
+    await expect(page.locator('#cocina-history-results')).toHaveAttribute('data-state','empty');
+    for (const viewport of [{width:390,height:844},{width:844,height:390},{width:768,height:1024},{width:1024,height:768}]) {
+        await page.setViewportSize(viewport);
+        for (const theme of ['light','dark']) {
+            await page.evaluate(value => document.documentElement.dataset.theme=value,theme);
+            const metrics = await page.locator('#cocina-history-filters').evaluate(form => ({
+                overflow:form.scrollWidth-form.clientWidth, documentOverflow:document.documentElement.scrollWidth-innerWidth,
+                controls:[...form.querySelectorAll('input,select,button')].map(node=>({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height}))
+            }));
+            expect(metrics.overflow).toBeLessThanOrEqual(1);
+            expect(metrics.documentOverflow).toBeLessThanOrEqual(1);
+            expect(metrics.controls.every(control=>control.width>80 && control.height>=44)).toBe(true);
+            if (viewport.width === 390) await page.screenshot({path:testInfo.outputPath(`historial-${theme}.png`),animations:'disabled'});
+        }
+    }
+});
+
+test('@webkit Cocina limpia solo platos sin avisos y permite restaurarlos sin entregarlos', async ({ page }) => {
+    const state = await fixture(page, {openTable:false});
+    state.kds = [
+        {NroTicket:'T001-000010',NroMesa:10,LineaId:'10101010-1010-4010-8010-101010101010',Codpro:'02001',EstadoCocina:1,Cantidad:1,Descripcion:'Plato pendiente',Categoria:'Platos',FechaTicket:new Date().toISOString()},
+        {NroTicket:'T001-000011',NroMesa:11,LineaId:'11111111-1111-4111-8111-111111111111',Codpro:'02001',EstadoCocina:2,Cantidad:1,Descripcion:'Aviso pendiente',Categoria:'Platos',FechaTicket:new Date().toISOString(),
+            pendiente:{tipo:'ANULACIÓN',anterior:{nombre:'Aviso pendiente',cantidad:1},nueva:null}}
+    ];
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await expect(page.locator('#cocina-board')).toContainText('Plato pendiente');
+    let confirmation = '';
+    page.once('dialog', dialog => { confirmation = dialog.message(); return dialog.accept(); });
+    await page.locator('#cocina-clear-board').click();
+    expect(confirmation).toContain('1 platos'); expect(confirmation).toContain('1 avisos');
+    await expect(page.locator('#cocina-board')).not.toContainText('Plato pendiente');
+    await expect(page.locator('#cocina-board')).toContainText('Aviso pendiente');
+    expect(state.kds[0].EstadoCocina).toBe(1);
+    await page.locator('[data-vista="ocultos"]').click();
+    await expect(page.locator('#cocina-board')).toBeHidden();
+    await expect(page.locator('#cocina-hidden')).toContainText('Plato pendiente');
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#cocina-hidden button').click();
+    await expect(page.locator('#cocina-hidden')).toContainText('No hay platos ocultos');
+    await page.locator('[data-vista="tablero"]').click();
+    await expect(page.locator('#cocina-board')).toContainText('Plato pendiente');
+    expect(state.kds[0].EstadoCocina).toBe(1);
+});
+
+test('Cocina ofrece reintentar si se pierde la respuesta de limpieza', async ({ page }) => {
+    const state = await fixture(page, {openTable:false});
+    state.kds = [{NroTicket:'T001-000010',NroMesa:10,LineaId:'10101010-1010-4010-8010-101010101010',Codpro:'02001',EstadoCocina:1,Cantidad:1,Descripcion:'Plato',Categoria:'Platos',FechaTicket:new Date().toISOString()}];
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await expect(page.locator('#cocina-board')).toContainText('Plato');
+    state.visibilityLostResponse = true;
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#cocina-clear-board').click();
+    await expect(page.locator('#cocina-visibility-retry')).toBeVisible();
+    await page.locator('[data-vista="historial"]').click();
+    await expect(page.locator('#cocina-visibility-status')).toContainText('No se confirmó la operación');
+    await expect(page.locator('#cocina-visibility-retry')).toBeVisible();
+    await page.locator('#cocina-visibility-retry').click();
+    await expect(page.locator('#cocina-visibility-retry')).toBeHidden();
+    await page.locator('[data-vista="tablero"]').click();
+    await expect(page.locator('#cocina-board')).not.toContainText('Plato');
+});
+
+test('Cocina refleja una limpieza realizada desde otro dispositivo', async ({ page }) => {
+    const state = await fixture(page, {openTable:false});
+    state.kds = [{NroTicket:'T001-000010',NroMesa:10,LineaId:'10101010-1010-4010-8010-101010101010',Codpro:'02001',EstadoCocina:1,Cantidad:1,Descripcion:'Otro dispositivo',Categoria:'Platos',FechaTicket:new Date().toISOString()}];
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    await expect(page.locator('#cocina-board')).toContainText('Otro dispositivo');
+    state.kds[0].oculta = true;
+    await page.evaluate(() => handleSSEEvent({type:'cocina_updated',empresa:2}));
+    await expect(page.locator('#cocina-board')).not.toContainText('Otro dispositivo');
+    await page.locator('[data-vista="ocultos"]').click();
+    await expect(page.locator('#cocina-hidden')).toContainText('Otro dispositivo');
 });
 
 test('Cocina avisa una vez por envío, incluso al actualizar el mismo ticket', async ({ page }) => {

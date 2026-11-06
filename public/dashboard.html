@@ -12,7 +12,7 @@
     <title>Panel de Control - Sedimcorp</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=71">
+    <link rel="stylesheet" href="style.css?v=74">
     <link rel="stylesheet" href="responsive.css?v=66">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -299,10 +299,14 @@
                     </div>
                 </div>
 
-                <div class="cocina-chips">
+                <div class="cocina-chips cocina-view-controls">
                     <button class="cocina-chip cocina-view-tab active" data-vista="tablero" onclick="setCocinaVista('tablero')">Tablero</button>
+                    <button class="cocina-chip cocina-view-tab" data-vista="ocultos" onclick="setCocinaVista('ocultos')">Platos ocultos</button>
                     <button class="cocina-chip cocina-view-tab" data-vista="historial" onclick="setCocinaVista('historial')">Historial</button>
+                    <button id="cocina-clear-board" class="cocina-chip" type="button" onclick="changeKitchenVisibility('ocultar')">Limpiar tablero</button>
                 </div>
+                <p id="cocina-visibility-status" role="status" aria-live="polite"></p>
+                <button id="cocina-visibility-retry" class="cocina-chip" type="button" hidden onclick="retryKitchenVisibility()">Reintentar operación de Cocina</button>
 
                 <div id="cocina-chips" class="cocina-chips">
                     <button class="cocina-chip active" data-filtro="todas" onclick="setCocinaFiltro('todas')">Todas</button>
@@ -325,6 +329,7 @@
                         <div class="cocina-col-body"></div>
                     </div>
                 </div>
+                <section id="cocina-hidden" class="cocina-history" hidden></section>
                 <section id="cocina-history" class="cocina-history" hidden>
                     <form id="cocina-history-filters" onsubmit="event.preventDefault(); loadCocinaHistorial(1)">
                         <label>Desde <input id="cocina-history-from" type="date"></label>
@@ -465,7 +470,7 @@
     <script src="offline-orders.js?v=69"></script>
     <script src="connectivity.js?v=69"></script>
     <script src="orders-ui.js?v=72"></script>
-    <script src="script.js?v=72"></script>
+    <script src="script.js?v=74"></script>
 </body>
 
 </html>

@@ -33,6 +33,19 @@ No se necesita ejecutar `git pull`, `git clone`, `npm install` ni comandos de Do
 - Simule una impresora indisponible y revise los estados y la reimpresión desde Cocina → Historial después de liberar la mesa. El aviso en pantalla depende de recibir el evento en la pestaña; si estuvo cerrada o desconectada, consulte el historial. Si impresión está deshabilitada, comunique la cancelación al personal.
 - Compruebe que una corrección pendiente de reconocimiento bloquea la cancelación total, y que una anulación de un plato en preparación permanece en el tablero hasta que Cocina la reconoce. Haga el piloto fuera del servicio normal antes de ampliarlo.
 
+## Fase 73 — tablero de Cocina y tachado opcional
+
+- Conserve un respaldo e imagen anterior; la instalación ejecuta la migración aditiva `016_kitchen_visibility.sql`. Recargue los dispositivos para utilizar `style.css` y `script.js` versión 73. Compruebe el diagnóstico de Cocina antes de usar la función.
+- Con `PRINTER_STRIKETHROUGH_ENABLED` ausente o en `false`, la impresión conserva el formato anterior. Para un piloto autorizado fuera de atención, active `PRINTER_STRIKETHROUGH_ENABLED=true` en el `.env` privado y reinicie con el procedimiento habitual. Imprima y reimprima anulaciones y correcciones con nombres largos y tildes: solo el nombre en ANULACIÓN o ANTES debe quedar tachado; cantidad, notas y AHORA deben seguir legibles. Compruebe Bebidas, Barra y el corte. Si falla la prueba, vuelva a `false` y reinicie.
+- En una empresa de prueba, envíe platos, deje uno con corrección pendiente y use «Limpiar tablero»: el aviso debe permanecer visible. Compruebe «Platos ocultos» y restaure uno; sus estados no deben cambiar. Repita desde otro dispositivo y simule un fallo de conexión para verificar el reintento.
+- Procese un pedido en el POS externo hasta liberar la mesa y abra un pedido nuevo en ella. Compruebe que la limpieza del pedido anterior no oculte el nuevo, que los avisos pendientes permanezcan visibles y que el módulo de cierre conserve sus bloqueos operativos. No se declara validación física ni contable hasta completar estas comprobaciones.
+
+## Fase 74 — presentación del historial de Cocina
+
+- Tras instalar, recargue `style.css?v=74` y `script.js?v=74`. Compruebe la alineación de los filtros y el botón Buscar en escritorio, tablet y celular, en ambos temas y orientaciones.
+- Pruebe los filtros de fechas, mesa, ticket y estado, así como el estado vacío, la paginación, la vista del ticket y la reimpresión. Confirme que los errores de limpieza y el reintento siguen visibles al cambiar a Historial.
+- Esta fase no agrega migraciones ni cambios de API. La comprobación física en los dispositivos del restaurante sigue pendiente.
+
 ## Configuración que debe permanecer en `.env`
 
 No escriba aquí los valores reales. El archivo privado del cliente debe conservar:

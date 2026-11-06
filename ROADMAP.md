@@ -1810,3 +1810,23 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - No requiere migración SQL. Pendiente confirmar la versión instalada, respaldar y validar en el cliente el papel físico por destino, fallos y reimpresión antes de ampliar su uso. No se declara instalado en producción.
 
 ---
+
+## Fase 73: Claridad de cambios y limpieza reversible de Cocina (Implementada en código; piloto pendiente)
+
+- Cocina dispone de «Limpiar tablero» y «Platos ocultos». La limpieza afecta la empresa seleccionada, confirma cantidades y conserva visibles las correcciones o anulaciones pendientes de reconocimiento. Los platos se pueden restaurar sin cambiar sus estados; un ticket con líneas ocultas exige restaurarlas antes de usar sus acciones masivas.
+- La migración aditiva `016_kitchen_visibility.sql` guarda la auditoría de ocultaciones y restauraciones por empresa, ticket, línea, último detalle de envío, usuario y operación idempotente. Un cambio de la línea vuelve a mostrarla; los reintentos inciertos conservan su clave. Se mantienen independientes las mesas, los tickets comerciales, el historial, las colas y los bloqueos del cierre de turno.
+- El flujo de otro POS que procesa el ticket y libera la mesa se probó en SQL aislado: los platos anteriores siguen identificados por ticket y línea y un pedido nuevo de la misma mesa no hereda su ocultación. No se modifica el proceso externo.
+- El tachado opcional solo afecta el nombre anterior en ANULACIÓN y ANTES de CORRECCIÓN de Cocina; AHORA y las comandas de Bebidas/Barra conservan su formato. Usa una imagen monocroma ESC/POS con fuente DejaVu; si falla su generación, vuelve al texto existente y registra el fallo. `PRINTER_STRIKETHROUGH_ENABLED` se mantiene desactivado por defecto hasta una prueba física satisfactoria de la RPT004.
+- Verificación local: 80 pruebas unitarias, 46 escenarios SQL en `tempdb` aislado, 170 pruebas de interfaz de escritorio y cuatro escenarios focalizados posteriores en escritorio/WebKit, incluidos sincronización y reintento. La auditoría npm identificó cinco avisos de dependencias preexistentes (uno crítico, tres altos y uno moderado); no se actualizaron paquetes ajenos a esta fase.
+- Pendiente instalar con respaldo, recargar los recursos versión 73 y validar el piloto en dispositivos reales, la interoperabilidad con el POS externo y la impresión/reimpresión física. No se declara desplegado ni validado en producción.
+
+---
+
+## Fase 74: Historial de Cocina adaptable (Implementada en código; validación física pendiente)
+
+- Los filtros del Historial usan una cuadrícula compacta que corrige la dirección heredada del formulario general y se adapta a escritorio, tablet y celular. Los resultados, el estado vacío, los errores, las acciones y la paginación respetan los temas claro y oscuro.
+- Los avisos informativos de limpiar el tablero se muestran en su contexto; los errores y reintentos pendientes permanecen visibles al cambiar de pestaña. Los filtros del tablero no alteran el resaltado de las pestañas de Cocina.
+- Verificación local: pruebas de búsqueda, filtros, paginación, vista del ticket y reimpresión; tamaños y orientaciones en Chrome, Android y WebKit; temas claro y oscuro y conservación de reintentos. La fase no modifica la API ni la base de datos.
+- Pendiente recargar `style.css?v=74` y `script.js?v=74` y comprobar el historial en los dispositivos reales. No se declara instalada en producción.
+
+---

@@ -152,6 +152,25 @@ test('RPT004 aplica a Bebidas la misma jerarquía visual de las demás comandas'
     assert.ok(frame.includes(Buffer.concat([boldOn, doubleHeight, spacedCharacters, Buffer.from('1 x Chicha morada')])));
 });
 
+test('tachado opcional rasteriza solo ANTES de Cocina y conserva cantidades y texto en otros destinos', () => {
+    const old = { ...snapshot(normalizeItems([item({ nombre: 'Arroz con limón y ají', nota: 'Sin sal' })])[0]) };
+    const head = { empresa:2,numero:1,nroTicket:'T001-1',mesa:1,mozo:'José',fecha:'hoy' };
+    const moves = [{ tipo:'CORRECCIÓN', anterior:old, nueva:{...old,cantidad:2} }, { tipo:'ANULACIÓN', anterior:old }];
+    const doc = printText(head,moves), raster = Buffer.from([0x1d,0x76,0x30,0]);
+    const normal = buildEscPosFrame(doc,{ strikethrough:false });
+    const enabled = buildEscPosFrame(doc,{ strikethrough:true });
+    assert.equal(normal.includes(raster),false);
+    assert.equal(enabled.toString('hex').split(raster.toString('hex')).length-1,2);
+    assert.ok(enabled.includes(iconv.encode('2 x Arroz con limón y ají','cp850')));
+    assert.ok(enabled.includes(iconv.encode('NOTA: Sin sal','cp850')));
+    assert.equal(buildEscPosFrame(printText(head,moves,false,'COMANDA DE BEBIDAS'),{strikethrough:true}).includes(raster),false);
+    assert.equal(buildEscPosFrame(printText(head,moves,false,'COMANDA DE BARRA'),{strikethrough:true}).includes(raster),false);
+    assert.equal(buildEscPosFrame('*** REIMPRESIÓN ***\n'+doc,{strikethrough:true}).includes(raster),true);
+    const fallback = buildEscPosFrame(doc,{strikethrough:true,strikeRenderer:() => { throw new Error('error simulado'); }});
+    assert.equal(fallback.includes(raster),false);
+    assert.ok(fallback.includes(iconv.encode('1 x Arroz con limón y ají','cp850')));
+});
+
 test('separar cantidades fraccionarias conserva el total comercial y nunca asigna importes negativos', () => {
     const { amounts } = require('../public/order-math');
     const a = { codPro:'02001',precio:3.33,afecto:0,cantidad:.02 };

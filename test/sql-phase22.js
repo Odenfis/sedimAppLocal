@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('node:assert/
 const { randomUUID } = require('node:crypto');
 const sql = require('mssql');
 const schema = 'phase22_test_' + randomUUID().replaceAll('-', '');
-const tables = ['Pedido_traslados','Precios','Precios_feriado_config','Precios_feriado_historial','Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
+const tables = ['Cocina_visibilidad_operaciones','Cocina_visibilidad','Pedido_guardados','Pedido_traslados','Precios','Precios_feriado_config','Precios_feriado_historial','Ticket_c','Ticket_d','Cocina_pedidos','Cocina_pedidos_legacy','Pedido_control','Pedido_lineas','Pedido_residuos_archivo','Cocina_envios','Cocina_envio_detalles','Cocina_estados','Impresion_trabajos','Impresion_linea_rutas','Impresion_linea_destinos','Impresion_trabajo_destinos','Impresion_barra_trabajos','Cierres_turno','Cierre_turno_archivos','Cierre_turno_operaciones','Web_sessions','Migrations','Mesas','Productos','Lineas','Empleados','Valores','Tablas'];
 const names = new RegExp('(?<![#\\w.\\[])\\b(' + tables.join('|') + ')\\b', 'gi');
 const dboNames = new RegExp('\\bdbo\\.(' + tables.join('|') + ')\\b', 'gi');
 const originalQuery = sql.Request.prototype.query;
@@ -74,7 +74,8 @@ async function main() {
         passed++; console.log('✓ collation mismatch 468 is reproducible and DATABASE_DEFAULT resolves equality');
         const router = {};
         const app = Object.fromEntries(['get','post','put','delete'].map(method => [method, (url, auth, handler) => { router[method + ' ' + url] = handler; }]));
-        require('../lib/orders').install(app, () => {}, () => {});
+        const orderEvents = [];
+        require('../lib/orders').install(app, () => {}, event => orderEvents.push(event));
         require('../lib/shift-closures').install(app, () => {}, () => {});
         const priceEvents = [];
         require('../lib/holiday-prices').install(app, () => {}, e => priceEvents.push(e));
@@ -272,6 +273,51 @@ async function main() {
             if(previousBarHost===undefined) delete process.env.BAR_PRINTER_HOST; else process.env.BAR_PRINTER_HOST=previousBarHost;
         }
         passed++; console.log('✓ mixed send splits immutable Cocina/Bebidas/Barra documents and reprints each destination independently');
+        const visibilityOrder = await save([{...base,lineaId:randomUUID(),nota:'Visibilidad'}],undefined,undefined,3);
+        const visibilitySent = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:visibilityOrder.version,clave:randomUUID()},{nro:visibilityOrder.nroTicket});
+        const visibilityLine = visibilitySent.items[0].lineaId;
+        const kitchenLine = async () => (await call('get','/api/cocina/pedidos',{}, {}, {empresa:2})).pedidos
+            .find(p=>p.nroTicket===visibilityOrder.nroTicket)?.lineas.find(l=>l.lineaId===visibilityLine);
+        let shown = await kitchenLine(); assert.ok(shown.revisionEnvio); assert.equal(shown.oculta,false);
+        const hide = {empresa:2,accion:'ocultar',clave:randomUUID(),lineas:[{nroTicket:visibilityOrder.nroTicket,lineaId:visibilityLine,revisionEnvio:shown.revisionEnvio}]};
+        const eventsBeforeHide = orderEvents.length;
+        const hidden = await call('post','/api/cocina/visibilidad',hide); assert.equal(hidden.procesadas,1,JSON.stringify(hidden));
+        assert.ok(orderEvents.slice(eventsBeforeHide).some(event => event.type === 'cocina_updated' && event.empresa === 2));
+        assert.deepEqual(await call('post','/api/cocina/visibilidad',hide),{status:200,success:true,procesadas:1,omitidas:0,noModificadas:[]});
+        assert.equal((await kitchenLine()).oculta,true);
+        const closureWithHidden = await require('../lib/shift-closures').preview(pool,
+            {empresa:2,turno:1,fechaNegocio:new Date().toLocaleDateString('en-CA',{timeZone:'America/Lima'})});
+        assert.ok(closureWithHidden.bloqueos.cocinaPendiente > 0);
+        const crossedCompany = await call('post','/api/cocina/visibilidad',{...hide,empresa:4,clave:randomUUID()});
+        assert.equal(crossedCompany.procesadas,0); assert.equal(crossedCompany.omitidas,1);
+        const editedVisibility = await save(visibilitySent.items.map(l=>({...l,nota:'Cambio posterior'})),visibilitySent.version,visibilityOrder.nroTicket,3);
+        const sentVisibility = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:editedVisibility.version,clave:randomUUID()},{nro:visibilityOrder.nroTicket});
+        shown = await kitchenLine(); assert.equal(shown.oculta,false); assert.notEqual(shown.revisionEnvio,hide.lineas[0].revisionEnvio);
+        const staleHide = await call('post','/api/cocina/visibilidad',{...hide,clave:randomUUID()});
+        assert.equal(staleHide.procesadas,0); assert.equal(staleHide.omitidas,1);
+        const secondHide = {...hide,clave:randomUUID(),lineas:[{...hide.lineas[0],revisionEnvio:shown.revisionEnvio}]};
+        assert.equal((await call('post','/api/cocina/visibilidad',secondHide)).procesadas,1);
+        await pool.request().input('nro',visibilityOrder.nroTicket).query(`DELETE Ticket_d WHERE NroTicket=@nro;
+            DELETE Ticket_c WHERE NroTicket=@nro; UPDATE Mesas SET Estado=1 WHERE Numero=3 AND Empresa=2`);
+        const newTableOrder = await save([{...base,lineaId:randomUUID(),nota:'Nueva mesa'}],undefined,undefined,3);
+        const newTableSend = await call('post','/api/pos/pedido/:nro/enviar-cocina',
+            {empresa:2,version:newTableOrder.version,clave:randomUUID()},{nro:newTableOrder.nroTicket});
+        assert.equal(newTableSend.status,200); assert.notEqual(newTableOrder.nroTicket,visibilityOrder.nroTicket);
+        assert.equal((await kitchenLine()).oculta,true);
+        const newBoard = await call('get','/api/cocina/pedidos',{}, {}, {empresa:2});
+        assert.equal(newBoard.pedidos.find(p=>p.nroTicket===newTableOrder.nroTicket).lineas[0].oculta,false);
+        const restored = await call('post','/api/cocina/visibilidad',{...secondHide,accion:'restaurar',clave:randomUUID()});
+        assert.equal(restored.procesadas,1); assert.equal((await kitchenLine()).oculta,false);
+        const concurrentHides = await Promise.all([call('post','/api/cocina/visibilidad',{...secondHide,clave:randomUUID()}),
+            call('post','/api/cocina/visibilidad',{...secondHide,clave:randomUUID()})]);
+        assert.deepEqual(concurrentHides.map(result=>result.procesadas).sort(),[0,1]);
+        assert.equal((await call('post','/api/cocina/visibilidad',{...secondHide,accion:'restaurar',clave:randomUUID()})).procesadas,1);
+        const remainingState = (await pool.request().input('linea',visibilityLine).query('SELECT Estado FROM Cocina_estados WHERE LineaId=@linea')).recordset[0];
+        assert.equal(remainingState.Estado,1);
+        await call('delete','/api/pos/comanda/:nro',{version:newTableSend.version,clave:randomUUID()},{nro:newTableOrder.nroTicket},{empresa:2});
+        passed++; console.log('✓ kitchen visibility is versioned, idempotent and survives external ticket processing and table reuse');
         const lineId = saved.items[0].lineaId;
         const prep = await call('put','/api/cocina/linea',{ empresa:2,nroTicket:nro,lineaId:lineId,estado:2 }); assert.equal(prep.status,200);
         const edits = saved.items.map(l => ({ ...l, precio:l.Precio, nota:l.lineaId===lineId?'Sin azúcar':l.nota }));
@@ -279,6 +325,9 @@ async function main() {
         const correction = await call('post','/api/pos/pedido/:nro/enviar-cocina',{ empresa:2,version:corrected.version,clave:randomUUID() },{nro}); assert.equal(correction.status,200);
         kds = await call('get','/api/cocina/pedidos',{}, {}, { empresa:2 }); const operative = kds.pedidos.flatMap(p=>p.lineas).find(l=>l.lineaId===lineId);
         assert.ok(operative.correccionPendiente); assert.notEqual(operative.nota,'Sin azúcar');
+        const refusedVisibility = await call('post','/api/cocina/visibilidad',{empresa:2,accion:'ocultar',clave:randomUUID(),
+            lineas:[{nroTicket:nro,lineaId:lineId,revisionEnvio:operative.revisionEnvio}]});
+        assert.equal(refusedVisibility.procesadas,0); assert.equal(refusedVisibility.omitidas,1);
         const blocked = await save(edits.map(l=>({...l,nota:'Otro cambio'})),correction.version,nro); assert.equal(blocked.status,409);
         const blockedCancellation = await call('delete','/api/pos/comanda/:nro',{version:correction.version,clave:randomUUID()},{nro},{empresa:2});
         assert.equal(blockedCancellation.status,409); assert.equal((await get(2)).items.length,2);
@@ -943,7 +992,7 @@ async function main() {
         if (suitePrinterHost === undefined) delete process.env.PRINTER_HOST; else process.env.PRINTER_HOST = suitePrinterHost;
         sql.Request.prototype.query = originalQuery; sql.Request.prototype.input = originalInput;
         // Only objects inside the generated test schema are eligible for cleanup.
-        for (const table of ['Pedido_guardados','Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Pedido_traslados','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
+        for (const table of ['Cocina_visibilidad','Cocina_visibilidad_operaciones','Pedido_guardados','Precios_feriado_historial','Precios_feriado_config','Precios','Cierre_turno_operaciones','Cierre_turno_archivos','Cierres_turno','Impresion_trabajo_destinos','Impresion_barra_trabajos','Impresion_trabajos','Pedido_traslados','Cocina_estados','Cocina_pedidos','Cocina_pedidos_legacy','Cocina_envio_detalles','Cocina_envios','Impresion_linea_rutas','Impresion_linea_destinos','Pedido_lineas','Pedido_control','Pedido_residuos_archivo','Web_sessions','Ticket_d','Ticket_c','Mesas','Productos','Lineas','Empleados','Valores','Tablas','Migrations']) {
             await pool.request().query(`IF OBJECT_ID('[${schema}].[${table}]') IS NOT NULL DROP TABLE [${schema}].[${table}]`);
         }
         await pool.request().query(`DROP SCHEMA [${schema}]`); await pool.close();
