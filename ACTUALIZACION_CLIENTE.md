@@ -46,6 +46,13 @@ No se necesita ejecutar `git pull`, `git clone`, `npm install` ni comandos de Do
 - Pruebe los filtros de fechas, mesa, ticket y estado, así como el estado vacío, la paginación, la vista del ticket y la reimpresión. Confirme que los errores de limpieza y el reintento siguen visibles al cambiar a Historial.
 - Esta fase no agrega migraciones ni cambios de API. La comprobación física en los dispositivos del restaurante sigue pendiente.
 
+## Fase 75 — tamaño del tachado y destinos
+
+- La opción `PRINTER_STRIKETHROUGH_ENABLED=true` que ya activa el tachado se usa para Cocina, Bebidas y Barra; no hay que duplicar la variable ni cambiar las IP o configuraciones de las impresoras. La actualización reinicia SedimApp: coordínela en una pausa sin envíos en curso.
+- En una mesa de prueba, imprima y reimprima una anulación y una corrección en cada destino. Compare la altura del nombre tachado con una adición, compruebe nombres largos y con tildes, y revise que las cantidades, notas y AHORA se lean sin tachado. Confirme también corte y separación por destino.
+- Si la impresora de Barra no reproduce correctamente el raster, no dé por validada esa impresora: conserve los papeles de prueba y reporte el resultado. Como recuperación general, `PRINTER_STRIKETHROUGH_ENABLED=false` desactiva el tachado en los tres destinos tras recrear el contenedor y mantiene las comandas normales.
+- No hay migración SQL ni cambios en pedidos. La compatibilidad de la impresora de Barra y la legibilidad del tamaño nuevo requieren confirmación física; la implementación local no acredita esa prueba.
+
 ## Configuración que debe permanecer en `.env`
 
 No escriba aquí los valores reales. El archivo privado del cliente debe conservar:

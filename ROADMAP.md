@@ -1830,3 +1830,12 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Pendiente recargar `style.css?v=74` y `script.js?v=74` y comprobar el historial en los dispositivos reales. No se declara instalada en producción.
 
 ---
+
+## Fase 75: Tachado legible en los tres destinos (Implementada en código; validación física pendiente)
+
+- Las fotografías del piloto confirmaron que la RPT004 imprimió el tachado de Cocina, pero la letra era más pequeña que las adiciones. La imagen monocroma duplica sus filas para aumentar su altura sin ampliar el ancho ni cambiar el modo raster que ya funcionó.
+- La opción existente `PRINTER_STRIKETHROUGH_ENABLED` se aplica ahora a Cocina, Bebidas y Barra, reemplazando el alcance limitado a Cocina de la Fase 73. Solo se tacha el nombre anterior en anulaciones y correcciones; AHORA, adiciones, cantidades y notas conservan su presentación. La configuración de conexión y la cola independientes de Barra se mantienen.
+- Verificación local: 82 pruebas unitarias y `npm run check`; se cubren los tres destinos, reimpresiones, opción desactivada, altura y filas duplicadas, nombres largos, texto no tachado y respaldo ante error. No hay migración SQL ni cambio de la opción guardada en `.env`.
+- Pendiente instalar y validar físicamente el tamaño y la legibilidad en Cocina, Bebidas y la impresora de Barra. La fotografía previa confirma únicamente el modo raster anterior de Cocina, no la compatibilidad ni el tamaño final en Barra.
+
+---
