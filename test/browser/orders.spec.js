@@ -9,6 +9,7 @@ async function fixture(page, options = {}) {
         tableError: false, kitchenError: false, kitchenTransientFailures: 0, kitchenStaleResponses: 0,
         orderState: 1, orderLoadError: false, orderLoadDelay: 0, commercialConflict: false, deleteError: false,
         invalidCompanyError: false, orderLoads: 0, orderCompanies: [], holidayError: false, pricesAvailable: true,
+        conversion: { 2: 1, 4: 2, 6: 1, ...(options.conversion || {}) }, shiftLoads: 0, shiftError: Boolean(options.shiftError), savedTurnos: [],
         holiday: Object.fromEntries([2,4,6].map(empresa => [empresa, { empresa: String(empresa).padStart(2,'0'), activo: false, tarifa: 1, version: 0, usuario: null, fecha: null }])) };
     if (options.stubEventSource) {
         await page.addInitScript(() => {
@@ -62,6 +63,11 @@ async function fixture(page, options = {}) {
                 : fulfill({ message: 'No autorizado' }, 401);
         }
         if (url.pathname === '/api/pos/config') return fulfill({ igvv: 10.5 });
+        if (url.pathname === '/api/pos/turno-activo') {
+            state.shiftLoads++;
+            if (state.shiftError) return fulfill({ success:false,message:'No se pudo determinar el turno activo de la empresa. Revise Tablas 201.',errorCode:'SHIFT_CONFIG_INVALID' },503);
+            return fulfill({ success:true, ...require('../../lib/active-shift').activeShiftFromConversion(url.searchParams.get('empresa'), state.conversion[Number(url.searchParams.get('empresa'))]) });
+        }
         if (url.pathname === '/api/pos/tables') {
             state.tableLoads++;
             if (state.tableError) return fulfill({ success:false,message:'Fallo SQL de mesas',diagnosticId:'diag-tables-456',retryable:false },500);
@@ -119,6 +125,11 @@ async function fixture(page, options = {}) {
                 if (!allowed) return fulfill({ success:false, message:marketplace ? 'Seleccione PEDIDOS YA o RAPPI para esta mesa' : 'Seleccione un mozo activo de esta empresa' }, 400);
             }
             if (state.invalidCompanyError) return fulfill({ success:false,message:'Empresa inválida',errorCode:'INVALID_COMPANY',diagnosticId:'diag-company',retryable:false },400);
+            if (!body.nroTicket && body.items?.length) {
+                state.savedTurnos.push(Number(body.turno));
+                try { require('../../lib/active-shift').assertActiveShift(require('../../lib/active-shift').activeShiftFromConversion(body.empresa, state.conversion[Number(body.empresa)]), body.turno); }
+                catch (e) { return fulfill({ success:false,message:e.message,errorCode:e.errorCode,retryable:false },e.status); }
+            }
             if (state.delaySave) await new Promise(r => setTimeout(r, state.delaySave));
             if (state.conflict) return fulfill({ message: 'Pedido cambiado por otro dispositivo' }, 409);
             if (options.holidayPrices) {
@@ -209,6 +220,7 @@ async function fixture(page, options = {}) {
         return fulfill([]);
     });
     await page.goto('/dashboard.html');
+    if (options.noSelect) return state;
     await page.selectOption('#pos-empresa-select', '02');
     await page.getByRole('button', { name: 'Mañana', exact: true }).click();
     if (options.openTable !== false) {
@@ -908,6 +920,66 @@ test('@android @webkit Historial de Cocina se adapta a pantallas y temas sin des
     }
 });
 
+test('@android @webkit Fase 77 Cocina compacta en celular sin desbordar', async ({ page }, testInfo) => {
+    const state = await fixture(page,{openTable:false});
+    state.kds = [];
+    await page.setViewportSize({width:390,height:844});
+    await page.evaluate(() => showView('cocina'));
+    await page.selectOption('#cocina-empresa-select','02');
+    // Vacío: un único aviso neutro, sin cabeceras de columnas en cero.
+    await expect(page.locator('#cocina-board .cocina-vacio')).toHaveCount(1);
+    await expect(page.locator('#cocina-board .cocina-vacio')).toBeVisible();
+    await expect(page.locator('#cocina-board .cocina-col-header:visible')).toHaveCount(0);
+    await page.screenshot({path:testInfo.outputPath('cocina-movil-vacio.png'),animations:'disabled'});
+
+    state.kds = [
+        {NroTicket:'T001-000020',NroMesa:4,LineaId:'20202020-2020-4020-8020-202020202020',Codpro:'02001',EstadoCocina:1,Cantidad:1,Descripcion:'Lomo saltado',Categoria:'Platos',FechaTicket:new Date().toISOString()},
+        {NroTicket:'T001-000021',NroMesa:7,LineaId:'21212121-2121-4121-8121-212121212121',Codpro:'02001',EstadoCocina:2,Cantidad:2,Descripcion:'Ceviche',Categoria:'Platos',FechaTicket:new Date().toISOString()}
+    ];
+    await page.evaluate(() => loadCocinaPedidos());
+    await expect(page.locator('#cocina-board')).toContainText('Lomo saltado');
+    await expect(page.locator('[data-count-for="todas"]')).toHaveText('2');
+    await expect(page.locator('[data-count-for="pendiente"]')).toHaveText('1');
+    await expect(page.getByRole('button',{name:'Limpiar tablero'})).toBeVisible();
+    await expect(page.locator('#cocina-volume')).toBeHidden();
+    await page.locator('#cocina-sound-more').click();
+    await expect(page.locator('#cocina-sound-more')).toHaveAttribute('aria-expanded','true');
+    await expect(page.locator('#cocina-volume')).toBeVisible();
+    await expect(page.locator('#cocina-sound-test')).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath('cocina-movil-sonido.png'),animations:'disabled'});
+    await page.locator('#cocina-sound-more').click();
+    await expect(page.locator('#cocina-volume')).toBeHidden();
+
+    for (const viewport of [{width:390,height:844},{width:360,height:780}]) {
+        await page.setViewportSize(viewport);
+        for (const theme of ['light','dark']) {
+            await page.evaluate(value => document.documentElement.dataset.theme=value,theme);
+            const metrics = await page.evaluate(() => {
+                const over = sel => { const el = document.querySelector(sel); return el.scrollWidth - el.clientWidth; };
+                const card = document.querySelector('#cocina-board .cocina-card');
+                const title = document.querySelector('#view-cocina > header h1').getBoundingClientRect();
+                const menu = document.querySelector('.mobile-menu-btn').getBoundingClientRect();
+                return { tabs:over('.cocina-view-controls'), chips:over('#cocina-chips'), filters:over('.cocina-filters'),
+                    doc:document.documentElement.scrollWidth - innerWidth, cardTop:card.getBoundingClientRect().top,
+                    titleBesideMenu: title.left >= menu.right && title.top < menu.bottom };
+            });
+            expect(metrics.tabs).toBeLessThanOrEqual(1);
+            expect(metrics.chips).toBeLessThanOrEqual(1);
+            expect(metrics.filters).toBeLessThanOrEqual(1);
+            expect(metrics.doc).toBeLessThanOrEqual(1);
+            expect(metrics.titleBesideMenu).toBe(true);
+            expect(metrics.cardTop).toBeLessThan(viewport.height * 0.5);
+            await page.screenshot({path:testInfo.outputPath(`cocina-movil-${viewport.width}-${theme}.png`),animations:'disabled'});
+        }
+    }
+    // Las acciones existentes siguen respondiendo.
+    await page.locator('#cocina-chips [data-filtro="preparacion"]').click();
+    await expect(page.locator('#cocina-board')).toContainText('Ceviche');
+    await expect(page.locator('#cocina-board')).not.toContainText('Lomo saltado');
+    await page.locator('#cocina-chips [data-filtro="listo"]').click();
+    await expect(page.locator('#cocina-board')).toContainText('Sin comandas en este estado');
+});
+
 test('@webkit Cocina limpia solo platos sin avisos y permite restaurarlos sin entregarlos', async ({ page }) => {
     const state = await fixture(page, {openTable:false});
     state.kds = [
@@ -1193,6 +1265,151 @@ test('login móvil respeta viewport y no desborda', async ({ page }) => {
     await expect(page.locator('meta[name="mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/icons/apple-touch-icon.png');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+test('identidad visual por empresa: login con Cocinería por defecto, persistencia y sin efecto funcional @webkit', async ({ page }) => {
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    let loginBody = null;
+    await page.addInitScript(() => localStorage.setItem('theme', 'light'));
+    await page.route('**/api/users', route => route.fulfill({ status: 200, json: [] }));
+    await page.route('**/api/login', route => { loginBody = route.request().postDataJSON(); return route.fulfill({ status: 401, json: { message: 'Credenciales inválidas' } }); });
+    await page.goto('/login.html');
+    const html = page.locator('html');
+    await expect(html).toHaveAttribute('data-brand', '02');
+    await expect(page.locator('#login-brand')).toHaveValue('02');
+    await expect(page.locator('.login-logo')).toHaveAttribute('src', '/brands/cocineria/logo.png');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#11554a');
+    await expect(page).toHaveTitle(/La Cocinería/);
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(246, 242, 234)');
+    expect((await page.request.get('/brands/cocineria/logo.png')).ok()).toBeTruthy();
+    expect((await page.request.get('/brands/cocineria/mark.png')).ok()).toBeTruthy();
+
+    await page.selectOption('#login-brand', '04');
+    await expect(html).toHaveAttribute('data-brand', '04');
+    await expect(page.locator('.login-logo')).toHaveAttribute('src', '/logo_croma.png');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(243, 244, 246)');
+    await page.reload();
+    await expect(html).toHaveAttribute('data-brand', '04');
+    await expect(page.locator('#login-brand')).toHaveValue('04');
+
+    await page.locator('#user').fill('mozo');
+    await page.locator('#pass').fill('1234');
+    await page.locator('#login-form button[type="submit"]').click();
+    await expect.poll(() => loginBody).not.toBeNull();
+    expect(Object.keys(loginBody).sort()).toEqual(['password', 'usuario']);
+    expect(errors).toEqual([]);
+});
+test('identidad visual en el panel preselecciona la empresa solo en Mesas', async ({ page }) => {
+    await page.addInitScript(() => { try { if (!sessionStorage.getItem('brand-test')) { localStorage.removeItem('brand'); sessionStorage.setItem('brand-test', '1'); } } catch {} });
+    await fixture(page, { openTable: false });
+    await expect(page.locator('html')).toHaveAttribute('data-brand', '02');
+    await expect(page.locator('.sidebar [data-brand-name]')).toHaveText('La Cocinería');
+    await expect(page.locator('.sidebar .brand-mark')).toHaveAttribute('src', '/brands/cocineria/mark.png');
+    await expect(page.locator('#pos-empresa-select')).toHaveValue('02');
+    await expect(page.locator('#cocina-empresa-select')).toHaveValue('');
+});
+test.describe('Fase 78 turno activo', () => {
+    const watchDialogs = (page, answer = true) => {
+        const messages = [];
+        page.on('dialog', dialog => { messages.push(dialog.message()); return dialog.type() === 'confirm' && !answer ? dialog.dismiss() : dialog.accept(); });
+        return messages;
+    };
+
+    test('@android @webkit la empresa del login y el turno activo quedan seleccionados y el otro turno se bloquea', async ({ page }) => {
+        await page.addInitScript(() => { try { if (!sessionStorage.getItem('brand-78')) { localStorage.setItem('brand', '04'); sessionStorage.setItem('brand-78', '1'); } } catch {} });
+        const dialogs = watchDialogs(page);
+        const state = await fixture(page, { openTable: false, noSelect: true, tables: [{ Numero: 5, Empresa: 4, Ambiente: 1, Estado: 1 }] });
+        await expect(page.locator('#pos-empresa-select')).toHaveValue('04');
+        await expect(page.locator('#cocina-empresa-select')).toHaveValue('');
+        const manana = page.getByRole('button', { name: 'Mañana', exact: true });
+        const tarde = page.getByRole('button', { name: 'Tarde-Noche', exact: true });
+        await expect(manana).toHaveClass(/active/);
+        await expect(tarde).toHaveAttribute('aria-disabled', 'true');
+        await expect(page.locator('[data-table-number="5"]')).toBeVisible();
+        expect(state.shiftLoads).toBeGreaterThan(0);
+        await tarde.click({ force: true }); // aria-disabled sigue siendo tocable para mostrar el aviso
+        await expect.poll(() => dialogs.at(-1)).toContain('El turno activo de Mar Picante 1 es Mañana');
+        await expect(manana).toHaveClass(/active/);
+        await expect(tarde).not.toHaveClass(/active/);
+        // Abruzzo usa la misma numeración que Mar Picante: conversion 1 -> Turno 2 = Tarde-Noche.
+        await page.selectOption('#pos-empresa-select', '06');
+        await expect(tarde).toHaveClass(/active/);
+        await expect(manana).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    test('el cambio de turno en Tablas 201 se refleja en el mapa con aviso', async ({ page }) => {
+        const dialogs = watchDialogs(page);
+        const state = await fixture(page, { openTable: false });
+        await expect(page.getByRole('button', { name: 'Mañana', exact: true })).toHaveClass(/active/);
+        state.conversion[2] = 2;
+        await page.evaluate(() => { posActiveShifts.forEach(entry => { entry.at = 0; }); return loadPOSTables(); });
+        await expect.poll(() => dialogs.at(-1)).toContain('cambió a Tarde-Noche');
+        await expect(page.getByRole('button', { name: 'Tarde-Noche', exact: true })).toHaveClass(/active/);
+        await expect(page.getByRole('button', { name: 'Mañana', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    test('el servidor rechaza un pedido nuevo en turno no activo y el reintento usa el turno vigente', async ({ page }) => {
+        const dialogs = watchDialogs(page);
+        const state = await fixture(page);
+        state.conversion[2] = 2; // el cliente aún cree que es Mañana (Turno 2)
+        await page.locator('.pos-product-card').first().click();
+        await expect.poll(() => dialogs.at(-1)).toContain('El turno activo de Cocineria es Tarde-Noche');
+        await expect(page.locator('#order-save-message')).toContainText('Tarde-Noche');
+        expect(state.ticket).toBeNull();
+        await expect.poll(() => page.evaluate(() => posCurrentTurnoLabel)).toBe('tarde-noche');
+        await page.locator('.pos-product-card').first().click();
+        await expect.poll(() => state.ticket).not.toBeNull();
+        expect(state.savedTurnos).toEqual([2, 1]);
+    });
+
+    test('un borrador offline rechazado por turno se bloquea, avisa y se registra solo tras confirmar', async ({ page }) => {
+        const dialogs = watchDialogs(page);
+        const state = await fixture(page, { openTable: false });
+        await page.locator('#offline-prepare-button').click();
+        await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+        await page.locator('[data-table-number="1"]').click();
+        await expect(page.locator('.pos-product-card')).toHaveCount(1);
+        await page.context().setOffline(true);
+        await page.locator('.pos-product-card').first().click();
+        await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+        await page.locator('#pos-order-back').click();
+        state.conversion[2] = 2;
+        await page.context().setOffline(false);
+        await page.evaluate(() => orderSyncQueued());
+        await expect.poll(async () => (await page.evaluate(() => offlineOrders.get(2, 1)))?.status).toBe('shift');
+        expect(dialogs.some(m => m.includes('Tarde-Noche'))).toBe(true);
+        expect(state.ticket).toBeNull();
+        // Un nuevo intento automático no reenvía el borrador bloqueado.
+        await page.evaluate(() => orderSyncQueued());
+        expect(state.savedTurnos).toEqual([2]);
+        await page.locator('[data-table-number="1"]').click();
+        await expect.poll(() => dialogs.at(-1)).toContain('¿Registrarlo en el turno activo (Tarde-Noche)?');
+        await expect.poll(() => state.ticket).not.toBeNull();
+        expect(state.savedTurnos).toEqual([2, 1]);
+    });
+
+    test('sin turno determinable el mapa no carga mesas', async ({ page }) => {
+        const state = await fixture(page, { openTable: false, shiftError: true });
+        await expect(page.locator('#load-notice-tables')).toContainText('Tablas 201');
+        await expect(page.locator('.pos-table-card')).toHaveCount(0);
+        expect(state.tableLoads).toBe(0);
+        state.shiftError = false;
+        await page.locator('#load-notice-tables button').click();
+        await expect(page.locator('.pos-table-card')).toHaveCount(1);
+    });
+});
+
+test('identidad visual funciona con almacenamiento bloqueado', async ({ page }) => {
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await page.addInitScript(() => {
+        Storage.prototype.getItem = () => { throw new Error('bloqueado'); };
+        Storage.prototype.setItem = () => { throw new Error('bloqueado'); };
+    });
+    await page.route('**/api/users', route => route.fulfill({ status: 200, json: [] }));
+    await page.goto('/login.html');
+    await expect(page.locator('html')).toHaveAttribute('data-brand', '02');
+    await page.selectOption('#login-brand', '06');
+    await expect(page.locator('html')).toHaveAttribute('data-brand', '06');
+    expect(errors.filter(m => !/bloqueado/.test(m))).toEqual([]);
 });
 test('notas por línea, split, cancelar, guardar y envío explícito sin doble clic', async ({ page }) => {
     const errors = []; page.on('pageerror', e => errors.push(e.message));

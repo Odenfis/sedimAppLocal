@@ -8,6 +8,7 @@ const requestContext = require('./lib/request-context');
 const { assertOperationalSchema } = require('./lib/schema-readiness');
 const { createHealthHandler } = require('./lib/health');
 const { normalizeCompany } = require('./lib/company-context');
+const activeShift = require('./lib/active-shift');
 const holidayPrices = require('./lib/holiday-prices');
 const { employeeEligibilitySql } = require('./lib/employee-scope');
 
@@ -339,6 +340,20 @@ app.get('/api/pos/config', isAuthenticated, async (req, res) => {
         });
         res.json({ igv: config.igv || 18, igvv: config.igvv || 10.5 });
     } catch (e) { internalError(res, e, 'Configuración POS'); }
+});
+
+// Fase 78: turno activo por empresa (Tablas n_codtabla=201). Solo lectura.
+app.get('/api/pos/turno-activo', isAuthenticated, async (req, res) => {
+    try {
+        const pool = await getConnection();
+        const execute = (text, values) => {
+            const request = pool.request();
+            for (const [key, value] of Object.entries(values)) request.input(key, sql.Int, value);
+            return requestContext.measureSql(() => request.query(text), 'pos_active_shift');
+        };
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, ...await activeShift.readActiveShift(execute, req.query.empresa) });
+    } catch (e) { internalError(res, e, 'Turno activo', req); }
 });
 
 app.get('/api/pos/products', isAuthenticated, async (req, res) => {

@@ -126,8 +126,10 @@ document.addEventListener("DOMContentLoaded", async () => {
                 const info = document.querySelector('.sidebar-footer .user-info');
                 if (info) { info.title = user.usuario; info.setAttribute('aria-label', `Usuario: ${user.usuario}`); }
             }
+            const companyPreselected = preselectPOSCompanyFromBrand();
             if (document.getElementById('view-pos-tables').style.display !== 'none') {
-                loadPOSTables();
+                if (companyPreselected) onEmpresaOrTurnoChange();
+                else loadPOSTables();
             }
         }
     } catch (e) { appSessionBootstrapFailed = true; posConnectivity.failure(); console.warn('Inicio: no se pudo verificar la sesión:', e.message); }
@@ -657,25 +659,142 @@ let posConfigPromise = null;
 let posConfigLoaded = false;
 const POS_AUTOSAVE_DEBOUNCE_MS = 700;
 
+// Fase 78: etiqueta visible -> número de turno grabado. Mantener igual a TURN_LABELS en lib/active-shift.js.
+const POS_TURN_LABELS = {
+    2: { manana: 2, 'tarde-noche': 1 },
+    4: { manana: 1, 'tarde-noche': 2 },
+    6: { manana: 1, 'tarde-noche': 2 }
+};
+const POS_TURN_TEXT = { manana: 'Mañana', 'tarde-noche': 'Tarde-Noche' };
+const POS_ACTIVE_SHIFT_TTL_MS = 60000;
+const posActiveShifts = new Map(); // empresa -> { shift, at, promise }
+
 function getTurnoValue(empresa, turnoLabel) {
-    const map = {
-        2: { manana: 2, 'tarde-noche': 1 },
-        4: { manana: 1, 'tarde-noche': 2 },
-        6: { manana: 1, 'tarde-noche': 1 }
-    };
     const emp = parseInt(empresa);
-    return (map[emp] && map[emp][turnoLabel]) || 1;
+    return (POS_TURN_LABELS[emp] && POS_TURN_LABELS[emp][turnoLabel]) || 1;
+}
+
+function getTurnoLabel(empresa, turno) {
+    const labels = POS_TURN_LABELS[parseInt(empresa)] || {};
+    return Object.keys(labels).find(label => labels[label] === Number(turno)) || null;
+}
+
+function posCompanyName(empresa) {
+    const option = document.querySelector(`#pos-empresa-select option[value="${String(empresa).padStart(2, '0')}"]`);
+    return option ? option.textContent.trim() : 'la empresa';
+}
+
+function renderTurnoButtons(allowedLabel) {
+    posCurrentTurnoLabel = allowedLabel || null;
+    document.querySelectorAll('.turno-btn').forEach(btn => {
+        const allowed = Boolean(allowedLabel) && btn.dataset.turno === allowedLabel;
+        btn.classList.toggle('active', allowed);
+        btn.setAttribute('aria-pressed', String(allowed));
+        if (allowedLabel && !allowed) btn.setAttribute('aria-disabled', 'true');
+        else btn.removeAttribute('aria-disabled');
+    });
+}
+
+function readStoredActiveShift(empresa) {
+    try {
+        const stored = JSON.parse(localStorage.getItem(`sedim-active-shift:${Number(empresa)}`) || 'null');
+        return stored && getTurnoLabel(empresa, stored.turno) === stored.etiqueta ? stored : null;
+    } catch { return null; }
+}
+
+function storeActiveShift(shift) {
+    try { localStorage.setItem(`sedim-active-shift:${Number(shift.empresa)}`, JSON.stringify({ empresa: shift.empresa, turno: shift.turno, etiqueta: shift.etiqueta, at: Date.now() })); } catch {}
+}
+
+// Devuelve el turno activo de la empresa o null si no puede determinarse (falla cerrado).
+async function ensurePOSActiveShift(empresa, force = false, notify = true) {
+    const key = Number(empresa);
+    if (!key) return null;
+    const entry = posActiveShifts.get(key) || {};
+    if (!force && entry.shift && Date.now() - entry.at < POS_ACTIVE_SHIFT_TTL_MS) return entry.shift;
+    if (entry.promise) return entry.promise;
+    const previousLabel = entry.shift?.etiqueta || null;
+    entry.promise = (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        try {
+            const res = await fetch(`/api/pos/turno-activo?empresa=${encodeURIComponent(empresa)}`, { cache: 'no-store', signal: controller.signal });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok || body.success !== true) {
+                const error = new Error(body.message || 'No se pudo determinar el turno activo.');
+                error.status = res.status; throw error;
+            }
+            const shift = { empresa: key, turno: Number(body.turno), etiqueta: body.etiqueta };
+            if (getTurnoLabel(key, shift.turno) !== shift.etiqueta) throw new Error('Respuesta de turno no válida.');
+            posActiveShifts.set(key, { shift, at: Date.now() });
+            storeActiveShift(shift);
+            if (notify && previousLabel && previousLabel !== shift.etiqueta) {
+                alert(`El turno activo de ${posCompanyName(key)} cambió a ${POS_TURN_TEXT[shift.etiqueta]}. Los pedidos nuevos se registrarán en ese turno.`);
+            }
+            return shift;
+        } catch (error) {
+            // Sin conexión: usar el último turno conocido. Un rechazo del servidor no se reemplaza con datos guardados.
+            const offline = !error.status;
+            const stored = offline ? (entry.shift || readStoredActiveShift(key)) : null;
+            posActiveShifts.set(key, { shift: stored || null, at: stored ? entry.at || 0 : 0 });
+            if (!stored) { const failure = new Error(error.status ? error.message : 'No se pudo determinar el turno activo. Reintente.'); failure.status = error.status; throw failure; }
+            return stored;
+        } finally { clearTimeout(timer); }
+    })();
+    posActiveShifts.set(key, entry);
+    try { return await entry.promise; } finally { const current = posActiveShifts.get(key); if (current) delete current.promise; }
+}
+
+function activePOSShiftLabel(empresa) {
+    return posActiveShifts.get(Number(empresa))?.shift?.etiqueta || null;
 }
 
 function selectTurno(label) {
-    posCurrentTurnoLabel = label;
-    document.querySelectorAll('.turno-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.turno === label);
-    });
-    onEmpresaOrTurnoChange();
+    const empresa = document.getElementById('pos-empresa-select')?.value;
+    if (!empresa) { alert('Seleccione primero una empresa.'); return; }
+    const allowed = activePOSShiftLabel(empresa);
+    if (!allowed) { loadPOSTables(); return; }
+    if (label !== allowed) {
+        alert(`El turno activo de ${posCompanyName(empresa)} es ${POS_TURN_TEXT[allowed]}. No se puede cambiar de turno.`);
+        renderTurnoButtons(allowed);
+        return;
+    }
+    renderTurnoButtons(allowed);
+}
+
+// Un borrador local rechazado por turno solo se reenvía si el mesero lo acepta en el turno activo.
+async function confirmShiftDraft(draft, tableNum) {
+    let shift = null;
+    try { shift = await ensurePOSActiveShift(draft.empresa, true, false); } catch (error) { alert(error.message); return false; }
+    const text = POS_TURN_TEXT[shift.etiqueta];
+    if (!confirm(`${draft.error || 'El turno activo cambió.'}\n\nLa mesa ${tableNum} tiene un pedido guardado en este dispositivo que aún no se registró. ¿Registrarlo en el turno activo (${text})?`)) return false;
+    if (draft.snapshot) draft.snapshot.turno = shift.turno;
+    draft.pending = null; draft.status = 'local'; draft.error = null;
+    await offlineOrders.put(draft);
+    return true;
+}
+
+// Se invoca al cambiar de turno por un 409 SHIFT_NOT_ACTIVE del servidor.
+async function handlePOSShiftRejected(error, empresa) {
+    let shift = null;
+    try { shift = await ensurePOSActiveShift(empresa, true, false); } catch {}
+    if (shift && Number(document.getElementById('pos-empresa-select')?.value) === Number(empresa)) renderTurnoButtons(shift.etiqueta);
+    alert(error.message);
+}
+
+// Fase 78: la empresa elegida en el login (SedimBrand) se preselecciona solo en el Mapa de Mesas.
+function preselectPOSCompanyFromBrand() {
+    const select = document.getElementById('pos-empresa-select');
+    if (!select || select.value) return false;
+    let code = null;
+    try { code = window.SedimBrand?.get()?.code || null; } catch { code = null; }
+    if (!code || !select.querySelector(`option[value="${code}"]`)) return false;
+    select.value = code;
+    return true;
 }
 
 function onEmpresaOrTurnoChange() {
+    renderTurnoButtons(activePOSShiftLabel(document.getElementById('pos-empresa-select')?.value));
     loadHolidayConfig(document.getElementById('pos-empresa-select')?.value);
     if (typeof isPOSOrderViewVisible === 'function' && isPOSOrderViewVisible()) {
         const selectedCompany = normalizePOSCompany(document.getElementById('pos-empresa-select')?.value);
@@ -768,8 +887,21 @@ async function loadPOSTablesOnce() {
     const generation = ++posTablesLoadGeneration;
     const empresaSelect = document.getElementById('pos-empresa-select');
     const empresa = empresaSelect ? empresaSelect.value : null;
-    const turno = posCurrentTurnoLabel;
     const grid = document.getElementById('pos-tables-grid');
+    // Fase 78: el turno no se elige; se toma de Tablas 201 (con respaldo local sin conexión).
+    if (empresa && grid) {
+        let shift = null, shiftError = null;
+        try { shift = await ensurePOSActiveShift(empresa); } catch (error) { shiftError = error; }
+        if (generation !== posTablesLoadGeneration || empresaSelect?.value !== empresa) return;
+        if (!shift) {
+            renderTurnoButtons(null);
+            grid.innerHTML = '';
+            setLoadNotice('tables', grid, shiftError?.message || 'No se pudo determinar el turno activo. Reintente.', () => loadPOSTables());
+            return;
+        }
+        renderTurnoButtons(shift.etiqueta);
+    }
+    const turno = posCurrentTurnoLabel;
     let controller = null;
     console.log(`POS: Empresa seleccionada: ${empresa}`);
     
@@ -1108,6 +1240,7 @@ async function openPOSOrder(tableNum, tableEmpresa = null, { preserveUI = false 
         return;
     }
     const localDraft = await offlineOrders.get(selectedCompany, tableNum).catch(() => null);
+    if (localDraft?.status === 'shift' && !await confirmShiftDraft(localDraft, tableNum)) return;
     if (localDraft?.dirty || localDraft?.pending || localDraft?.send) {
         const prepared = await offlineOrders.prepared(selectedCompany).catch(() => null);
         if (prepared) {
@@ -2541,7 +2674,7 @@ function scheduleAppResumeSync(delayOverride = null) {
 }
 
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') scheduleAppResumeSync();
+    if (document.visibilityState === 'visible') { posActiveShifts.forEach(entry => { entry.at = 0; }); scheduleAppResumeSync(); }
     else {
         clearTimeout(sseRetryTimer);
         sseRetryTimer = null;
@@ -2726,9 +2859,20 @@ function renderCocinaSound() {
     const icon = document.getElementById('cocina-sound-icon');
     if (icon) icon.className = cocinaSoundOn ? 'fas fa-volume-high' : 'fas fa-volume-xmark';
     const button = document.getElementById('cocina-sound-btn');
-    if (button) button.setAttribute('aria-pressed', String(cocinaSoundOn));
+    const text = cocinaSoundOn ? 'Sonido activo' : 'Activar sonido';
+    if (button) { button.setAttribute('aria-pressed', String(cocinaSoundOn)); button.setAttribute('aria-label', text); }
     const label = document.getElementById('cocina-sound-label');
-    if (label) label.textContent = cocinaSoundOn ? 'Sonido activo' : 'Activar sonido';
+    if (label) label.textContent = text;
+}
+
+// Fase 77: en celular el nivel y «Probar sonido» se pliegan tras un botón de ajustes.
+function toggleCocinaSoundExtra(force) {
+    const controls = document.querySelector('.cocina-sound-controls');
+    const button = document.getElementById('cocina-sound-more');
+    if (!controls || !button) return;
+    const open = typeof force === 'boolean' ? force : !controls.classList.contains('is-open');
+    controls.classList.toggle('is-open', open);
+    button.setAttribute('aria-expanded', String(open));
 }
 
 async function toggleCocinaSound() {
@@ -3049,20 +3193,30 @@ function renderCocinaBoard() {
         const countEl = col.querySelector('.cocina-col-count');
         if (countEl) countEl.innerText = count;
     });
+    // Fase 77: conteo por estado en los chips de filtro (vista móvil).
+    const chipCounts = { todas: tickets.length, pendiente: 0, preparacion: 0, listo: 0 };
+    tickets.forEach(t => { chipCounts[columnaDeTicket(t)]++; });
+    document.querySelectorAll('#cocina-chips .cocina-chip-count').forEach(el => {
+        el.textContent = String(chipCounts[el.dataset.countFor] || 0);
+    });
+    board.classList.toggle('cocina-board--vacio', !tickets.length);
 
+    const vacio = texto => `<div class="cocina-vacio"><i class="fas fa-mug-hot"></i><p>${texto}</p></div>`;
     if (!tickets.length) {
-        columnas.pendiente.innerHTML =
-            '<div class="cocina-vacio"><i class="fas fa-mug-hot"></i><p>Sin comandas pendientes</p></div>';
-        return;
+        columnas.pendiente.innerHTML = vacio('Sin comandas activas');
+    } else {
+        tickets.forEach(t => {
+            const colKey = columnaDeTicket(t);
+            if (cocinaFiltro !== 'todas' && cocinaFiltro !== colKey) return;
+            const card = construirTarjetaCocina(t);
+            columnas[colKey].appendChild(card);
+        });
+        if (cocinaFiltro !== 'todas' && columnas[cocinaFiltro] && !columnas[cocinaFiltro].children.length) {
+            columnas[cocinaFiltro].innerHTML = vacio('Sin comandas en este estado');
+        }
     }
 
-    tickets.forEach(t => {
-        const colKey = columnaDeTicket(t);
-        if (cocinaFiltro !== 'todas' && cocinaFiltro !== colKey) return;
-        const card = construirTarjetaCocina(t);
-        columnas[colKey].appendChild(card);
-    });
-
+    // Se aplica también en el caso vacío para no dejar columnas en cero visibles en móvil.
     document.querySelectorAll('.cocina-columna').forEach(col => {
         const body = col.querySelector('.cocina-col-body');
         col.classList.toggle('sin-tarjetas', !body || body.children.length === 0);

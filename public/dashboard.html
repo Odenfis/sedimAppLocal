@@ -1,19 +1,20 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es" data-theme="light" data-brand="02" data-page-title="POS">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#30446d">
+    <meta name="theme-color" content="#11554a">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="apple-mobile-web-app-title" content="SedimApp">
-    <title>Panel de Control - Sedimcorp</title>
+    <meta name="apple-mobile-web-app-title" content="La Cocinería">
+    <title>POS · La Cocinería</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css?v=74">
-    <link rel="stylesheet" href="responsive.css?v=66">
+    <script src="brand.js?v=76"></script>
+    <link rel="stylesheet" href="style.css?v=78">
+    <link rel="stylesheet" href="responsive.css?v=77">
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
 
@@ -25,7 +26,10 @@
         <!-- SIDEBAR MENU -->
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <div class="brand">Admin Panel</div>
+                <div class="sidebar-brand">
+                    <img class="brand-mark" src="/brands/cocineria/mark.png" alt="" data-brand-mark width="40" height="40">
+                    <div class="brand" data-brand-name>La Cocinería</div>
+                </div>
                 <div class="header-tools">
                     <button class="theme-toggle" onclick="toggleTheme()" title="Cambiar Tema">
                         <i class="fas fa-sun" id="theme-icon"></i>
@@ -279,7 +283,7 @@
 
                 <div class="cocina-filters">
                     <div class="pos-empresa-group">
-                        <label>Empresa:</label>
+                        <label for="cocina-empresa-select" class="cocina-empresa-label">Empresa:</label>
                         <select id="cocina-empresa-select" onchange="loadCocinaPedidos()">
                             <option value="" disabled selected>-- Seleccione --</option>
                             <option value="02">Cocineria</option>
@@ -288,31 +292,36 @@
                         </select>
                     </div>
                     <div class="cocina-sound-controls">
-                        <button id="cocina-sound-btn" class="cocina-sound-btn" type="button" onclick="toggleCocinaSound()" aria-pressed="false">
+                        <button id="cocina-sound-btn" class="cocina-sound-btn" type="button" onclick="toggleCocinaSound()" aria-pressed="false" aria-label="Activar sonido">
                             <i class="fas fa-volume-xmark" id="cocina-sound-icon" aria-hidden="true"></i>
                             <span id="cocina-sound-label">Activar sonido</span>
                         </button>
-                        <label for="cocina-volume">Nivel</label>
-                        <input id="cocina-volume" type="range" min="0" max="100" value="80" aria-label="Nivel de alarma de Cocina">
-                        <button id="cocina-sound-test" type="button" onclick="testCocinaSound()">Probar sonido</button>
+                        <button id="cocina-sound-more" type="button" onclick="toggleCocinaSoundExtra()" aria-expanded="false" aria-controls="cocina-sound-extra" aria-label="Ajustes de sonido">
+                            <i class="fas fa-sliders" aria-hidden="true"></i>
+                        </button>
+                        <div id="cocina-sound-extra" class="cocina-sound-extra">
+                            <label for="cocina-volume">Nivel</label>
+                            <input id="cocina-volume" type="range" min="0" max="100" value="80" aria-label="Nivel de alarma de Cocina">
+                            <button id="cocina-sound-test" type="button" onclick="testCocinaSound()">Probar sonido</button>
+                        </div>
                         <span id="cocina-sound-status" role="status" aria-live="polite"></span>
                     </div>
                 </div>
 
                 <div class="cocina-chips cocina-view-controls">
                     <button class="cocina-chip cocina-view-tab active" data-vista="tablero" onclick="setCocinaVista('tablero')">Tablero</button>
-                    <button class="cocina-chip cocina-view-tab" data-vista="ocultos" onclick="setCocinaVista('ocultos')">Platos ocultos</button>
+                    <button class="cocina-chip cocina-view-tab" data-vista="ocultos" onclick="setCocinaVista('ocultos')"><span class="chip-long">Platos ocultos</span><span class="chip-short" aria-hidden="true">Ocultos</span></button>
                     <button class="cocina-chip cocina-view-tab" data-vista="historial" onclick="setCocinaVista('historial')">Historial</button>
-                    <button id="cocina-clear-board" class="cocina-chip" type="button" onclick="changeKitchenVisibility('ocultar')">Limpiar tablero</button>
+                    <button id="cocina-clear-board" class="cocina-chip" type="button" onclick="changeKitchenVisibility('ocultar')" aria-label="Limpiar tablero" title="Limpiar tablero"><i class="fas fa-broom cocina-clear-icon" aria-hidden="true"></i><span class="cocina-chip-text">Limpiar tablero</span></button>
                 </div>
                 <p id="cocina-visibility-status" role="status" aria-live="polite"></p>
                 <button id="cocina-visibility-retry" class="cocina-chip" type="button" hidden onclick="retryKitchenVisibility()">Reintentar operación de Cocina</button>
 
                 <div id="cocina-chips" class="cocina-chips">
-                    <button class="cocina-chip active" data-filtro="todas" onclick="setCocinaFiltro('todas')">Todas</button>
-                    <button class="cocina-chip" data-filtro="pendiente" onclick="setCocinaFiltro('pendiente')">Pendientes</button>
-                    <button class="cocina-chip" data-filtro="preparacion" onclick="setCocinaFiltro('preparacion')">En Preparación</button>
-                    <button class="cocina-chip" data-filtro="listo" onclick="setCocinaFiltro('listo')">Listas</button>
+                    <button class="cocina-chip active" data-filtro="todas" onclick="setCocinaFiltro('todas')">Todas <span class="cocina-chip-count" data-count-for="todas">0</span></button>
+                    <button class="cocina-chip" data-filtro="pendiente" onclick="setCocinaFiltro('pendiente')"><span class="chip-long">Pendientes</span><span class="chip-short" aria-hidden="true">Pend.</span> <span class="cocina-chip-count" data-count-for="pendiente">0</span></button>
+                    <button class="cocina-chip" data-filtro="preparacion" onclick="setCocinaFiltro('preparacion')"><span class="chip-long">En Preparación</span><span class="chip-short" aria-hidden="true">Prep.</span> <span class="cocina-chip-count" data-count-for="preparacion">0</span></button>
+                    <button class="cocina-chip" data-filtro="listo" onclick="setCocinaFiltro('listo')">Listas <span class="cocina-chip-count" data-count-for="listo">0</span></button>
                 </div>
 
                 <div id="cocina-board" class="cocina-board">
@@ -469,8 +478,8 @@
     <script src="order-math.js?v=59"></script>
     <script src="offline-orders.js?v=69"></script>
     <script src="connectivity.js?v=69"></script>
-    <script src="orders-ui.js?v=72"></script>
-    <script src="script.js?v=74"></script>
+    <script src="orders-ui.js?v=78"></script>
+    <script src="script.js?v=78"></script>
 </body>
 
 </html>

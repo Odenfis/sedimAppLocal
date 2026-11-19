@@ -1,19 +1,20 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es" data-theme="light" data-brand="02" data-page-title="Ingreso">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#30446d">
+    <meta name="theme-color" content="#11554a">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="apple-mobile-web-app-title" content="SedimApp">
-    <title>Login - Sedimcorp</title>
+    <meta name="apple-mobile-web-app-title" content="La Cocinería">
+    <title>Ingreso · La Cocinería</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-    <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="responsive.css">
+    <script src="brand.js?v=76"></script>
+    <link rel="stylesheet" href="style.css?v=76">
+    <link rel="stylesheet" href="responsive.css?v=66">
     <!-- Iconos -->
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
 </head>
@@ -26,12 +27,19 @@
     </button>
 
     <div class="login-container">
-        <!-- AQUI ESTÁ TU LOGO -->
-        <img src="logo_croma.png" alt="Sedimcorp Logo" class="login-logo">
+        <img src="/brands/cocineria/logo.png" alt="Logotipo de La Cocinería" class="login-logo" data-brand-logo width="160" height="160">
 
         <h2>Acceso al Sistema</h2>
 
         <form id="login-form">
+            <div class="login-brand-field">
+                <label for="login-brand">Empresa</label>
+                <select id="login-brand" data-brand-select onchange="SedimBrand.set(this.value)">
+                    <option value="02" selected>Cocineria</option>
+                    <option value="04">Mar Picante 1</option>
+                    <option value="06">Inversiones Abruzzo SAC</option>
+                </select>
+            </div>
             <div class="autocomplete-wrapper">
                 <input type="text" id="user" placeholder="Usuario" required autocomplete="off">
                 <div class="suggestions-box" id="user-suggestions"></div>

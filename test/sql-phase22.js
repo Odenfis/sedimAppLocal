@@ -35,7 +35,7 @@ async function main() {
                 Fecha SMALLDATETIME,Turno INT,Usuario NVARCHAR(50));
             CREATE TABLE Ticket_d(NroTicket CHAR(20) NOT NULL,Codpro CHAR(10) NOT NULL,Descripcion CHAR(70),Cantidad DECIMAL(9,2) NOT NULL,Precio MONEY NOT NULL,Descuento MONEY,Importe MONEY NOT NULL);
             CREATE TABLE Mesas(Numero INT,Empresa INT,Estado INT);
-            CREATE TABLE Tablas(n_codtabla INT,n_numero INT,c_describe VARCHAR(100));
+            CREATE TABLE Tablas(n_codtabla INT,n_numero INT,c_describe VARCHAR(100),conversion DECIMAL(9,2) NULL);
             CREATE TABLE Productos(CodPro CHAR(10),Nombre VARCHAR(70),PventaMa MONEY,Afecto INT,Eliminado BIT,Clinea INT,Tipo INT);
             CREATE TABLE Precios(Codpro CHAR(10) PRIMARY KEY,PreTema1 MONEY,PreTema2 MONEY,PreTema3 MONEY,PreTema4 MONEY,PreTema5 MONEY,PreTema6 MONEY);
             CREATE TABLE Lineas(CodLinea INT,Descripcion VARCHAR(50));
@@ -43,7 +43,8 @@ async function main() {
             CREATE TABLE Valores(c_valor VARCHAR(20),n_valor DECIMAL(9,2));
             CREATE TABLE Migrations(Id INT IDENTITY PRIMARY KEY,MigrationName NVARCHAR(255),AppliedAt DATETIME DEFAULT GETDATE());
             INSERT Migrations(MigrationName) VALUES('001_create_cocina_pedidos.sql'),('009_beverage_printing.sql');
-            INSERT Tablas VALUES(23,1,'T001-000001'),(23,2,'T002-000001'),(23,5,'T005-000001'),(200,2,'Cocinería');
+            INSERT Tablas(n_codtabla,n_numero,c_describe) VALUES(23,1,'T001-000001'),(23,2,'T002-000001'),(23,5,'T005-000001'),(200,2,'Cocinería');
+            INSERT Tablas(n_codtabla,n_numero,c_describe,conversion) VALUES(201,1,'Oficina',1),(201,2,'Cocineria',2),(201,4,'Mar Picante 1',2),(201,6,'Inversiones Abruzzo Sac',2);
             INSERT Mesas VALUES(1,2,2),(2,2,1),(3,2,1),(4,2,1),(5,2,1),(6,2,1),(1,4,1);
             INSERT Productos VALUES('02001','Arroz con mariscos',20,1,0,1,3),('02002','Chicha morada',8,1,0,2,1),('02007','Pisco sour',18,1,0,7,3),('04001','Otro producto',30,1,0,1,3);
             INSERT Lineas VALUES(1,'Platos'),(2,'Bebidas'),(7,'Barra'); INSERT Empleados VALUES(1,'José',2,3,NULL),(2,'María',4,3,NULL);
@@ -447,6 +448,8 @@ async function main() {
         } finally { stopA();stopB(); if(previousEnabled===undefined) delete process.env.PRINTER_ENABLED; else process.env.PRINTER_ENABLED=previousEnabled; await new Promise(r=>setTimeout(r,100)); }
         passed++; console.log('✓ reprint idempotency, serial workers, retry limit and interrupted-job recovery');
 
+        const setConversion = (empresa, value) => pool.request().input('numero',empresa).input('value',value).query('UPDATE Tablas SET conversion=@value WHERE n_codtabla=201 AND n_numero=@numero');
+        await setConversion(2, 1); // Fase 78: Turno 2 activo para Cocineria en este bloque
         const shiftLine = { ...base, lineaId:randomUUID(), notasRapidas:[], nota:'Turno 2' };
         let shiftOrder = await call('post','/api/pos/pedido',{items:[shiftLine],mesa:2,empresa:2,mozo:1,turno:2});
         assert.equal(shiftOrder.status,200,JSON.stringify(shiftOrder));
@@ -486,6 +489,31 @@ async function main() {
         assert.equal(blockedReprint.status,409);
         const blockedOrder = await call('post','/api/pos/pedido',{items:[{...shiftLine,lineaId:randomUUID()}],mesa:3,empresa:2,mozo:1,turno:2});
         assert.equal(blockedOrder.status,409);
+
+        // Fase 78: solo se crea un ticket en el turno activo (contrario a Tablas 201.conversion).
+        const sequenceBeforeShift = (await pool.request().query('SELECT c_describe FROM Tablas WHERE n_codtabla=23 AND n_numero=1')).recordset[0].c_describe;
+        const freeShiftTable = 900; await pool.request().query('INSERT Mesas VALUES(900,2,1),(901,2,1)');
+        const ticketsBeforeShift = (await pool.request().query('SELECT COUNT(*) n FROM Ticket_c')).recordset[0].n;
+        const wrongShift = await call('post','/api/pos/pedido',{items:[{...shiftLine,lineaId:randomUUID()}],mesa:freeShiftTable,empresa:2,mozo:1,turno:1});
+        assert.equal(wrongShift.status,409); assert.equal(wrongShift.errorCode,'SHIFT_NOT_ACTIVE'); assert.match(wrongShift.message,/Cocineria es Mañana/);
+        assert.equal((await pool.request().query('SELECT c_describe FROM Tablas WHERE n_codtabla=23 AND n_numero=1')).recordset[0].c_describe,sequenceBeforeShift);
+        assert.equal((await pool.request().query('SELECT COUNT(*) n FROM Ticket_c')).recordset[0].n,ticketsBeforeShift);
+        const missingShift = await call('post','/api/pos/pedido',{items:[{...shiftLine,lineaId:randomUUID()}],mesa:freeShiftTable,empresa:2,mozo:1});
+        assert.equal(missingShift.errorCode,'SHIFT_NOT_ACTIVE');
+        await setConversion(2, 2);
+        const openLine = {...shiftLine,lineaId:randomUUID()};
+        const openedShift = await call('post','/api/pos/pedido',{items:[openLine],mesa:freeShiftTable,empresa:2,mozo:1,turno:1});
+        assert.equal(openedShift.status,200,JSON.stringify(openedShift));
+        await setConversion(2, 1); // el turno cambia con el ticket abierto
+        const editedShift = await call('post','/api/pos/pedido',{items:[openLine,{...shiftLine,lineaId:randomUUID()}],
+            mesa:freeShiftTable,empresa:2,mozo:1,turno:1,nroTicket:openedShift.nroTicket,version:openedShift.version});
+        assert.equal(editedShift.status,200,JSON.stringify(editedShift));
+        assert.equal((await pool.request().input('nro',openedShift.nroTicket).query('SELECT Turno FROM Ticket_c WHERE NroTicket=@nro')).recordset[0].Turno,1);
+        await pool.request().query("UPDATE Tablas SET conversion=NULL WHERE n_codtabla=201 AND n_numero=2");
+        const invalidShift = await call('post','/api/pos/pedido',{items:[{...shiftLine,lineaId:randomUUID()}],mesa:901,empresa:2,mozo:1,turno:1});
+        assert.equal(invalidShift.status,503); assert.equal(invalidShift.errorCode,'SHIFT_CONFIG_INVALID');
+        await setConversion(2, 2);
+        passed++; console.log('✓ Fase 78: active shift from Tablas 201 gates new tickets only, without consuming the sequence');
         await pool.request().input('id',closed.id).query('UPDATE Cierres_turno SET PurgaProgramada=DATEADD(DAY,-1,SYSUTCDATETIME()) WHERE Id=@id');
         const purgeKey = randomUUID();
         const purged = await call('post','/api/admin/cierres/:id/purgar',{pin:'2468',confirmacion:'PURGAR DATOS',clave:purgeKey},{id:closed.id});

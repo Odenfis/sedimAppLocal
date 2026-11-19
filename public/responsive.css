@@ -1241,3 +1241,232 @@ button,
     .employee-search-dialog[open] { gap: 8px; }
     .employee-search-header h2 { font-size: 1.05rem; }
 }
+
+/* =========================================
+   FASE 77 — COCINA COMPACTA EN CELULARES
+   Solo #view-cocina; IDs y lógica sin cambios.
+   ========================================= */
+@media (max-width: 600px) {
+    /* Título a la altura del botón de menú */
+    #view-cocina > header {
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        margin: -45px 0 10px;
+        padding: 0 0 0 58px;
+        border-bottom: 0;
+    }
+
+    #view-cocina > header h1 {
+        margin: 0;
+        font-size: 1.25rem;
+        line-height: 1.2;
+    }
+
+    /* Empresa + sonido + ajustes en una sola fila */
+    #view-cocina .cocina-filters {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 44px 44px;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        margin-bottom: 10px;
+    }
+
+    #view-cocina .cocina-filters .pos-empresa-group {
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+
+    #view-cocina .cocina-empresa-label,
+    #view-cocina #cocina-sound-label,
+    #view-cocina .cocina-chip-text,
+    #view-cocina .chip-long {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    #view-cocina .cocina-filters .pos-empresa-group select {
+        flex: 1;
+        width: 100%;
+        height: 44px;
+        min-height: 44px;
+        font-size: 1rem;
+    }
+
+    /* Los controles de sonido pasan a ser celdas de la grilla */
+    #view-cocina .cocina-sound-controls {
+        display: contents;
+    }
+
+    #view-cocina #cocina-sound-status:empty {
+        display: none;
+    }
+
+    #view-cocina .cocina-sound-controls > button {
+        display: inline-flex;
+        align-items: center;
+        width: 44px;
+        min-width: 44px;
+        padding: 0;
+        justify-content: center;
+    }
+
+    #view-cocina #cocina-sound-more {
+        display: inline-flex;
+        align-items: center;
+    }
+
+    #view-cocina #cocina-sound-more[aria-expanded="true"] {
+        border-color: var(--accent);
+        color: var(--accent-text);
+    }
+
+    #view-cocina .cocina-sound-extra {
+        display: none;
+    }
+
+    #view-cocina .cocina-sound-controls.is-open .cocina-sound-extra {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    #view-cocina .cocina-sound-controls.is-open .cocina-sound-extra,
+    #view-cocina #cocina-sound-status:not(:empty) {
+        grid-column: 1 / -1;
+    }
+
+    #view-cocina .cocina-sound-extra input[type="range"] {
+        flex: 1;
+        min-width: 0;
+        width: auto;
+    }
+
+    #view-cocina .cocina-sound-extra button {
+        width: auto;
+        padding: 0 12px;
+    }
+
+    #view-cocina #cocina-sound-status:not(:empty) {
+        text-align: left;
+    }
+
+    /* Pestañas segmentadas sin desplazamiento + limpiar como icono */
+    #view-cocina .cocina-view-controls {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) 44px;
+        gap: 6px;
+        overflow: visible;
+        padding: 0;
+        margin-bottom: 8px;
+    }
+
+    #view-cocina .cocina-view-controls:has(#cocina-clear-board[hidden]) {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    #view-cocina .cocina-chip {
+        min-height: 40px;
+        padding: 6px 8px;
+        font-size: 0.85rem;
+        text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    #view-cocina .chip-short {
+        display: inline;
+    }
+
+    #view-cocina #cocina-clear-board {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 12px;
+    }
+
+    #view-cocina #cocina-clear-board[hidden] {
+        display: none;
+    }
+
+    #view-cocina .cocina-clear-icon {
+        display: inline;
+    }
+
+    /* Filtros de estado: cuatro columnas iguales con conteo */
+    #view-cocina #cocina-chips {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        overflow: visible;
+        padding: 0;
+        margin-bottom: 10px;
+    }
+
+    #view-cocina #cocina-chips[hidden] {
+        display: none;
+    }
+
+    #view-cocina #cocina-chips .cocina-chip {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-height: 40px;
+        padding: 4px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+    }
+
+    #view-cocina #cocina-chips .cocina-chip-count {
+        margin-left: 0;
+        padding: 0 5px;
+    }
+
+    /* Columnas más ligeras */
+    #view-cocina .cocina-columna {
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+
+    #view-cocina .cocina-col-header {
+        padding: 7px 12px;
+        margin-bottom: 8px;
+        font-size: 0.85rem;
+    }
+
+    /* Tablero vacío: un solo aviso neutro */
+    #view-cocina .cocina-board--vacio .cocina-col-header {
+        display: none;
+    }
+
+    #view-cocina .cocina-board--vacio .cocina-columna[data-col="pendiente"] {
+        padding: 0;
+        border: 1px dashed var(--border-color);
+        border-radius: 12px;
+        background: var(--card-bg);
+    }
+
+    #view-cocina .cocina-vacio {
+        padding: 18px 10px;
+    }
+
+    #view-cocina .cocina-vacio i {
+        font-size: 1.4rem;
+        margin-bottom: 4px;
+    }
+
+    #view-cocina .cocina-vacio p {
+        margin: 0;
+    }
+}

@@ -22,6 +22,22 @@
     --table-header-text: #374151;
     --table-row-hover: #f3f4f6;
     --logo-container-bg: #1f2937;
+    /* Fase 76: tokens de marca. Valores por defecto = identidad heredada. */
+    --brand: #30446d;
+    --brand-contrast: #ffffff;
+    --brand-warm: #c8963e;
+    --accent-text: var(--accent);
+    --accent-strong: var(--accent-strong);
+    --accent-alt: var(--accent-alt);
+    --accent-alt-strong: var(--accent-alt-strong);
+    --accent-soft: var(--accent-soft);
+    --accent-soft-hover: var(--accent-soft-hover);
+    --accent-soft-strong: var(--accent-soft-strong);
+    --focus-ring: var(--accent-alt);
+    --mozo-dark-bg: #172554;
+    --mozo-dark-hover: #1e3a5f;
+    --mozo-dark-border: #818cf8;
+    --mozo-dark-icon: #a5b4fc;
     --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     --sidebar-width: 260px;
     --sidebar-width-collapsed: 70px;
@@ -48,6 +64,56 @@
     --table-header-text: #f3f4f6;
     --table-row-hover: #374151;
     --logo-container-bg: transparent;
+}
+
+/* =========================================
+   1.1 IDENTIDAD POR EMPRESA (Fase 76)
+   Cada empresa sobrescribe solo tokens. Para una nueva identidad:
+   copiar estos bloques con su código ([data-brand="04"], ...).
+   ========================================= */
+[data-brand="02"] {
+    /* La Cocinería — verde del logotipo + crema cálido */
+    --brand: #11554a;
+    --brand-contrast: #ffffff;
+    --brand-warm: #c8963e;
+    --bg-color: #f6f2ea;
+    --border-color: #e7e1d6;
+    --sidebar-active: #efe9de;
+    --table-row-hover: #f3eee4;
+    --accent: #11554a;
+    --accent-hover: #0b3f37;
+    --accent-text: #11554a;
+    --accent-strong: #11554a;
+    --accent-alt: #11554a;
+    --accent-alt-strong: #0b3f37;
+    --accent-soft: #e6f0ed;
+    --accent-soft-hover: #f0f6f4;
+    --accent-soft-strong: #d3e6e0;
+    --focus-ring: #11554a;
+    --logo-container-bg: #11554a;
+}
+
+[data-brand="02"][data-theme="dark"] {
+    --bg-color: #111827;
+    --border-color: #374151;
+    --sidebar-active: #374151;
+    --table-row-hover: #374151;
+    --brand-warm: #d9ae5f;
+    --accent: #23826e;
+    --accent-hover: #1b6b5a;
+    --accent-text: #6fcfb5;
+    --accent-strong: #23826e;
+    --accent-alt: #4fb89f;
+    --accent-alt-strong: #23826e;
+    --accent-soft: #123b34;
+    --accent-soft-hover: #14443c;
+    --accent-soft-strong: #1a4d43;
+    --focus-ring: #6fcfb5;
+    --logo-container-bg: #11554a;
+    --mozo-dark-bg: #0f3a33;
+    --mozo-dark-hover: #14524a;
+    --mozo-dark-border: #4fb89f;
+    --mozo-dark-icon: #6fcfb5;
 }
 
 /* =========================================
@@ -195,10 +261,39 @@ button {
 
 .login-logo {
     max-width: 160px;
+    height: auto;
     margin-bottom: 1.5rem;
     background-color: var(--logo-container-bg);
     padding: 1rem;
     border-radius: 12px;
+}
+
+/* Fase 76: el logo de La Cocinería ya trae su fondo verde; se muestra a sangre. */
+[data-brand="02"] .login-logo {
+    width: 168px;
+    max-width: 60%;
+    padding: 0;
+    border-radius: 20px;
+    box-shadow: 0 10px 24px -12px rgba(17, 85, 74, 0.55);
+}
+
+.login-brand-field {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 15px;
+    text-align: left;
+}
+
+.login-brand-field label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+[data-brand="02"] .login-container button:hover {
+    background: var(--accent-hover);
 }
 
 .login-container button {
@@ -238,7 +333,7 @@ button {
 }
 
 .toggle-password:hover {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 
@@ -278,7 +373,34 @@ button {
     flex-shrink: 0;
 }
 
+.sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.brand-mark {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    object-fit: contain;
+    padding: 3px;
+    box-sizing: border-box;
+    background: var(--logo-container-bg);
+}
+
+[data-brand="02"] .brand-mark {
+    object-fit: cover;
+    padding: 0;
+    box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 3px var(--brand);
+}
+
 .brand {
+    min-width: 0;
+    text-overflow: ellipsis;
     color: var(--text-color);
     font-size: 1.2rem;
     font-weight: 800;
@@ -308,7 +430,7 @@ button {
 
 .toggle-btn:hover {
     background: var(--sidebar-active);
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 /* Menú */
@@ -410,7 +532,7 @@ button {
     align-items: center;
     gap: 10px;
     padding: 8px 15px;
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 600;
     margin-bottom: 10px;
 }
@@ -439,6 +561,11 @@ button {
 }
 
 /* Header colapsado: Hamburguesa arriba, Luna abajo */
+.sidebar.collapsed .sidebar-brand {
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
 .sidebar.collapsed .sidebar-header {
     flex-direction: column;
     gap: 15px;
@@ -650,7 +777,7 @@ button {
 }
 
 .sede-actions i:hover {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 /* Grid Equipos */
@@ -828,7 +955,7 @@ button {
     font-weight: bold;
     font-size: 1rem;
     text-align: right;
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .no-data-state {
@@ -1481,14 +1608,14 @@ tr:hover {
 }
 
 .pos-mojo-badge:hover {
-    border-color: #667eea;
-    background: #f8f9ff;
+    border-color: var(--accent-alt);
+    background: var(--accent-soft-hover);
     transform: scale(1.02);
 }
 
 .pos-mojo-badge i:first-child {
     font-size: 0.9rem;
-    color: #667eea;
+    color: var(--accent-alt);
 }
 
 .pos-mojo-badge .fa-chevron-down {
@@ -1497,12 +1624,12 @@ tr:hover {
 }
 
 .pos-mojo-badge.has-mozos {
-    border-color: #667eea;
-    background: #f0f4ff;
+    border-color: var(--accent-alt);
+    background: var(--accent-soft);
 }
 
 .pos-mojo-badge.has-mozos i:first-child {
-    color: #667eea;
+    color: var(--accent-alt);
 }
 
 .mozo-list-container {
@@ -1528,8 +1655,8 @@ tr:hover {
 }
 
 .mozo-option:hover {
-    border-color: #667eea;
-    background: #f0f4ff;
+    border-color: var(--accent-alt);
+    background: var(--accent-soft);
     transform: translateX(4px);
 }
 
@@ -1539,7 +1666,7 @@ tr:hover {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #667eea;
+    background: var(--accent-alt);
     color: white;
     border-radius: 50%;
     font-size: 0.9rem;
@@ -1547,13 +1674,13 @@ tr:hover {
 }
 
 .mozo-option.selected {
-    border-color: #667eea;
-    background: #e8edff;
+    border-color: var(--accent-alt);
+    background: var(--accent-soft-strong);
     font-weight: 700;
 }
 
 .mozo-option.selected i {
-    background: #4f6ad0;
+    background: var(--accent-alt-strong);
 }
 
 .mozo-option span {
@@ -1698,7 +1825,7 @@ tr:hover {
     min-height: 44px;
     padding: 0 12px;
     background: transparent;
-    color: var(--accent);
+    color: var(--accent-text);
     font-size: .9rem;
 }
 
@@ -1910,10 +2037,17 @@ tr:hover {
     background: var(--accent);
     color: white;
 }
+/* Fase 78: el turno no activo queda bloqueado (sigue enfocable para mostrar el aviso). */
+.turno-btn[aria-disabled="true"] {
+    color: var(--text-secondary);
+    text-decoration: line-through;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
 
 .pos-table-icon {
     font-size: 2.5rem;
-    color: var(--accent);
+    color: var(--accent-text);
     margin-bottom: 5px;
     opacity: 0.7;
 }
@@ -1970,7 +2104,7 @@ tr:hover {
 .pos-product-price {
     font-size: 1.4rem;
     font-weight: 800;
-    color: var(--accent);
+    color: var(--accent-text);
     margin-top: auto;
 }
 
@@ -2002,7 +2136,7 @@ tr:hover {
 }
 
 .pos-product-price {
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 800;
     font-size: 1.1rem;
 }
@@ -2078,15 +2212,15 @@ tr:hover {
 
 /* Fase 67: contrast corrections scoped to the dark POS order view. */
 [data-theme="dark"] #view-pos-order .pos-mojo-badge {
-    background: #172554;
+    background: var(--mozo-dark-bg);
     color: #f9fafb;
-    border-color: #818cf8;
+    border-color: var(--mozo-dark-border);
     transform: none;
 }
 
 [data-theme="dark"] #view-pos-order .pos-mojo-badge i:first-child,
 [data-theme="dark"] #view-pos-order .pos-mojo-badge .fa-caret-down {
-    color: #a5b4fc;
+    color: var(--mozo-dark-icon);
 }
 
 [data-theme="dark"] #view-pos-order .qty-btn:is([data-action="dec"], [data-action="inc"]) {
@@ -2096,13 +2230,13 @@ tr:hover {
 
 [data-theme="dark"] #view-pos-order .pos-mojo-badge:focus-visible,
 [data-theme="dark"] #view-pos-order .qty-btn:is([data-action="dec"], [data-action="inc"]):focus-visible {
-    outline: 2px solid #a5b4fc;
+    outline: 2px solid var(--mozo-dark-icon);
     outline-offset: 3px;
 }
 
 @media (hover: hover) and (pointer: fine) {
     [data-theme="dark"] #view-pos-order .pos-mojo-badge:hover:not([aria-disabled="true"]) {
-        background: #1e3a5f;
+        background: var(--mozo-dark-hover);
         transform: scale(1.02);
     }
 
@@ -2131,7 +2265,7 @@ tr:hover {
     border-top: 2px solid var(--border-color);
     font-weight: 800;
     font-size: 1.3rem;
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .pos-order-actions {
@@ -2319,7 +2453,7 @@ form label {
 
 .suggestion-item:hover {
     background: var(--bg-color);
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .card-simple {
@@ -2484,7 +2618,7 @@ form label {
 
 .cocina-sound-btn[aria-pressed="true"] {
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 700;
 }
 
@@ -2526,6 +2660,23 @@ form label {
     color: white;
     border-color: var(--accent);
 }
+
+/* Fase 77: piezas de la vista compacta; en escritorio no alteran el diseño. */
+.cocina-sound-extra { display: contents; }
+#cocina-sound-more, .cocina-clear-icon, .chip-short { display: none; }
+.cocina-chip-count {
+    display: inline-block;
+    min-width: 1.4em;
+    margin-left: 4px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--border-color);
+    color: var(--text-color);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    text-align: center;
+}
+.cocina-chip.active .cocina-chip-count { background: rgba(255, 255, 255, 0.25); color: #fff; }
 
 .cocina-board {
     display: grid;
@@ -2613,7 +2764,7 @@ form label {
     font-size: 0.85rem;
 }
 .cocina-envio,.cocina-mozo { font-size:.78rem; color:var(--text-secondary); }
-.cocina-btn-ticket { width:100%; margin-top:8px; border:1px solid var(--accent); border-radius:8px; padding:9px; background:transparent; color:var(--accent); font-weight:700; cursor:pointer; }
+.cocina-btn-ticket { width:100%; margin-top:8px; border:1px solid var(--accent); border-radius:8px; padding:9px; background:transparent; color:var(--accent-text); font-weight:700; cursor:pointer; }
 .cocina-ticket-preview { background:#fff; color:#111; border:1px solid #ddd; padding:18px; font:14px/1.45 Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; width:min(72mm,100%); box-sizing:border-box; margin:0 auto; }
 .cocina-ticket-dialog { width:min(520px,94vw); max-width:none; max-height:90dvh; overflow:hidden; }
 .cocina-ticket-dialog[open] { display:flex; flex-direction:column; }
@@ -2733,7 +2884,7 @@ form label {
 
 .cocina-item-cant {
     font-weight: 900;
-    color: var(--accent);
+    color: var(--accent-text);
     min-width: 28px;
     text-align: right;
 }
@@ -2794,7 +2945,7 @@ form label {
 .order-secondary, .order-line-tools button { border: 1px solid #9ca3af; border-radius: 8px; padding: 8px 10px; background: transparent; color: inherit; cursor: pointer; }
 .order-line-notes { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: #bc651c; font-size: .85rem; margin-top: 5px; }
 .order-quantity-pending { display:block; margin-top:4px; color:#b45309; font-size:.82rem; font-weight:700; }
-.order-kitchen-line-status { display:block; margin-top:4px; color:var(--accent); font-weight:700; }
+.order-kitchen-line-status { display:block; margin-top:4px; color:var(--accent-text); font-weight:700; }
 .order-line-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
 #order-save-message, #order-print-status { overflow-wrap: anywhere; }
 #order-save-message { color: #b45309; }
@@ -2838,7 +2989,7 @@ form label {
 .order-remove-dialog { width: min(440px, 92vw); overflow-wrap: anywhere; }
 .order-remove-dialog #order-remove-product { font-weight: 700; }
 .order-remove-dialog #order-remove-confirm { background: #b42318; border-color: #b42318; color: #fff; }
-.order-remove-dialog button:focus-visible { outline: 3px solid #667eea; outline-offset: 3px; }
+.order-remove-dialog button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
 
 /* Fase 54: referencia visible fuera de las acciones plegables. */
 .pos-header-info { flex-wrap: wrap; min-width: 0; }
@@ -2880,7 +3031,7 @@ form label {
 .employee-search-dialog button { min-height: 44px; cursor: pointer; font: inherit; color: inherit; }
 .employee-search-dialog button:disabled { opacity: .5; cursor: not-allowed; }
 .employee-search-dialog button:focus-visible,
-.employee-search-dialog input:focus-visible { outline: 3px solid #667eea; outline-offset: 2px; }
+.employee-search-dialog input:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .employee-search-header button { min-width: 44px; border: 0; border-radius: 8px; background: var(--employee-search-control-bg); font-size: 1.5rem; }
 .employee-search-form { margin: 0; padding: 0; gap: 0; }
 .employee-search-form label { display: block; margin-bottom: 6px; font-weight: 600; }
@@ -2895,7 +3046,7 @@ form label {
 .employee-search-result { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px; margin-bottom: 6px; text-align: left; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; background: var(--card-bg, #fff); color: inherit; }
 .employee-search-result strong { flex: 0 0 auto; min-width: 3ch; }
 .employee-search-result span { overflow-wrap: anywhere; }
-.employee-search-result[aria-pressed="true"] { border-color: #667eea; background: var(--employee-search-control-bg); }
+.employee-search-result[aria-pressed="true"] { border-color: var(--accent-alt); background: var(--employee-search-control-bg); }
 .employee-search-footer { display: flex; justify-content: flex-end; }
 
 [data-theme="dark"] .employee-search-dialog { --employee-search-control-bg: #374151; }
@@ -2912,7 +3063,7 @@ form label {
     color: var(--text-color); background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; }
 .order-price-dialog button, .order-line-tools button[data-action="price"] { min-height: 44px; }
 .order-price-dialog #order-price-error { color: var(--danger-color, #d14343); }
-.order-price-dialog input:focus-visible { outline: 3px solid #667eea; outline-offset: 2px; }
+.order-price-dialog input:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 /* Fase 61: persistent company tariffs */
 .holiday-settings { max-width: 720px; width: 100%; padding: 16px; }
@@ -3011,14 +3162,14 @@ form label {
     #order-transfer-tables button:hover { border-color: var(--accent); background: var(--table-row-hover); }
     #order-transfer-dialog .order-dialog-heading button:hover { background: var(--table-row-hover); }
 }
-#order-transfer-tables button[aria-pressed="true"] { background: #445ac4; color: #fff; border: 2px solid #445ac4; box-shadow: inset 0 0 0 2px var(--card-bg); }
+#order-transfer-tables button[aria-pressed="true"] { background: var(--accent-strong); color: #fff; border: 2px solid var(--accent-strong); box-shadow: inset 0 0 0 2px var(--card-bg); }
 #order-transfer-dialog .transfer-footer { border-top: 1px solid var(--border-color); padding-top: 16px; overflow-wrap: anywhere; }
 #order-transfer-summary { margin: 0 0 12px; font-size: .875rem; font-weight: 600; line-height: 1.6; }
 #order-transfer-message { margin: 0 0 12px; color: var(--text-color); line-height: 1.5; }
 #order-transfer-message:empty { display: none; }
 #order-transfer-dialog .transfer-actions { display: flex; flex-direction: column; gap: 10px; }
 #order-transfer-dialog .transfer-actions button { border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text-color); }
-#order-transfer-dialog #order-transfer-submit { background: #445ac4; color: #fff; border-color: #445ac4; font-weight: 600; }
+#order-transfer-dialog #order-transfer-submit { background: var(--accent-strong); color: #fff; border-color: var(--accent-strong); font-weight: 600; }
 #order-transfer-dialog #order-transfer-submit:disabled { opacity: .55; cursor: default; }
 @media (min-width: 480px) {
     #order-transfer-dialog .transfer-table-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -3044,3 +3195,8 @@ form label {
     #order-transfer-dialog .transfer-footer { margin-top: 16px; }
 }
 .transfer-kitchen-label { display: block; font-size: .875rem; font-weight: 600; }
+
+/* Fase 76: ajustes puntuales de La Cocinería que en el tema oscuro usaban azul fijo. */
+[data-brand="02"][data-theme="dark"] #cocina-history-filters button { background: var(--accent); border-color: var(--accent); }
+[data-brand="02"][data-theme="dark"] #cocina-history-filters button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+[data-brand="02"] .offline-prepare-button:focus-visible { outline-color: var(--focus-ring); }

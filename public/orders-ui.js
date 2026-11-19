@@ -144,6 +144,7 @@ async function openOfflinePOSOrder(mesa, empresa) {
     orderDirty = Boolean(draft?.dirty); orderOfflinePending = Boolean(draft?.dirty || draft?.send || draft?.pending);
     orderOfflineDurable = Boolean(draft?.snapshot);
     if (draft?.status === 'blocked') { orderConflict = true; orderSaveError = `${draft.error || 'Conflicto de sincronización'}. El borrador local se conserva para revisión.`; }
+    else if (draft?.status === 'shift') orderSaveError = `${draft.error || 'El turno activo cambió'}. El borrador local se conserva.`;
     else if (draft?.status === 'uncertain') orderSaveError = 'Resultado incierto; verificando con el servidor. No se ha confirmado su recepción en Cocina.';
     renderPOSCategories(prepared.categories); searchPOSProducts(); updateCartUI(); updatePOSViewMode(); renderOrderStatus();
     return true;
@@ -159,7 +160,7 @@ async function orderSyncQueued() {
         const user = session.user?.usuario;
         if (user !== offlineOrders.userName()) return;
         for (const draft of drafts) {
-            if (draft.status === 'blocked') continue;
+            if (draft.status === 'blocked' || draft.status === 'shift') continue;
             if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa && orderBusy) continue;
             if (isViewVisible('view-pos-order') && Number(posCurrentTable) === draft.mesa &&
                 Number(posCurrentTableEmpresa) === draft.empresa && orderDirty && !draft.send && !orderOfflinePending) continue;
@@ -169,6 +170,17 @@ async function orderSyncQueued() {
                 await orderSyncOne(draft);
             } catch (error) {
                 const currentDraft = await offlineOrders.get(draft.empresa, draft.mesa) || draft;
+                if (error.errorCode === 'SHIFT_NOT_ACTIVE') {
+                    // Fase 78: pedido creado en un turno que ya no está activo. Se bloquea y se avisa;
+                    // el borrador se conserva y el mesero confirma al reabrir la mesa.
+                    currentDraft.pending = null; currentDraft.dirty = true; currentDraft.status = 'shift';
+                    currentDraft.error = error.message; await offlineOrders.put(currentDraft);
+                    if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa) {
+                        orderOfflinePending = true; orderSaveError = `${error.message} El borrador local se conserva.`;
+                    }
+                    if (typeof handlePOSShiftRejected === 'function') await handlePOSShiftRejected(error, draft.empresa);
+                    continue;
+                }
                 currentDraft.status = error.status && error.status < 500 ? 'blocked' : 'uncertain';
                 currentDraft.error = error.message; await offlineOrders.put(currentDraft);
                 if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa) {
@@ -294,7 +306,7 @@ function orderOperation() {
     return id;
 }
 function isOrderConflict(error) {
-    return error.status === 409 && !['COMPANY_CONTEXT_MISMATCH', 'PRICE_CONFIG_CHANGED'].includes(error.errorCode);
+    return error.status === 409 && !['COMPANY_CONTEXT_MISMATCH', 'PRICE_CONFIG_CHANGED', 'SHIFT_NOT_ACTIVE'].includes(error.errorCode);
 }
 async function orderRequest(url, method = 'GET', body) {
     const requestStartedAt = Date.now();
@@ -465,6 +477,7 @@ async function orderFlush() {
                 orderOfflinePending = false;
             }
             if (e.errorCode === 'PRICE_CONFIG_CHANGED') await handleHolidayPriceConflict();
+            if (e.errorCode === 'SHIFT_NOT_ACTIVE') await handlePOSShiftRejected(e, posCurrentTableEmpresa);
             if (isOrderConflict(e)) orderConflict = true; throw e;
         } finally { orderSavePromise = null; renderOrderStatus(); }
     })();

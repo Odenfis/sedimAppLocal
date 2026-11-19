@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "SedimApp Restaurante",
-  "short_name": "SedimApp",
+  "name": "La Cocinería · POS",
+  "short_name": "La Cocinería",
   "description": "Punto de venta y gestión de cocina para el restaurante.",
   "lang": "es-PE",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#30446d",
+  "background_color": "#f6f2ea",
+  "theme_color": "#11554a",
   "orientation": "any",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
