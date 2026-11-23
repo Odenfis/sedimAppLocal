@@ -458,6 +458,187 @@ test('sin preparación, reconcilia el borrador local antes de reabrir la mesa', 
     await expect(page.locator('#load-notice-offline-table')).toHaveCount(0);
 });
 
+test('la preparación automática guarda mesas ocupadas y se abren sin conexión', async ({ page }) => {
+    await page.addInitScript(() => { window.POS_OFFLINE_AUTO_PREPARE_FIRST_MS = 300; });
+    const state = await fixture(page, { openTable: false, tables: [
+        { Numero: 1, Empresa: 2, Ambiente: 1, Estado: 2 },
+        { Numero: 2, Empresa: 2, Ambiente: 1, Estado: 1 }
+    ] });
+    state.ticket = 'T001-000009'; state.version = 3;
+    state.items = [{ lineaId: 'l-1', codPro: '02001', nombre: 'Arroz con mariscos', cantidad: 2, precio: 20, afecto: 1 }];
+    await page.evaluate(() => autoPrepareOffline());
+    await expect.poll(() => page.evaluate(async () => Boolean((await offlineOrders.prepared(2))?.tables?.length))).toBe(true);
+    await expect.poll(() => page.evaluate(async () => (await offlineOrders.get(2, 1))?.server?.nroTicket)).toBe('T001-000009');
+    expect(await page.evaluate(() => offlineOrders.get(2, 2))).toBeFalsy();
+    await page.context().setOffline(true);
+    await page.route('**/api/pos/pedido?**', route => route.abort('failed'));
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.cart-item')).toHaveCount(1);
+    await expect(page.locator('#load-notice-offline-table')).toHaveCount(0);
+    expect(state.saves).toBe(0);
+});
+
+test('la precarga nunca reemplaza un borrador pendiente de sincronizar', async ({ page }) => {
+    const state = await fixture(page, { openTable: false, tables: [{ Numero: 1, Empresa: 2, Ambiente: 1, Estado: 2 }] });
+    await page.locator('[data-table-number="1"]').click();
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.locator('#pos-order-back').click();
+    const replaced = await page.evaluate(() => offlineOrders.cacheServer(2, 1, { success: true, nroTicket: 'OTRO', version: 9, pedido: null, items: [] }));
+    expect(replaced).toBe(false);
+    const removed = await page.evaluate(() => offlineOrders.dropIfClean(2, 1));
+    expect(removed).toBe(false);
+    const draft = await page.evaluate(() => offlineOrders.get(2, 1));
+    expect(draft.dirty).toBe(true); expect(draft.snapshot.cart).toHaveLength(1);
+    expect(state.saves).toBe(0);
+});
+
+test('el temporizador de preparación automática se ejecuta sin pulsar el botón', async ({ page }) => {
+    await page.addInitScript(() => { window.POS_OFFLINE_AUTO_PREPARE_FIRST_MS = 300; });
+    await fixture(page, { openTable: false });
+    await expect.poll(() => page.evaluate(async () => Boolean(await offlineOrders.prepared(4))), { timeout: 8000 }).toBe(true);
+    await expect(page.locator('#offline-preparation-status')).toContainText('Preparado el');
+});
+
+test('bandeja de pendientes muestra la mesa, genera la comanda de respaldo y reintenta', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.locator('#offline-prepare-button').click();
+    await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+    await page.locator('[data-table-number="1"]').click();
+    await expect(page.locator('.pos-product-card')).toHaveCount(1);
+    await page.context().setOffline(true);
+    await page.locator('.pos-product-card').first().click();
+    await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+    await page.locator('#btn-enviar-cocina').click();
+    await page.locator('#pos-order-back').click();
+    await page.locator('#view-pos-tables .pos-connectivity-pending').click();
+    const tray = page.locator('#pending-tray-dialog');
+    await expect(tray).toBeVisible();
+    await expect(tray.locator('.pending-tray-item')).toHaveCount(1);
+    await expect(tray.locator('.pending-tray-item')).toContainText('Mesa 1');
+    await expect(tray.locator('.pending-tray-item')).toContainText('Envío a Cocina pendiente');
+    await tray.getByRole('button', { name: 'Comanda de respaldo' }).click();
+    const backup = page.locator('#pending-backup-text');
+    await expect(backup).toContainText('*** COMANDA NO REGISTRADA ***');
+    await expect(backup).toContainText('1 x Arroz con mariscos');
+    await expect(backup).toContainText('Mozo: José');
+    await tray.getByRole('button', { name: 'Volver a la lista' }).click();
+    await page.context().setOffline(false);
+    await tray.getByRole('button', { name: 'Reintentar ahora' }).click();
+    await expect.poll(() => state.sends).toBe(1);
+    expect(state.saves).toBe(1);
+    await expect(page.locator('#pending-tray-summary')).toContainText('No hay mesas pendientes');
+    await expect(page.locator('#pos-sync-toast')).toContainText('1 mesa pendiente quedó registrada');
+    await expect(page.locator('#view-pos-tables .pos-connectivity-pending')).toHaveText('Mesas pendientes: 0');
+});
+
+test('una mesa pendiente por más de cinco minutos se destaca en el indicador', async ({ page }) => {
+    await fixture(page, { openTable: false });
+    await page.evaluate(async () => {
+        await offlineOrders.put({ empresa: 2, mesa: 1, dirty: true });
+        const draft = await offlineOrders.get(2, 1); draft.since = Date.now() - 6 * 60000; await offlineOrders.put(draft);
+        await posConnectivity.refreshPending();
+    });
+    const indicator = page.locator('#view-pos-tables [data-connectivity-indicator]');
+    await expect(indicator).toHaveAttribute('data-pending', 'stale');
+    await expect(indicator.locator('.pos-connectivity-age')).toHaveText('La más antigua lleva 6 min sin registrarse');
+    await page.evaluate(() => offlineOrders.remove(2, 1));
+    await expect(indicator).toHaveAttribute('data-pending', 'no');
+    await expect(indicator.locator('.pos-connectivity-age')).toHaveText('');
+});
+
+test('la cola espera de forma creciente cuando el servidor no responde', async ({ page }) => {
+    const state = await fixture(page, { openTable: false });
+    await page.evaluate(() => offlineOrders.put({ empresa: 2, mesa: 1, dirty: true, snapshot: { cart: [], mozo: '1', nroTicket: null, version: 0 } }));
+    state.sessionNetworkError = true;
+    await page.evaluate(() => orderSyncQueued());
+    expect(await page.evaluate(() => orderSyncWaiting())).toBe(true);
+    const first = await page.evaluate(() => orderSyncBackoffUntil - Date.now());
+    await page.evaluate(() => orderSyncQueued());
+    const second = await page.evaluate(() => orderSyncBackoffUntil - Date.now());
+    expect(first).toBeLessThanOrEqual(3000); expect(second).toBeGreaterThan(3000);
+    state.sessionNetworkError = false;
+    await page.evaluate(() => retryPendingNow());
+    expect(await page.evaluate(() => orderSyncWaiting())).toBe(false);
+});
+
+test.describe('Fase 82 app sin red', () => {
+    test.use({ serviceWorkers: 'allow' });
+    async function waitForShell(page) {
+        await page.waitForFunction(() => navigator.serviceWorker?.controller, null, { timeout: 10000 });
+        await expect.poll(() => page.evaluate(async () => Boolean(await caches.match('/dashboard.html'))
+            && Boolean(await caches.match(document.querySelector('script[src^="script.js"]').src))), { timeout: 10000 }).toBe(true);
+    }
+
+    test('recargar sin red abre la app con los borradores del último usuario y sincroniza al volver', async ({ page }) => {
+        const state = await fixture(page, { openTable: false });
+        await waitForShell(page);
+        await page.locator('#offline-prepare-button').click();
+        await expect(page.locator('#offline-preparation-status')).toContainText('Tres empresas preparadas');
+        await page.locator('[data-table-number="1"]').click();
+        await expect(page.locator('.pos-product-card')).toHaveCount(1);
+        await page.context().setOffline(true);
+        await page.locator('.pos-product-card').first().click();
+        await expect(page.locator('#order-save-message')).toContainText('Guardado en este dispositivo');
+        await page.locator('#pos-order-back').click();
+        await page.reload();
+        await expect(page.locator('#sidebar-user-name')).toContainText('sin conexión');
+        await expect(page.locator('#pos-empresa-select')).toHaveValue('02');
+        await expect(page.locator('#view-pos-tables .pos-connectivity-pending')).toHaveText('Mesas pendientes: 1');
+        await page.locator('[data-table-number="1"]').click();
+        await expect(page.locator('.cart-item')).toHaveCount(1);
+        expect(state.saves).toBe(0);
+        await page.context().setOffline(false);
+        await page.evaluate(() => posConnectivity.check());
+        await expect.poll(() => state.saves).toBe(1);
+        await expect(page.locator('#sidebar-user-name')).not.toContainText('sin conexión');
+        await expect(page.locator('.cart-item')).toHaveCount(1);
+    });
+
+    test('el acceso de inicio (/) abre el panel sin red', async ({ page }) => {
+        await fixture(page, { openTable: false });
+        await waitForShell(page);
+        await page.context().setOffline(true);
+        await page.goto('/');
+        await expect(page).toHaveURL(/\/$/);
+        await expect(page.locator('#sidebar-user-name')).toContainText('sin conexión');
+        await expect(page.locator('#pos-tables-grid')).toBeVisible();
+    });
+
+    test('sin identidad verificada recargar sin red no muestra borradores', async ({ page }) => {
+        await fixture(page, { openTable: false });
+        await waitForShell(page);
+        await page.evaluate(() => offlineOrders.put({ empresa: 2, mesa: 1, dirty: true }));
+        await page.evaluate(() => localStorage.removeItem('sedim-offline-identity'));
+        await page.context().setOffline(true);
+        await page.reload();
+        await expect(page.locator('#view-pos-tables .pos-connectivity-pending')).toHaveText('Pendientes: sesión sin verificar');
+        await expect(page.locator('#sidebar-user-name')).not.toContainText('sin conexión');
+    });
+
+    test('sesión vencida elimina la identidad sin conexión', async ({ page }) => {
+        const state = await fixture(page, { openTable: false });
+        expect(await page.evaluate(() => Boolean(localStorage.getItem('sedim-offline-identity')))).toBe(true);
+        state.sessionActive = false;
+        await page.evaluate(() => posConnectivity.check());
+        await page.waitForURL(/login\.html/);
+        expect(await page.evaluate(() => localStorage.getItem('sedim-offline-identity'))).toBeNull();
+    });
+
+    test('el service worker no intercepta la API ni guarda respuestas comerciales', async ({ page }) => {
+        const state = await fixture(page, { openTable: false });
+        await waitForShell(page);
+        await page.locator('[data-table-number="1"]').click();
+        await page.locator('.pos-product-card').first().click();
+        await expect.poll(() => state.saves).toBe(1);
+        const cached = await page.evaluate(async () => (await (await caches.open('sedim-shell-v1')).keys()).map(r => new URL(r.url).pathname));
+        expect(cached.some(path => path.startsWith('/api/'))).toBe(false);
+        expect(cached).toContain('/vendor/fontawesome/css/all.min.css');
+        expect(cached.some(path => path.endsWith('.woff2'))).toBe(true);
+    });
+});
+
 test('un código sin productos no crea un ticket durante la sincronización', async ({ page }) => {
     const state = await fixture(page, { openTable: false,
         tables: [{ Numero: 201, Empresa: 2, Ambiente: 1, Estado: 1 }] });

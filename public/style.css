@@ -1224,10 +1224,45 @@ tr:hover {
 .pos-connectivity[data-state="offline"],
 .pos-connectivity[data-state="unavailable"] { border-left-color: #b43b32; }
 .pos-connectivity[data-state="server"] { border-left-color: #a66b00; }
+/* Fase 80: contador de pendientes como acceso a la bandeja */
+button.pos-connectivity-pending {
+    min-height: 32px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 999px;
+    background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer;
+}
+button.pos-connectivity-pending:focus-visible { outline: 3px solid var(--focus-ring, #445ac4); outline-offset: 2px; }
+.pos-connectivity[data-pending="yes"] button.pos-connectivity-pending { border-color: #a66b00; }
+.pos-connectivity[data-pending="stale"] button.pos-connectivity-pending { border-color: #b43b32; background: #b43b3214; }
+.pos-connectivity-age:empty { display: none; }
+.pos-connectivity-age { flex-basis: 100%; font-weight: 700; color: #b43b32; }
 @media (max-width: 480px) {
     .pos-connectivity { margin: 5px 0 9px; padding: 7px 9px; font-size: .8rem; }
     .pos-connectivity-pending { margin-left: 0; }
 }
+.pending-tray-list { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 10px; }
+.pending-tray-item {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 12px; border: 1px solid var(--border-color); border-left: 4px solid #a66b00; border-radius: 10px;
+}
+.pending-tray-item[data-status="blocked"], .pending-tray-item[data-status="shift"] { border-left-color: #b43b32; }
+.pending-tray-info { display: grid; gap: 3px; min-width: 0; flex: 1 1 220px; }
+.pending-tray-info small { opacity: .8; }
+.pending-tray-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pending-tray-actions button, #pending-tray-dialog .order-dialog-actions button { padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--card-bg); color: inherit; font: inherit; }
+.pending-tray-actions button:disabled, #pending-tray-dialog button:disabled { opacity: .55; cursor: not-allowed; }
+.pending-backup-help { margin: 12px 0 8px; }
+.pending-backup-text {
+    margin: 0; padding: 14px; max-height: 50dvh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    border: 1px dashed var(--border-color); border-radius: 10px; font-size: 1rem; line-height: 1.45;
+    user-select: text; -webkit-user-select: text;
+}
+.pos-sync-toast {
+    position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 2000;
+    max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 12px; background: #16834c; color: #fff;
+    font-weight: 700; box-shadow: 0 8px 24px #0004; text-align: center;
+}
+.pos-sync-toast[hidden] { display: none; }
+[data-theme="dark"] .pos-connectivity-age { color: #ff9a8f; }
+[data-theme="dark"] .pos-connectivity[data-pending="stale"] button.pos-connectivity-pending { border-color: #ff9a8f; background: #ff9a8f1f; }
 .offline-status-announcement {
     display: block;
     margin: 3px 0 9px;

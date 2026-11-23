@@ -21,11 +21,38 @@ const offlineOrders = (() => {
             tx.onabort = () => reject(tx.error);
         }));
     }
+    const unsynced = draft => Boolean(draft?.dirty || draft?.send || draft?.pending);
     const key = (empresa, mesa) => `${user}:${Number(empresa)}:${Number(mesa)}`;
     const prepKey = empresa => `${user}:${Number(empresa)}`;
     async function get(empresa, mesa) { return user ? store('drafts', 'readonly', s => s.get(key(empresa, mesa))) : null; }
-    async function put(draft) { if (!user) throw new Error('Sesión no identificada'); draft.key = key(draft.empresa, draft.mesa); await store('drafts', 'readwrite', s => s.put(draft)); window.dispatchEvent(new Event('offline-orders-changed')); return draft; }
+    async function put(draft) { if (!user) throw new Error('Sesión no identificada'); draft.key = key(draft.empresa, draft.mesa);
+        // Fase 80: desde cuándo la mesa tiene trabajo sin registrar en el servidor.
+        if (unsynced(draft)) draft.since ||= Date.now(); else delete draft.since; await store('drafts', 'readwrite', s => s.put(draft)); window.dispatchEvent(new Event('offline-orders-changed')); return draft; }
     async function remove(empresa, mesa) { if (user) { await store('drafts', 'readwrite', s => s.delete(key(empresa, mesa))); window.dispatchEvent(new Event('offline-orders-changed')); } }
+    // Atomic check-and-write: a background cache refresh must never replace local work.
+    function replaceIfClean(empresa, mesa, value) {
+        if (!user) return Promise.resolve(false);
+        const k = key(empresa, mesa);
+        return database.then(db => new Promise((resolve, reject) => {
+            const tx = db.transaction('drafts', 'readwrite'), objects = tx.objectStore('drafts');
+            let changed = false;
+            const read = objects.get(k);
+            read.onsuccess = () => {
+                if (unsynced(read.result) || (!value && !read.result)) return;
+                if (value) objects.put({ ...value, key: k }); else objects.delete(k);
+                changed = true;
+            };
+            tx.oncomplete = () => { if (changed) window.dispatchEvent(new Event('offline-orders-changed')); resolve(changed); };
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        }));
+    }
+    function cacheServer(empresa, mesa, data) {
+        return replaceIfClean(empresa, mesa, { empresa: Number(empresa), mesa: Number(mesa), server: data,
+            fechaNegocio: data.pedido?.FechaNegocio || null, snapshot: null,
+            dirty: false, send: false, status: 'confirmed', at: Date.now() });
+    }
+    function dropIfClean(empresa, mesa) { return replaceIfClean(empresa, mesa, null); }
     async function list() { return user ? (await store('drafts', 'readonly', s => s.getAll())).filter(d => d.key.startsWith(`${user}:`)) : []; }
     async function prepared(empresa) { return user ? store('prepared', 'readonly', s => s.get(prepKey(empresa))) : null; }
     async function prepare(empresa, tables) {
@@ -46,5 +73,5 @@ const offlineOrders = (() => {
     function userName() { return user; }
     function syncing() { return syncPromise; }
     function setSyncing(value) { syncPromise = value; }
-    return { setUser, userName, get, put, remove, list, prepared, prepare, mozos, syncing, setSyncing };
+    return { setUser, userName, get, put, remove, list, cacheServer, dropIfClean, unsynced, prepared, prepare, mozos, syncing, setSyncing };
 })();

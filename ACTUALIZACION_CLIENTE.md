@@ -286,3 +286,30 @@ La comprobación consulta la sesión cada 15 segundos mientras la app está visi
 3. Con poca altura visible, desplace las opciones del centro del menú y confirme que el usuario y **Cerrar Sesión** siguen accesibles. Compruebe que cerrar el menú, navegar y el menú colapsado de escritorio conservan su funcionamiento.
 
 La comprobación automatizada no sustituye esta revisión en el Safari y la barra de navegador reales del restaurante. Conserve la versión anterior del CSS para recuperación si aparece una regresión visual.
+
+## Fases 79–81 — resiliencia offline y HTTPS local (lunes 23/11/2026, fuera de hora punta)
+
+Se instala en dos etapas independientes. Cada una tiene su propia vuelta atrás.
+
+### Etapa 1 — Fases 79 y 80 por HTTP (sin cambios de servidor ni base de datos)
+
+1. Respalde la carpeta de la aplicación y `.env`. Ejecute `actualizar.bat` y confirme en la tablet piloto que se cargan `style.css?v=80`, `offline-orders.js?v=80`, `connectivity.js?v=80`, `orders-ui.js?v=80` y `script.js?v=80`.
+2. Inicie sesión y espere 30 s sin pulsar nada: el botón del mapa debe cambiar a «Offline · fecha». Con una mesa ocupada que nunca se abrió en esa tablet, desactive Wi‑Fi y ábrala: debe mostrar su pedido.
+3. Sin Wi‑Fi, agregue un producto y pulse Enviar. Abra «Mesas pendientes»: la mesa aparece con «Envío a Cocina pendiente». Revise su «Comanda de respaldo». Active Wi‑Fi y pulse «Reintentar ahora»: debe aparecer el aviso verde, la tablet debe vibrar y Cocina debe recibir **una sola** comanda.
+4. Vuelta atrás: restaurar la versión anterior con `git checkout <commit anterior>` y `actualizar.bat`. Antes, confirme «Mesas pendientes: 0» en todas las tablets.
+
+### Etapa 2 — HTTPS con CA local en una sola tablet piloto
+
+1. **IP fija del servidor** (en Windows, sin tocar el router): Configuración → Red → adaptador Wi‑Fi o Ethernet → Editar asignación IP → Manual → IPv4, con la IP actual, la máscara, la puerta de enlace y el DNS que muestra `ipconfig /all`. Confirme que las tablets siguen entrando por `http://IP:PUERTO`.
+2. Ejecute `generar-certificado.bat` y escriba la IP fija. Anote la huella SHA‑256 que muestra. La carpeta `certs` queda en el servidor: **nunca copie `ca.key` ni `server.key`**, y respáldela junto con `.env`.
+3. En `.env`: `HTTPS_ENABLED=true`, `HTTPS_PORT=3443`, `HTTPS_REDIRECT=false` y `COOKIE_SECURE=false`. Ejecute `actualizar.bat`. En los registros (`docker compose logs --tail 30 app`) debe aparecer `HTTPS running on port 3443`. Si Windows pregunta por el firewall, permita Docker en **redes privadas**.
+4. En la tablet piloto, abra «Mesas pendientes» y confirme que está en 0. Luego abra `http://IP:PUERTO/instalar-certificado`, siga los pasos y abra «Abrir versión segura». Vuelva a añadir la app a la pantalla de inicio desde la dirección `https://IP:3443`.
+5. Prueba (Fase 82):
+   - Abra la app por HTTPS **una vez con conexión** después de iniciar sesión, para que quede guardada en el equipo.
+   - Haga un pedido normal con Cocina.
+   - Sin Wi‑Fi, agregue productos y fuerce el cierre de Chrome (Ajustes → Aplicaciones → Chrome → Forzar detención). Abra la app desde el ícono: debe mostrar «… · sin conexión» en el menú, el mapa con las mesas preparadas y el borrador en la mesa.
+   - Active Wi‑Fi: en menos de 15 s debe desaparecer «sin conexión» y Cocina debe recibir **una sola** comanda.
+   - El modo sin conexión solo funciona para el último usuario que inició sesión en ese equipo durante las últimas 24 h. Cerrar sesión lo desactiva.
+6. Vuelta atrás: la tablet vuelve a usar `http://IP:PUERTO` (sigue activo) y en `.env` se pone `HTTPS_ENABLED=false`. No hay cambios de base de datos.
+
+Las demás tablets se migran solo después de un turno completo sin incidencias en la piloto, siempre con «Mesas pendientes: 0» antes de cambiar de dirección. `HTTPS_REDIRECT=true` y `COOKIE_SECURE=true` se activan cuando **todas** las tablets y computadoras usan HTTPS.

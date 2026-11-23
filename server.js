@@ -11,9 +11,14 @@ const { normalizeCompany } = require('./lib/company-context');
 const activeShift = require('./lib/active-shift');
 const holidayPrices = require('./lib/holiday-prices');
 const { employeeEligibilitySql } = require('./lib/employee-scope');
+const localTls = require('./lib/local-tls');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const TLS = (() => {
+    try { return localTls.tlsConfig(); }
+    catch (error) { console.error(`HTTPS deshabilitado: ${error.message}`); return { enabled: false, caFile: localTls.tlsConfig({}).caFile }; }
+})();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 const sessionStore = new SqlSessionStore({ ttlMs: SESSION_TTL_MS });
 const loginAttempts = new Map();
@@ -53,6 +58,7 @@ function validateProductionConfig() {
     }
     if (enabled(process.env.PRINTER_ENABLED) && !process.env.PRINTER_HOST) throw new Error('PRINTER_HOST es obligatorio cuando PRINTER_ENABLED=true');
     if (enabled(process.env.BAR_PRINTER_ENABLED) && !process.env.BAR_PRINTER_HOST) throw new Error('BAR_PRINTER_HOST es obligatorio cuando BAR_PRINTER_ENABLED=true');
+    localTls.tlsConfig();
 }
 function internalError(res, error, context, req = null) {
     if (error?.status) {
@@ -80,6 +86,7 @@ app.use((req, res, next) => {
     next();
 });
 
+app.use(localTls.redirectMiddleware(TLS));
 app.use(express.json({ limit: '512kb' }));
 app.use('/vendor/fontawesome', express.static(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free')));
 app.use(express.static('public', { setHeaders(res, filePath) {
@@ -102,6 +109,19 @@ function isAuthenticated(req, res, next) {
 app.get('/', (req, res) => res.redirect('/login.html'));
 app.get('/healthz', createHealthHandler({ getConnection, assertOperationalSchema,
     logger: message => console.error(message), safeError: requestContext.safeError }));
+// Fase 81: certificado público de la CA local (nunca la clave) y estado de HTTPS para la página de instalación.
+app.get('/ca.crt', (req, res) => {
+    if (!localTls.caAvailable(TLS)) return res.status(404).type('text/plain').send('Certificado no generado');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Disposition', 'attachment; filename="sedimapp-ca.crt"');
+    res.type('application/x-x509-ca-cert').sendFile(path.resolve(TLS.caFile));
+});
+app.get('/instalar-certificado', (req, res) => res.sendFile(path.join(__dirname, 'public', 'instalar-certificado.html')));
+app.get('/tls-info', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ enabled: TLS.enabled && Boolean(httpsServer), port: TLS.enabled ? TLS.port : null,
+        caAvailable: localTls.caAvailable(TLS), caFingerprint: localTls.caFingerprint(TLS), secure: req.secure });
+});
 
 // ==========================================
 //  LOGIN Y SESIÓN
@@ -159,6 +179,7 @@ app.get('/api/users', async (req, res) => {
 // ==========================================
 //  SERVER-SENT EVENTS (REAL-TIME)
 // ==========================================
+let httpsServer = null;
 const sseClients = new Set();
 
 app.get('/api/events', isAuthenticated, (req, res) => {
@@ -401,11 +422,20 @@ async function start() {
             const stopPrint = () => { stopKitchenPrint(); stopBarPrint(); };
             const stopRetention = features().closuresEnabled ? require('./lib/shift-closures').startRetentionWorker() : () => {};
             const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+            if (TLS.enabled) {
+                // Un fallo de certificados nunca detiene el servicio: HTTP sigue atendiendo.
+                try {
+                    httpsServer = require('node:https').createServer(localTls.loadCredentials(TLS), app);
+                    httpsServer.on('error', error => { console.error(`HTTPS no disponible: ${error.message}`); httpsServer = null; });
+                    httpsServer.listen(TLS.port, () => console.log(`HTTPS running on port ${TLS.port}${TLS.redirect ? ' (redirección activa)' : ''}`));
+                } catch (error) { httpsServer = null; console.error(`HTTPS no disponible: ${error.message}`); }
+            }
             let stopping = false;
             const shutdown = signal => {
                 if (stopping) return; stopping = true;
                 console.log(`${signal}: cerrando SedimApp...`);
                 stopPrint(); stopRetention(); sessionStore.stop();
+                httpsServer?.close();
                 server.close(() => closeConnections().finally(() => process.exit(0)));
                 setTimeout(() => process.exit(1), 10000).unref();
             };

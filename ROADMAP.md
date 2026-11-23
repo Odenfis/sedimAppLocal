@@ -1875,3 +1875,88 @@ La exportación se guarda en `backups/`, carpeta excluida de Git por contener da
 - Recursos: `style.css?v=78`, `orders-ui.js?v=78`, `script.js?v=78` (`responsive.css` sigue en v77). Sin migración SQL: solo lectura de `Tablas`.
 - Verificación local: `npm run check`, `git diff --check`, 87/87 pruebas unitarias (5 nuevas de turno activo), 47/47 escenarios SQL en `tempdb` aislado (nuevo: turno contrario rechazado sin consumir correlativo, turno omitido, ticket abierto editable tras el cambio, configuración inválida) y 207/207 pruebas de interfaz en escritorio, Android y WebKit (nuevas: preselección y bloqueo, Abruzzo, cambio de turno en vivo, rechazo del servidor con reintento, borrador offline confirmado, mapa sin turno determinable).
 - Pendiente en cliente: confirmar `SELECT * FROM Tablas WHERE n_codtabla=201` en la base real; recargar recursos v78; entrar con cada empresa y verificar el turno preseleccionado; intentar el turno contrario (alerta); crear un pedido y revisar `Ticket_c.Turno`; probar un cambio de `conversion` controlado durante el servicio. Añadir la sección correspondiente en `ACTUALIZACION_CLIENTE.md`. No se declara desplegada.
+
+---
+
+## Fase 79: Preparación offline automática y mesas ocupadas precargadas (Implementada en código; piloto en cliente pendiente)
+
+- La preparación offline ya no depende de que el mesero pulse el botón. Se ejecuta sola 30 s después de verificar la sesión y luego se revisa cada minuto. Solo se repite si alguna empresa lleva 10 minutos o más sin prepararse, si la app está visible y con conexión, y si no hay un guardado ni una sincronización en curso. El botón se conserva para actualizar manualmente y muestra cuántas mesas ocupadas quedaron guardadas.
+- Además de mesas, productos, categorías y mozos, se descarga en serie el pedido de cada mesa ocupada de las tres empresas, para que pueda abrirse sin conexión aunque no se haya abierto antes en ese dispositivo. La descarga se detiene ante el primer fallo de red o 5xx para no sumar carga a SQL (Fase 71), y omite la mesa abierta en pantalla.
+- Las mesas libres eliminan su copia local limpia, para que no se abra offline un pedido antiguo.
+- `offlineOrders.cacheServer` y `offlineOrders.dropIfClean` comprueban y escriben dentro de una sola transacción de IndexedDB: una actualización en segundo plano nunca reemplaza ni borra un borrador con cambios, envío o guardado pendientes. `orderCacheServerSnapshot` usa la misma operación atómica.
+- Recursos: `offline-orders.js?v=79`, `orders-ui.js?v=79`, `script.js?v=79`. Sin cambios de backend, API, SQL, migraciones ni impresión.
+- Verificación local: `npm run check`, `git diff --check`, 87/87 pruebas unitarias y 210/210 pruebas de interfaz (escritorio, Android y WebKit). Hay tres pruebas nuevas: mesa ocupada precargada abierta sin conexión, precarga que respeta un borrador pendiente y temporizador automático.
+- Pendiente en piloto: medir en el cliente la duración de la precarga y su efecto en `slow_sql` con todas las mesas ocupadas, y confirmar en una tablet que una mesa ocupada se abre sin red sin haberla abierto antes.
+
+---
+
+## Fase 80: Bandeja de pendientes, comanda de respaldo y reintentos espaciados (Implementada en código; piloto en cliente pendiente)
+
+- El contador «Mesas pendientes» del mapa y del pedido es ahora un botón que abre la bandeja. Cada mesa muestra su empresa, su estado («Envío a Cocina pendiente», «Cambios por guardar», «Resultado incierto», «Conflicto», «El turno cambió», «Falta elegir el mozo»), desde cuándo está pendiente y cuántos productos faltan registrar en Cocina. Desde ahí se puede abrir la mesa si pertenece a la empresa seleccionada, ver su comanda de respaldo o pulsar «Reintentar ahora», que verifica la sesión y procesa la cola sin esperar.
+- **Comanda de respaldo**: es un texto legible marcado «*** COMANDA NO REGISTRADA ***» con mesa, empresa, mozo, código, hora, productos pendientes con sus notas, cantidades anteriores y las anulaciones de líneas ya enviadas. El pie advierte que se imprimirá sola al volver la conexión. Con HTTPS se puede compartir o copiar; en HTTP, sin esas funciones del navegador, el texto queda seleccionado para copiarlo o mostrarlo en Cocina.
+- Cada borrador registra `since`, el momento en que empezó a tener trabajo sin registrar; se borra cuando todo queda en el servidor. Si una mesa lleva 5 minutos o más pendiente, el indicador se destaca y muestra «La más antigua lleva N min sin registrarse». El contador se refresca cada 15 s.
+- Cuando la cola registra mesas pendientes, aparece un aviso «N mesas pendientes quedaron registradas en el servidor», el equipo vibra y suena un tono corto generado por el navegador, sin archivos nuevos.
+- Ante fallos de red o 5xx, la cola espera 3, 8, 15, 30 y luego 60 s entre reintentos automáticos, en vez de intentar cada 15 s. Un éxito, el evento `online` o «Reintentar ahora» reinician la espera. Las acciones del mesero no esperan.
+- Si el navegador lo permite (solo con HTTPS), la pantalla se mantiene encendida mientras haya un pedido abierto o mesas pendientes. En HTTP no hace nada.
+- Recursos: `style.css?v=80`, `offline-orders.js?v=80`, `connectivity.js?v=80`, `orders-ui.js?v=80`, `script.js?v=80`. Sin cambios de backend, API, SQL, migraciones ni impresión.
+- Verificación local: `npm run check`, `git diff --check`, 87/87 pruebas unitarias y 213/213 pruebas de interfaz. Hay tres pruebas nuevas: bandeja con comanda de respaldo y reintento hasta el registro en Cocina, aviso por antigüedad y espera creciente. Capturas revisadas a 390 px en modo claro y oscuro.
+- Pendiente en piloto: comprobar en tablets reales la vibración, el sonido y la legibilidad de la comanda de respaldo, y acordar con Cocina el procedimiento cuando se use una comanda dictada.
+
+---
+
+## Fase 81: HTTPS en la red local con CA propia (Implementada en código; prueba en Mac y piloto en cliente pendientes)
+
+- `lib/local-tls.js` agrega HTTPS opcional que convive con HTTP. Con `HTTPS_ENABLED=true`, el servidor escucha además en `HTTPS_PORT` (3443 por defecto) con `certs/server.crt` y `certs/server.key`. Si faltan o son inválidos, solo se registra el error y HTTP sigue atendiendo: un problema de certificados nunca detiene el restaurante. `HTTPS_PORT` se valida al arrancar y debe ser distinto de `PORT`.
+- Con `HTTPS_REDIRECT=true`, solo se redirige la navegación GET/HEAD de páginas. Las API, `/healthz`, `/ca.crt`, `/tls-info` y `/instalar-certificado` siguen por HTTP, para no romper pestañas abiertas, guardados en curso ni la instalación de la CA. No se envía HSTS, así que volver a HTTP es posible.
+- `scripts/generate-local-certs.js`, también usado por `generar-certificado.bat` dentro del contenedor, crea una CA RSA‑2048 de 10 años y emite el certificado del servidor por 825 días para la IP fija, `127.0.0.1` y `localhost`, y lo verifica contra la CA. Una ejecución posterior reutiliza la CA: cambiar la IP o renovar no exige reinstalarla en los equipos. Las claves quedan con permisos 600.
+- `/ca.crt` entrega solo el certificado público de la CA. `/tls-info` informa si HTTPS está activo, el puerto y la huella SHA‑256. `/instalar-certificado` guía la instalación en Android, en modo claro y oscuro. Antes de cambiar de dirección, también avisa si el equipo tiene mesas pendientes en la dirección HTTP; el almacenamiento local es distinto por dirección. Esa revisión nunca crea la base local.
+- Docker: la imagen incluye `openssl`, `docker-compose.yml` publica `HTTPS_PORT` y monta `./certs`. `certs/` está excluido de git y de la imagen. `COOKIE_SECURE` sigue en false mientras haya equipos por HTTP.
+- Verificación local: 5 pruebas unitarias nuevas (configuración, redirección, argumentos, generación con reutilización de la CA y servidor HTTPS real aceptado solo con la CA). La prueba de punta a punta con la app incluye redirección de páginas, API sin redirigir, descarga idéntica de la CA y 404 para las claves. La página de instalación se revisó a 390 px en ambos temas, con aviso de pendientes y sin crear la base local.
+- Pendiente: prueba con un Android real contra la Mac y piloto en el cliente según `ACTUALIZACION_CLIENTE.md`. El service worker que aprovecha HTTPS para abrir la app sin red queda para la Fase 82.
+
+---
+
+## Fase 82: La app abre sin red (service worker y modo sin conexión) (Implementada en código; probada en Android contra la Mac; piloto en cliente pendiente)
+
+- `public/sw.js` se registra mediante `sw-register.js` en `dashboard.html` y `login.html`, solo en contexto seguro (HTTPS de la Fase 81 o localhost). En HTTP no hace nada.
+- **Páginas:** se piden primero a la red con un límite de 4 s; sin respuesta, se usa la copia guardada. `/` y otras rutas sin copia abren `dashboard.html`, así que el acceso de la pantalla de inicio funciona sin red.
+- **Recursos:** los archivos con `?v=` y `/vendor` se sirven desde la caché; el resto se sirve guardado mientras se actualiza. Al instalar el service worker y en cada carga con conexión, se guardan los recursos referenciados por las páginas, incluidas las fuentes `.woff2` de FontAwesome, y se borran las versiones anteriores de esos mismos archivos.
+- **Nunca pasan por la caché:** `/api/*`, SSE, `/healthz`, `/tls-info`, `/ca.crt`, `/instalar-certificado` ni el propio `sw.js`. Los pedidos siguen en IndexedDB y en el servidor.
+- **Modo sin conexión:** cada sesión verificada guarda en `localStorage` la identidad mínima (usuario, permisos, capacidades y fecha). Si el panel abre sin servidor y esa identidad tiene menos de 24 h, el menú muestra «Usuario · sin conexión» y quedan disponibles sus borradores y la preparación offline. También se restauran la última empresa elegida y el IGV guardado; el turno ya tenía respaldo local desde la Fase 78. Ninguna operación de servidor se habilita.
+- **Al volver el servidor:** si el usuario es el mismo, se sale del modo sin conexión sin recargar, conservando el pedido abierto, y se sincroniza la cola. Si es otro usuario, se recarga. Cerrar sesión o recibir un 401 borra la identidad.
+- `navigator.storage.persist()` se solicita tras cada sesión verificada (con HTTPS), para que Android no borre los borradores por falta de espacio.
+- Background Sync no se implementó a propósito. Reintentar desde el service worker duplicaría la lógica de guardado y envío con riesgo de duplicados. Los borradores ya son durables y se sincronizan al abrir la app.
+- Recursos: `script.js?v=82` y `sw-register.js?v=82`. Las pruebas de interfaz existentes bloquean el service worker (`serviceWorkers: 'block'`); las de esta fase lo habilitan. Sin cambios de backend, API, SQL ni impresión.
+- Verificación local: `npm run check`, `git diff --check`, 92/92 pruebas unitarias y 218/218 de interfaz. Hay 5 pruebas nuevas:
+  - recarga sin red con borrador visible y sincronización sin recargar al volver la conexión;
+  - acceso `/` sin red;
+  - sin identidad no se muestran borradores;
+  - el 401 borra la identidad;
+  - la caché no contiene API e incluye FontAwesome y sus fuentes.
+- Prueba física (20/11/2026): funcionó correctamente en un Android real por HTTPS contra la Mac de desarrollo, incluido el cierre forzado de Chrome sin red. Pendiente: piloto en el cliente.
+
+---
+
+## Pendientes antes y durante el piloto del lunes 23/11/2026 (Fases 79–82)
+
+Estado al 20/11/2026: Fases 79–82 implementadas y probadas en la Mac con un Android real. **Nada está en commit**: el cambio está solo en el equipo de desarrollo.
+
+### Antes del lunes (en la Mac de desarrollo)
+- [ ] Correr toda la verificación: `npm run check`, `git diff --check`, pruebas unitarias y de interfaz (última corrida: 92/92 y 218/218).
+- [ ] Ensayar la etapa 1 tal como la verá el cliente: `HTTPS_ENABLED=false` (o sin la línea), `docker compose up -d --build app` y uso desde un celular y una tablet por `http://IP:3000`. Debe verse la bandeja de pendientes y la preparación automática, sin service worker y sin cambios de comportamiento para los equipos en HTTP.
+- [ ] Hacer el commit y el push. Es imprescindible, porque `actualizar.bat` hace `git pull` en el cliente. `certs/` no se sube: el cliente genera su propia CA.
+- [ ] Si se sigue probando en HTTP en la Mac, volver a abrir esa dirección en el celular. El almacenamiento local de HTTP y el de HTTPS son distintos.
+
+### El lunes en el cliente (Windows + Docker; detalle en `ACTUALIZACION_CLIENTE.md`)
+- [ ] Respaldo de la base de datos antes de ejecutar `actualizar.bat`.
+- [ ] Etapa 1: actualizar a la versión con HTTP (sin cambios en `.env`) y validar el servicio normal.
+- [ ] Anotar la IP del servidor Windows y fijarla como estática en el propio equipo antes de generar el certificado.
+- [ ] Ejecutar `generar-certificado.bat`, activar `HTTPS_ENABLED=true` (con `HTTPS_REDIRECT=false` y `COOKIE_SECURE=false`) y confirmar `HTTPS running on port 3443` en los registros. Si Windows pregunta, permitir Docker en el firewall para redes privadas.
+- [ ] Etapa 2 en una sola tablet piloto: confirmar «Mesas pendientes: 0», tener a mano su PIN o patrón (Android lo exige para instalar la CA), instalar el certificado y volver a añadir la app a la pantalla de inicio desde `https://IP:3443`.
+- [ ] Repetir en el cliente la prueba sin red: modo avión, cierre forzado de Chrome, reapertura que muestre «sin conexión» y el borrador, y al reconectar una sola comanda en Cocina.
+- [ ] Si algo falla, volver atrás según `ACTUALIZACION_CLIENTE.md` (`HTTPS_ENABLED=false`; la tablet vuelve a la dirección HTTP).
+
+### Después del piloto (no antes del lunes)
+- [ ] Fase D del plan: fusión automática de conflictos simples en `orderSyncOne`. Si el borrador solo agrega líneas, se rebasa sobre el pedido actual en lugar de bloquearlo. Se deja para después de validar una semana en producción, porque cambia el flujo de envío.
+- [ ] Opcional: refrescar el snapshot local de otras mesas al recibir `mesa_updated` por SSE.
+- [ ] Extender HTTPS al resto de tablets y, cuando todas estén migradas, evaluar `HTTPS_REDIRECT=true` y `COOKIE_SECURE=true`.

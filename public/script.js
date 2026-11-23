@@ -106,14 +106,23 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
     }
 
-    posConnectivity.start(() => { if (appSessionBootstrapFailed) window.location.reload(); });
+    posConnectivity.start(session => {
+        if (!appSessionBootstrapFailed) { storeOfflineIdentity(session); return; }
+        if (appOfflineMode) leaveOfflineMode(session); else window.location.reload();
+    });
     try {
         const data = await posConnectivity.check();
-        if (!data) appSessionBootstrapFailed = !sessionRedirecting;
+        if (!data) {
+            appSessionBootstrapFailed = !sessionRedirecting;
+            if (appSessionBootstrapFailed) enterOfflineMode();
+        }
         else {
             const user = data.user;
+            storeOfflineIdentity(data);
+            requestPersistentStorage();
             offlineOrders.setUser(user.usuario);
             orderSyncQueued().catch(error => console.warn('Sincronización offline:', error.message));
+            startOfflineAutoPrepare();
             applyFeatureFlags(data.features || {});
             if (user.permisos) aplicarPermisos(user.permisos);
             if (user.permisos && user.permisos.includes('equipos')) fetchData();
@@ -132,7 +141,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 else loadPOSTables();
             }
         }
-    } catch (e) { appSessionBootstrapFailed = true; posConnectivity.failure(); console.warn('Inicio: no se pudo verificar la sesión:', e.message); }
+    } catch (e) { appSessionBootstrapFailed = true; posConnectivity.failure(); console.warn('Inicio: no se pudo verificar la sesión:', e.message); enterOfflineMode(); }
 
     // Eventos Filtros Reporte
     document.querySelectorAll('.col-filter').forEach(input => {
@@ -303,7 +312,76 @@ window.addEventListener('resize', () => {
     lastScreenAngle = screenAngle;
 });
 // ... existing code ...
-async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; }
+async function logout() { clearOfflineIdentity(); await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; }
+
+// ==========================================
+//  Fase 82: MODO SIN CONEXIÓN TRAS RECARGAR
+// ==========================================
+// Si la app abre sin servidor, usa la identidad del último usuario verificado en este dispositivo
+// para mostrar sus borradores y la preparación offline. Nunca habilita operaciones del servidor.
+const OFFLINE_IDENTITY_KEY = 'sedim-offline-identity';
+const OFFLINE_IDENTITY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+let appOfflineMode = false;
+
+function storeOfflineIdentity(session) {
+    try {
+        const user = session?.user;
+        if (!user?.usuario) return;
+        localStorage.setItem(OFFLINE_IDENTITY_KEY, JSON.stringify({ usuario: user.usuario, permisos: user.permisos || [],
+            features: session.features || {}, at: Date.now() }));
+    } catch { /* sin almacenamiento: no habrá modo sin conexión tras recargar */ }
+}
+function readOfflineIdentity() {
+    try {
+        const identity = JSON.parse(localStorage.getItem(OFFLINE_IDENTITY_KEY) || 'null');
+        return identity?.usuario && Date.now() - Number(identity.at) < OFFLINE_IDENTITY_MAX_AGE_MS ? identity : null;
+    } catch { return null; }
+}
+function clearOfflineIdentity() { try { localStorage.removeItem(OFFLINE_IDENTITY_KEY); } catch {} }
+function rememberPOSCompany(value) { try { if (value) localStorage.setItem('sedim-last-company', value); } catch {} }
+function lastPOSCompany() { try { return localStorage.getItem('sedim-last-company'); } catch { return null; } }
+function requestPersistentStorage() {
+    try { navigator.storage?.persist?.().catch(() => {}); } catch { /* no disponible en HTTP */ }
+}
+
+function enterOfflineMode() {
+    if (appOfflineMode || sessionRedirecting) return;
+    const identity = readOfflineIdentity();
+    if (!identity) return;
+    appOfflineMode = true;
+    document.documentElement.dataset.offlineMode = 'true';
+    offlineOrders.setUser(identity.usuario);
+    applyFeatureFlags(identity.features || {});
+    aplicarPermisos(identity.permisos);
+    const name = document.getElementById('sidebar-user-name');
+    if (name) name.innerText = `${toTitleCase(identity.usuario)} · sin conexión`;
+    try { const igvv = Number(localStorage.getItem('sedim-igvv')); if (igvv > 0) GLOBAL_IGVV_PCT = igvv; } catch {}
+    const label = document.getElementById('offline-preparation-status');
+    if (label) label.textContent = `Modo sin conexión: se usan los datos guardados de ${toTitleCase(identity.usuario)} en este dispositivo.`;
+    const select = document.getElementById('pos-empresa-select');
+    const company = lastPOSCompany();
+    if (select && !select.value && company && select.querySelector(`option[value="${company}"]`)) select.value = company;
+    else preselectPOSCompanyFromBrand();
+    if (select?.value && document.getElementById('view-pos-tables').style.display !== 'none') onEmpresaOrTurnoChange();
+}
+
+// Al volver el servidor se sale del modo sin conexión en el lugar, sin recargar ni perder el pedido abierto.
+function leaveOfflineMode(session) {
+    const user = session?.user;
+    if (!user?.usuario || user.usuario !== offlineOrders.userName()) { window.location.reload(); return; }
+    appOfflineMode = false; appSessionBootstrapFailed = false;
+    delete document.documentElement.dataset.offlineMode;
+    storeOfflineIdentity(session);
+    requestPersistentStorage();
+    applyFeatureFlags(session.features || {});
+    if (user.permisos) aplicarPermisos(user.permisos);
+    const name = document.getElementById('sidebar-user-name');
+    if (name) name.innerText = toTitleCase(user.usuario);
+    orderSyncQueued().catch(error => console.warn('Sincronización offline:', error.message));
+    startOfflineAutoPrepare();
+    renderOfflinePreparation();
+    scheduleAppResumeSync(0);
+}
 
 // ==========================================
 //  MÓDULO: POS DE VENTAS
@@ -794,6 +872,7 @@ function preselectPOSCompanyFromBrand() {
 }
 
 function onEmpresaOrTurnoChange() {
+    rememberPOSCompany(document.getElementById('pos-empresa-select')?.value);
     renderTurnoButtons(activePOSShiftLabel(document.getElementById('pos-empresa-select')?.value));
     loadHolidayConfig(document.getElementById('pos-empresa-select')?.value);
     if (typeof isPOSOrderViewVisible === 'function' && isPOSOrderViewVisible()) {
@@ -815,7 +894,7 @@ async function loadPOSConfig() {
             const res = await fetch('/api/pos/config');
             const config = await res.json();
             if (!res.ok) throw new Error(config.message || 'No se pudo cargar la configuración POS');
-            if (config.igvv !== undefined) GLOBAL_IGVV_PCT = config.igvv;
+            if (config.igvv !== undefined) { GLOBAL_IGVV_PCT = config.igvv; try { localStorage.setItem('sedim-igvv', String(config.igvv)); } catch {} }
             posConfigLoaded = true;
         } catch (e) { console.error('Error cargando configuración POS:', e); }
         finally { posConfigPromise = null; }
@@ -977,6 +1056,49 @@ function loadPOSTables() {
     return posTablesLoadPromise;
 }
 
+// Fase 79: la preparación offline se ejecuta sola y guarda también las mesas ocupadas.
+const OFFLINE_AUTO_PREPARE_FIRST_MS = Number(window.POS_OFFLINE_AUTO_PREPARE_FIRST_MS ?? 30000);
+const OFFLINE_AUTO_PREPARE_EVERY_MS = Number(window.POS_OFFLINE_AUTO_PREPARE_EVERY_MS ?? 10 * 60 * 1000);
+const OFFLINE_OCCUPIED_STATES = [2, 3, 4, 5, 6];
+let offlinePreparePromise = null, offlineAutoPrepareStarted = false;
+
+async function prepareOfflineData(report = () => {}) {
+    if (offlinePreparePromise) return offlinePreparePromise;
+    offlinePreparePromise = (async () => {
+        const companies = [...document.getElementById('pos-empresa-select').options].filter(option => option.value);
+        const occupied = [], free = [];
+        for (const option of companies) {
+            report(`Preparando ${option.textContent}…`);
+            const response = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(option.value)}`, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`No se pudieron leer las mesas de ${option.textContent}`);
+            const tables = await response.json();
+            await offlineOrders.prepare(option.value, tables);
+            for (const table of tables) {
+                const target = { empresa: Number(option.value), mesa: Number(table.Numero) };
+                (OFFLINE_OCCUPIED_STATES.includes(Number(table.Estado)) ? occupied : free).push(target);
+            }
+        }
+        // Una mesa libre no debe abrir offline un pedido antiguo guardado en este dispositivo.
+        for (const table of free) await offlineOrders.dropIfClean(table.empresa, table.mesa).catch(() => false);
+        let cached = 0;
+        for (const [index, table] of occupied.entries()) {
+            // La mesa abierta tiene estado en memoria más reciente que el servidor.
+            if (Number(posCurrentTable) === table.mesa && Number(posCurrentTableEmpresa) === table.empresa && isViewVisible('view-pos-order')) continue;
+            report(`Guardando mesas ocupadas ${index + 1}/${occupied.length}…`);
+            try {
+                const data = await orderRequest(`/api/pos/pedido?mesa=${table.mesa}&empresa=${table.empresa}`);
+                await orderCacheServerSnapshot(data, table.empresa, table.mesa);
+                cached++;
+            } catch (error) {
+                // En serie y deteniéndose ante fallos del servidor para no sumar carga a SQL.
+                if (!error.status || error.status >= 500) break;
+            }
+        }
+        return { companies: companies.length, occupied: occupied.length, cached };
+    })().finally(() => { offlinePreparePromise = null; });
+    return offlinePreparePromise;
+}
+
 async function prepareOfflineShift() {
     const button = document.getElementById('offline-prepare-button');
     const label = document.getElementById('offline-preparation-status');
@@ -984,16 +1106,34 @@ async function prepareOfflineShift() {
     button.disabled = true;
     button.textContent = 'Preparando…';
     try {
-        for (const option of document.getElementById('pos-empresa-select').options) {
-            if (!option.value) continue;
-            label.textContent = `Preparando ${option.textContent}…`;
-            const response = await fetch(`/api/pos/tables?empresa=${encodeURIComponent(option.value)}`, { cache: 'no-store' });
-            if (!response.ok) throw new Error(`No se pudieron leer las mesas de ${option.textContent}`);
-            await offlineOrders.prepare(option.value, await response.json());
-        }
-        label.textContent = 'Tres empresas preparadas en este dispositivo. Las mesas ocupadas deben abrirse con conexión antes de usarlas offline.';
+        const result = await prepareOfflineData(message => { label.textContent = message; });
+        label.textContent = `Tres empresas preparadas en este dispositivo · ${result.cached} de ${result.occupied} mesas ocupadas guardadas.`;
     } catch (error) { label.textContent = `Preparación incompleta: ${error.message}`; }
     finally { button.disabled = false; renderOfflinePreparation(label.textContent); }
+}
+
+async function offlinePreparationStale() {
+    const companies = [...(document.getElementById('pos-empresa-select')?.options || [])].filter(option => option.value);
+    if (!companies.length) return false;
+    const prepared = await Promise.all(companies.map(option => offlineOrders.prepared(option.value).catch(() => null)));
+    return prepared.some(data => !data || Date.now() - data.at >= OFFLINE_AUTO_PREPARE_EVERY_MS);
+}
+
+async function autoPrepareOffline() {
+    if (!appCanUseNetwork() || !offlineOrders.userName() || document.visibilityState !== 'visible') return;
+    if (offlinePreparePromise || orderSavePromise || offlineOrders.syncing()) return;
+    if (!await offlinePreparationStale()) return;
+    try { await prepareOfflineData(); renderOfflinePreparation(); }
+    catch (error) { console.warn('Preparación offline automática:', error.message); }
+}
+
+function startOfflineAutoPrepare() {
+    if (offlineAutoPrepareStarted) return;
+    offlineAutoPrepareStarted = true;
+    setTimeout(() => {
+        autoPrepareOffline();
+        setInterval(autoPrepareOffline, Math.min(60000, OFFLINE_AUTO_PREPARE_EVERY_MS));
+    }, OFFLINE_AUTO_PREPARE_FIRST_MS);
 }
 
 function renderTableGroupFilters(empresa) {
@@ -2535,6 +2675,7 @@ function closeSSE() {
 
 function redirectExpiredSession() {
     if (sessionRedirecting) return;
+    clearOfflineIdentity();
     sessionRedirecting = true;
     closeSSE();
     window.location.replace('/login.html');
@@ -2686,7 +2827,7 @@ window.addEventListener('online', () => scheduleAppResumeSync());
 window.addEventListener('offline', () => { closeSSE(); clearCocinaRecovery(false); });
 window.addEventListener('focus', () => scheduleAppResumeSync());
 setInterval(() => {
-    if (!appCanUseNetwork()) return;
+    if (!appCanUseNetwork() || orderSyncWaiting()) return;
     orderSyncQueued().catch(() => {});
 }, 15000);
 

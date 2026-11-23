@@ -68,13 +68,7 @@ function renderOfflinePreparation(message = '') {
         }
     }).catch(() => { label.textContent = 'Almacenamiento local no disponible'; });
 }
-async function orderCacheServerSnapshot(data, empresa, mesa) {
-    const old = await offlineOrders.get(empresa, mesa);
-    if (old?.dirty || old?.send || old?.pending) return;
-    await offlineOrders.put({ empresa: Number(empresa), mesa: Number(mesa), server: data,
-        fechaNegocio: data.pedido?.FechaNegocio || null, snapshot: null,
-        dirty: false, send: false, status: 'confirmed', at: Date.now() });
-}
+function orderCacheServerSnapshot(data, empresa, mesa) { return offlineOrders.cacheServer(empresa, mesa, data); }
 function orderLocalSnapshot() {
     return { cart: JSON.parse(JSON.stringify(posCart)), nroTicket: posCurrentNroTicket, version: orderVersion,
         mozo: document.getElementById('pos-mojo-select')?.value || null, code: orderCode,
@@ -156,9 +150,10 @@ async function orderSyncQueued() {
         const drafts = (await offlineOrders.list()).filter(d => (d.dirty || d.send || d.pending) && d.snapshot?.mozo);
         if (!drafts.length) return;
         const session = await posConnectivity.check();
-        if (!session) return;
+        if (!session) { orderSyncBackoff(true); return; }
         const user = session.user?.usuario;
         if (user !== offlineOrders.userName()) return;
+        let failed = false, registered = 0;
         for (const draft of drafts) {
             if (draft.status === 'blocked' || draft.status === 'shift') continue;
             if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa && orderBusy) continue;
@@ -168,6 +163,7 @@ async function orderSyncQueued() {
                 await orderSavePromise.catch(() => {});
             try {
                 await orderSyncOne(draft);
+                if (!offlineOrders.unsynced(await offlineOrders.get(draft.empresa, draft.mesa).catch(() => null))) registered++;
             } catch (error) {
                 const currentDraft = await offlineOrders.get(draft.empresa, draft.mesa) || draft;
                 if (error.errorCode === 'SHIFT_NOT_ACTIVE') {
@@ -181,6 +177,7 @@ async function orderSyncQueued() {
                     if (typeof handlePOSShiftRejected === 'function') await handlePOSShiftRejected(error, draft.empresa);
                     continue;
                 }
+                if (!error.status || error.status >= 500) failed = true;
                 currentDraft.status = error.status && error.status < 500 ? 'blocked' : 'uncertain';
                 currentDraft.error = error.message; await offlineOrders.put(currentDraft);
                 if (Number(posCurrentTable) === draft.mesa && Number(posCurrentTableEmpresa) === draft.empresa) {
@@ -192,10 +189,184 @@ async function orderSyncQueued() {
                 }
             }
         }
+        orderSyncBackoff(failed);
+        if (registered) notifyPendingRegistered(registered);
+        if (document.getElementById('pending-tray-dialog')?.open) renderPendingTray();
         if (isViewVisible('view-pos-order')) renderOrderStatus();
     })().finally(() => offlineOrders.setSyncing(null));
     offlineOrders.setSyncing(run); return run;
 }
+// Fase 80: reintentos espaciados cuando el servidor no responde, en vez de insistir con la misma cadencia.
+const ORDER_SYNC_BACKOFF_MS = [3000, 8000, 15000, 30000, 60000];
+let orderSyncFailures = 0, orderSyncBackoffUntil = 0, orderSyncRetryTimer = null;
+function orderSyncBackoff(failed) {
+    clearTimeout(orderSyncRetryTimer); orderSyncRetryTimer = null;
+    if (!failed) { orderSyncFailures = 0; orderSyncBackoffUntil = 0; return; }
+    const delay = ORDER_SYNC_BACKOFF_MS[Math.min(orderSyncFailures, ORDER_SYNC_BACKOFF_MS.length - 1)];
+    orderSyncFailures++; orderSyncBackoffUntil = Date.now() + delay;
+    orderSyncRetryTimer = setTimeout(() => {
+        orderSyncRetryTimer = null;
+        if (navigator.onLine && document.visibilityState === 'visible') orderSyncQueued().catch(() => {});
+    }, delay);
+}
+function orderSyncWaiting() { return Date.now() < orderSyncBackoffUntil; }
+if (typeof window !== 'undefined') window.addEventListener('online', () => orderSyncBackoff(false));
+
+// Fase 80: aviso físico cuando la cola registra mesas que estaban pendientes.
+let pendingToastTimer = null;
+function notifyPendingRegistered(count) {
+    const toast = document.getElementById('pos-sync-toast');
+    if (toast) {
+        toast.textContent = count === 1 ? '1 mesa pendiente quedó registrada en el servidor' : `${count} mesas pendientes quedaron registradas en el servidor`;
+        toast.hidden = false; clearTimeout(pendingToastTimer);
+        pendingToastTimer = setTimeout(() => { toast.hidden = true; }, 6000);
+    }
+    try { navigator.vibrate?.([80, 60, 80]); } catch { /* sin vibración */ }
+    try {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        if (!Context) return;
+        const audio = new Context(), tone = audio.createOscillator(), gain = audio.createGain();
+        tone.frequency.value = 880; gain.gain.setValueAtTime(0.12, audio.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.25);
+        tone.connect(gain).connect(audio.destination); tone.start(); tone.stop(audio.currentTime + 0.25);
+        tone.onended = () => audio.close().catch(() => {});
+    } catch { /* sin audio */ }
+}
+
+// Fase 80: pantalla encendida con un pedido abierto o mesas pendientes (requiere HTTPS; en HTTP no hace nada).
+let screenWakeLock = null, screenWakeLockRequest = null;
+async function updateScreenWakeLock(pending = false) {
+    if (!navigator.wakeLock) return;
+    const wanted = document.visibilityState === 'visible' && (pending || isViewVisible('view-pos-order'));
+    if (wanted && !screenWakeLock && !screenWakeLockRequest) {
+        screenWakeLockRequest = navigator.wakeLock.request('screen').then(lock => {
+            screenWakeLock = lock; lock.addEventListener('release', () => { if (screenWakeLock === lock) screenWakeLock = null; });
+        }).catch(() => {}).finally(() => { screenWakeLockRequest = null; });
+    } else if (!wanted && screenWakeLock) { const lock = screenWakeLock; screenWakeLock = null; lock.release().catch(() => {}); }
+}
+
+// Fase 80: bandeja de mesas pendientes y comanda de respaldo.
+let pendingBackupText = '';
+function pendingCompanyName(empresa) {
+    const option = [...(document.getElementById('pos-empresa-select')?.options || [])].find(o => Number(o.value) === Number(empresa));
+    return option?.textContent?.trim() || `Empresa ${empresa}`;
+}
+function pendingStatusLabel(draft) {
+    if (draft.status === 'blocked') return 'Conflicto: abra la mesa para revisarlo';
+    if (draft.status === 'shift') return 'El turno cambió: confirme al abrir la mesa';
+    if (!draft.snapshot?.mozo) return 'Falta elegir el mozo: abra la mesa';
+    if (draft.pending || ['uncertain', 'confirming'].includes(draft.status)) return 'Resultado incierto: se verificará con el servidor';
+    if (draft.send) return 'Envío a Cocina pendiente';
+    return 'Cambios por guardar en el servidor';
+}
+function pendingAge(draft) {
+    const minutes = Math.floor((Date.now() - (draft.since || draft.at || Date.now())) / 60000);
+    return minutes < 1 ? 'hace menos de 1 min' : `hace ${minutes} min`;
+}
+async function pendingDrafts() {
+    return (await offlineOrders.list()).filter(offlineOrders.unsynced)
+        .sort((a, b) => (a.since || a.at || 0) - (b.since || b.at || 0));
+}
+async function openPendingTray() {
+    const dialog = document.getElementById('pending-tray-dialog');
+    if (!dialog) return;
+    hideBackupComanda();
+    if (!dialog.open) {
+        document.getElementById('pending-tray-summary').textContent = 'Cargando mesas pendientes…';
+        document.getElementById('pending-tray-list').replaceChildren();
+        dialog.showModal();
+    }
+    await renderPendingTray();
+}
+async function renderPendingTray() {
+    const list = document.getElementById('pending-tray-list'), summary = document.getElementById('pending-tray-summary');
+    if (!list || !summary) return;
+    let drafts;
+    try { drafts = offlineOrders.userName() ? await pendingDrafts() : []; }
+    catch { summary.textContent = 'El almacenamiento local no está disponible en este dispositivo.'; list.replaceChildren(); return; }
+    const syncing = Boolean(offlineOrders.syncing());
+    summary.textContent = !offlineOrders.userName() ? 'Sesión sin verificar: conéctese para ver sus mesas pendientes.'
+        : !drafts.length ? 'No hay mesas pendientes. Todo lo registrado en este dispositivo llegó al servidor.'
+        : `${drafts.length === 1 ? '1 mesa' : `${drafts.length} mesas`} con trabajo guardado solo en este dispositivo.${syncing ? ' Sincronizando…' : ''}`;
+    const selected = Number(document.getElementById('pos-empresa-select')?.value);
+    list.replaceChildren(...drafts.map(draft => {
+        const item = document.createElement('li'); item.className = 'pending-tray-item';
+        item.dataset.status = draft.status || 'local';
+        const lines = (draft.snapshot?.cart || []).filter(orderLinePending).length;
+        item.innerHTML = `<div class="pending-tray-info"><strong>Mesa ${escapeOrderText(draft.mesa)} · ${escapeOrderText(pendingCompanyName(draft.empresa))}</strong>
+            <span>${escapeOrderText(pendingStatusLabel(draft))}</span>
+            <small>${escapeOrderText(pendingAge(draft))} · ${lines === 1 ? '1 producto sin registrar en Cocina' : `${lines} productos sin registrar en Cocina`}</small></div>
+            <div class="pending-tray-actions"></div>`;
+        const actions = item.querySelector('.pending-tray-actions');
+        const open = document.createElement('button'); open.type = 'button'; open.textContent = 'Abrir mesa';
+        if (Number(draft.empresa) !== selected) { open.disabled = true; open.title = `Seleccione ${pendingCompanyName(draft.empresa)} en el mapa para abrirla`; }
+        open.onclick = () => { document.getElementById('pending-tray-dialog').close(); openPOSOrder(draft.mesa, draft.empresa); };
+        const backup = document.createElement('button'); backup.type = 'button'; backup.textContent = 'Comanda de respaldo';
+        backup.disabled = !draft.snapshot?.cart?.length;
+        backup.onclick = () => showBackupComanda(draft.empresa, draft.mesa);
+        actions.append(open, backup);
+        return item;
+    }));
+    const retry = document.getElementById('pending-tray-retry');
+    if (retry) retry.disabled = !drafts.length || syncing;
+}
+async function retryPendingNow() {
+    orderSyncBackoff(false);
+    const summary = document.getElementById('pending-tray-summary');
+    if (summary) summary.textContent = 'Reintentando con el servidor…';
+    const retry = document.getElementById('pending-tray-retry'); if (retry) retry.disabled = true;
+    await posConnectivity.check();
+    await orderSyncQueued().catch(() => {});
+    await renderPendingTray();
+}
+function orderBackupQuantity(value) { return Number(value).toLocaleString('es-PE', { maximumFractionDigits: 2 }); }
+function backupComandaText(draft, prepared) {
+    const snapshot = draft.snapshot || {}, cart = snapshot.cart || [];
+    const mozo = prepared ? offlineOrders.mozos(prepared, draft.empresa, draft.mesa)?.find(m => String(m.Codemp) === String(snapshot.mozo))?.Nombre : null;
+    const time = new Date(draft.since || draft.at || Date.now()).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+    const out = ['*** COMANDA NO REGISTRADA ***', `Mesa ${draft.mesa} · ${pendingCompanyName(draft.empresa)}`,
+        `Mozo: ${mozo || snapshot.mozo || 'sin elegir'}`, ...(snapshot.code ? [`Código: ${snapshot.code}`] : []),
+        `Pendiente desde: ${time}`, '------------------------------'];
+    const pending = cart.filter(orderLinePending);
+    for (const line of pending) {
+        const before = line.enviada ? ` (antes ${orderBackupQuantity(line.enviada.cantidad)})` : '';
+        out.push(`${orderBackupQuantity(line.cantidad)} x ${line.nombre}${before}`);
+        const notes = orderNotes(line); if (notes) out.push(`   - ${notes}`);
+    }
+    const removed = (draft.server?.items || []).filter(item => item.enviada && !item.anulada && !cart.some(line => line.lineaId === item.lineaId));
+    for (const item of removed) out.push(`ANULAR: ${orderBackupQuantity(item.enviada.cantidad ?? item.Cantidad)} x ${String(item.Descripcion || '').trim()}`);
+    if (!pending.length && !removed.length) out.push('Sin productos nuevos para Cocina');
+    out.push('------------------------------', 'Se imprimirá sola al volver la', 'conexión: NO preparar dos veces.');
+    return out.join('\n');
+}
+async function showBackupComanda(empresa, mesa) {
+    const draft = await offlineOrders.get(empresa, mesa).catch(() => null);
+    if (!draft) return renderPendingTray();
+    const prepared = await offlineOrders.prepared(empresa).catch(() => null);
+    pendingBackupText = backupComandaText(draft, prepared);
+    document.getElementById('pending-backup-text').textContent = pendingBackupText;
+    document.getElementById('pending-backup-status').textContent = '';
+    document.getElementById('pending-tray-main').hidden = true;
+    document.getElementById('pending-tray-backup').hidden = false;
+    document.getElementById('pending-backup-text').focus();
+}
+function hideBackupComanda() {
+    const main = document.getElementById('pending-tray-main'), backup = document.getElementById('pending-tray-backup');
+    if (main) main.hidden = false;
+    if (backup) backup.hidden = true;
+}
+async function shareBackupComanda() {
+    const status = document.getElementById('pending-backup-status');
+    try {
+        if (navigator.share) { await navigator.share({ title: 'Comanda no registrada', text: pendingBackupText }); status.textContent = 'Comanda compartida.'; return; }
+        if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(pendingBackupText); status.textContent = 'Comanda copiada.'; return; }
+    } catch (error) { if (error?.name === 'AbortError') return; }
+    // HTTP sin portapapeles: se selecciona el texto para copiarlo manualmente.
+    const range = document.createRange(); range.selectNodeContents(document.getElementById('pending-backup-text'));
+    const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    status.textContent = 'Texto seleccionado: manténgalo presionado y elija Copiar, o muéstrelo en Cocina.';
+}
+
 async function orderSyncOne(draft) {
     const latest = await offlineOrders.get(draft.empresa, draft.mesa);
     if (!latest) return;

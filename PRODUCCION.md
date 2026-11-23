@@ -76,6 +76,23 @@ Abra `http://IP_DEL_SERVIDOR:PUERTO` desde la Wi-Fi interna.
 - Android: menú del navegador → **Agregar a pantalla principal** o **Instalar app**, según lo que ofrezca el navegador.
 - Por usar una IP HTTP, Android puede crear un acceso directo en vez de una PWA completa. La operación POS sigue requiriendo conexión a la LAN; no existe guardado offline.
 
+## HTTPS en la red local (Fase 81)
+
+- HTTPS es opcional y convive con HTTP. Se activa con `HTTPS_ENABLED=true` cuando existen `certs/server.crt` y `certs/server.key`, generados con `generar-certificado.bat`. Si faltan o son inválidos, el registro lo indica y la app sigue atendiendo por HTTP.
+- `certs/` contiene la clave de la CA local: no se versiona, no entra en la imagen Docker y se respalda junto con `.env`. A los equipos solo se entrega `ca.crt`, desde `/instalar-certificado`.
+- La CA dura 10 años y el certificado del servidor 825 días. Para renovarlo o si cambia la IP, ejecute de nuevo `generar-certificado.bat`: reutiliza la CA y no hay que reinstalarla en los equipos.
+- El almacenamiento local del navegador (borradores offline) es distinto en `http://IP:PUERTO` y en `https://IP:3443`. Antes de cambiar un equipo de dirección, confirme «Mesas pendientes: 0».
+
+- Con HTTPS, `sw.js` guarda la interfaz en el equipo para que la app abra sin red. Las páginas se piden primero a la red (límite de 4 s) y los recursos versionados se sirven de la caché; las API nunca se guardan. Al publicar una versión, la primera carga con conexión actualiza la copia y borra las versiones anteriores. En HTTP no se registra.
+
+### Prueba en la Mac de desarrollo
+
+1. Consulte la IP de la Mac con `ipconfig getifaddr en0` y genere los certificados con `node scripts/generate-local-certs.js --ip <IP>` (usa el `openssl` de Homebrew). Con Docker, use en su lugar `docker compose run --rm --no-deps -T app node scripts/generate-local-certs.js --ip <IP>`.
+2. En `.env` ponga `HTTPS_ENABLED=true` y `HTTPS_PORT=3443`, e inicie la app con `npm start` o `docker compose up -d --build app`. Si macOS pregunta, permita conexiones entrantes a Node o Docker.
+3. Con un celular Android en la misma Wi‑Fi, abra `http://<IP>:3000/instalar-certificado` y siga los pasos. La CA de la Mac es solo de prueba: el lunes el servidor del cliente genera la suya.
+4. Prueba sin red: con la app abierta por HTTPS y la sesión iniciada, prepare offline, active el modo avión, agregue un producto, fuerce el cierre de Chrome y vuelva a abrir la app. Debe mostrar «sin conexión» y el borrador. Desactive el modo avión y confirme que el pedido se registra una sola vez.
+5. Para retirar la prueba del celular: Ajustes → Seguridad → Cifrado y credenciales → Credenciales de usuario → eliminar «SedimApp CA local».
+
 ## Estado operativo y activaciones posteriores
 
 - La impresión RPT004 está habilitada en el cliente. Conserve su IP fija, puerto 9100, CP850 y corte configurados; repita una prueba física después de cualquier cambio de red o impresora.

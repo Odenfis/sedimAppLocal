@@ -3,6 +3,7 @@ const posConnectivity = (() => {
     const PROBE_INTERVAL_MS = 15000;
     const FRESH_MS = 30000;
     const TIMEOUT_MS = 5000;
+    const STALE_PENDING_MINUTES = 5;
     let state = 'checking', lastSuccessAt = 0, lastObservationAt = 0;
     let probePromise = null, pendingRefresh = null, refreshAgain = false, started = false;
     let onSessionVerified = null;
@@ -84,10 +85,19 @@ const posConnectivity = (() => {
         }
         if (pendingRefresh) { refreshAgain = true; return pendingRefresh; }
         pendingRefresh = offlineOrders.list().then(drafts => {
-            const pending = new Set(drafts.filter(d => d.dirty || d.send || d.pending)
-                .map(d => `${d.empresa}:${d.mesa}`));
+            const unsynced = drafts.filter(offlineOrders.unsynced);
+            const pending = new Set(unsynced.map(d => `${d.empresa}:${d.mesa}`));
             const label = `Mesas pendientes: ${pending.size}`;
+            const oldest = Math.min(...unsynced.map(d => d.since || d.at || Date.now()));
+            const minutes = pending.size ? Math.floor((Date.now() - oldest) / 60000) : 0;
+            const stale = minutes >= STALE_PENDING_MINUTES;
             document.querySelectorAll('.pos-connectivity-pending').forEach(node => { node.textContent = label; });
+            document.querySelectorAll('[data-connectivity-indicator]').forEach(node => {
+                node.dataset.pending = pending.size ? (stale ? 'stale' : 'yes') : 'no';
+                const age = node.querySelector('.pos-connectivity-age');
+                if (age) age.textContent = stale ? `La más antigua lleva ${minutes} min sin registrarse` : '';
+            });
+            if (typeof updateScreenWakeLock === 'function') updateScreenWakeLock(pending.size > 0);
         }).catch(() => {
             document.querySelectorAll('.pos-connectivity-pending').forEach(node => {
                 node.textContent = 'Pendientes: almacenamiento local no disponible';
@@ -116,6 +126,7 @@ const posConnectivity = (() => {
         setInterval(() => {
             if (document.visibilityState !== 'visible') return;
             render();
+            refreshPending();
             if (!probePromise && (effectiveState() !== 'connected' || Date.now() - lastSuccessAt >= PROBE_INTERVAL_MS)) check();
         }, PROBE_INTERVAL_MS);
     }

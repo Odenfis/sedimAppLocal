@@ -6,8 +6,12 @@ services:
     init: true
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${PORT}:3000"
+      # Fase 81: HTTPS en la LAN (solo atiende si HTTPS_ENABLED=true y existen los certificados)
+      - "${BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-3443}:${HTTPS_PORT:-3443}"
     env_file:
       - .env
+    volumes:
+      - ./certs:/app/certs
     restart: always
     stop_grace_period: 15s
     healthcheck:
